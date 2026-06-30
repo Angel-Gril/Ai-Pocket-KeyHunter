@@ -114,17 +114,17 @@ VULN_TYPE_PRIORITIES = {
 # leak keys in header/banner, we'll catch them. Header/banner queries are highest-ROI
 # because we actually get that content back.
 CREDENTIAL_QUERIES: list[str] = [
-    # --- OpenAI official keys: sk-proj-*, sk-* ---
+    # --- OpenAI official keys: sk-proj*, sk-* ---
     'header="authorization: bearer sk-"',
-    'header="authorization: bearer sk-proj-"',
+    'header="authorization: bearer sk-proj"',
     'header="x-api-key: sk-"',
     'banner="authorization: bearer sk-"',
-    'banner="authorization: bearer sk-proj-"',
+    'banner="authorization: bearer sk-proj"',
     # --- body-filtered (host has key in body; we catch if also in header/banner) ---
     'body="OPENAI_API_KEY=sk-"',
-    'body="OPENAI_API_KEY=sk-proj-"',
-    'body="api_key=sk-proj-"',
-    'body="apiKey=sk-proj-"',
+    'body="OPENAI_API_KEY=sk-proj"',
+    'body="api_key=sk-proj"',
+    'body="apiKey=sk-proj"',
     'body="api_key=sk-"',
     'body="apiKey=sk-"',
     'body="authorization=Bearer%20sk-"',
@@ -133,7 +133,7 @@ CREDENTIAL_QUERIES: list[str] = [
     'body=".env" && body="OPENAI_API_KEY"',
     'body="config.yml" && body="api_key"',
     'body="OPENAI_API_KEY" && body="sk-"',
-    'body="OPENAI_API_KEY" && body="sk-proj-"',
+    'body="OPENAI_API_KEY" && body="sk-proj"',
     'body="\\"api_key\\":\\"sk-"',
     'body="DANGEROUSLY_DISABLE_AUTH" && body="sk-"',
 ]
