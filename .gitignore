@@ -49,3 +49,4 @@ uv.lock
 state/
 
 .codegraph
+.omo
