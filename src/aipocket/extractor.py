@@ -9,7 +9,7 @@ from .models import Credential
 log = logging.getLogger(__name__)
 
 APIKEY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("openai", re.compile(r"\bsk-proj-[A-Za-z0-9_\-]{20,}\b")),
+    ("openai", re.compile(r"\bsk-proj[A-Za-z0-9_\-]{20,}\b")),
     ("openai_legacy", re.compile(r"\bsk-[A-Za-z0-9]{32,}\b")),
     ("anthropic", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b")),
     ("google", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
@@ -62,8 +62,16 @@ DETECTION_ENDPOINT_HINTS = {
 
 def extract_credentials(hits: list[dict[str, Any]]) -> list[Credential]:
     creds: list[Credential] = []
-    # dedup_key -> Credential, so we can merge backend/source info across backends
     by_key: dict[tuple[str, str], Credential] = {}
+
+    fofa_total = sum(1 for h in hits if h.get("_source") == "fofa")
+    shodan_total = sum(1 for h in hits if h.get("_source") == "shodan")
+    fofa_with_content = sum(1 for h in hits if h.get("_source") == "fofa" and (h.get("header") or h.get("banner")))
+    shodan_with_content = sum(1 for h in hits if h.get("_source") == "shodan" and (h.get("header") or h.get("banner")))
+    log.info(
+        "Extract: fofa=%d (%d with header/banner), shodan=%d (%d with header/banner)",
+        fofa_total, fofa_with_content, shodan_total, shodan_with_content,
+    )
 
     for hit in hits:
         host = hit.get("host", "") or hit.get("link", "")

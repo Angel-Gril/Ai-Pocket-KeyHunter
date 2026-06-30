@@ -23,21 +23,25 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
         base = "https://" + base
 
     probes = [
+        ("litellm", _probe_litellm, base),
         ("oneapi", _probe_oneapi, base),
         ("newapi", _probe_newapi, base),
-        ("litellm", _probe_litellm, base),
+        ("deepseek", _probe_deepseek, base),
+        ("moonshot", _probe_moonshot, base),
+        ("glm", _probe_glm, base),
+        ("siliconflow", _probe_siliconflow, base),
         ("openai", _probe_openai_billing, base),
     ]
 
     for gateway, fn, url in probes:
         try:
             result = await fn(client, url, cred.apikey)
-            if result:
-                result["gateway"] = gateway
-                return result
         except httpx.HTTPError:
             continue
-    return {}
+        if result:
+            result["gateway"] = gateway
+            return result
+    return {"gateway": "unsupported", "balance_usd": ""}
 
 
 async def _probe_oneapi(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
@@ -124,6 +128,85 @@ async def _probe_openai_billing(client: httpx.AsyncClient, base: str, key: str) 
     }
 
 
+async def _probe_deepseek(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    r = await client.get(
+        f"{base}/user/balance",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    if r.status_code != 200:
+        return {}
+    data = r.json()
+    if not isinstance(data, dict):
+        return {}
+    infos = data.get("balance_infos") or []
+    total_cny = 0.0
+    for info in infos:
+        total_cny += float(info.get("total_balance", 0) or 0)
+    return {
+        "balance_usd": round(total_cny / 7.2, 2),
+        "balance_cny": round(total_cny, 2),
+        "raw": data,
+    }
+
+
+async def _probe_moonshot(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    r = await client.get(
+        f"{base}/v1/users/me/balance",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    if r.status_code != 200:
+        return {}
+    data = r.json()
+    if not isinstance(data, dict):
+        return {}
+    avail = 0.0
+    d = data.get("data")
+    if isinstance(d, dict):
+        avail = float(d.get("available_balance", 0) or 0)
+    return {
+        "balance_cny": round(avail, 2),
+        "balance_usd": round(avail / 7.2, 2),
+        "raw": data,
+    }
+
+
+async def _probe_glm(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    r = await client.get(
+        f"{base}/api/paas/v4/biz/finance/balance",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    if r.status_code != 200:
+        return {}
+    data = r.json()
+    if not isinstance(data, dict):
+        return {}
+    d = data.get("data")
+    bal = float(d.get("balance", 0) or 0) if isinstance(d, dict) else 0.0
+    return {
+        "balance_cny": round(bal, 2),
+        "balance_usd": round(bal / 7.2, 2),
+        "raw": data,
+    }
+
+
+async def _probe_siliconflow(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    r = await client.get(
+        f"{base}/v1/user/info",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    if r.status_code != 200:
+        return {}
+    data = r.json()
+    if not isinstance(data, dict):
+        return {}
+    d = data.get("data")
+    bal = float(d.get("balance", 0) or 0) if isinstance(d, dict) else 0.0
+    return {
+        "balance_usd": round(bal, 4),
+        "raw": data,
+    }
+
+
 async def enrich_results(results: list[ValidationResult]) -> list[ValidationResult]:
     sem = asyncio.Semaphore(settings.validate_concurrency)
     timeout = httpx.Timeout(settings.validate_timeout)
@@ -139,6 +222,7 @@ async def enrich_results(results: list[ValidationResult]) -> list[ValidationResu
                 if bal.get("tier"):
                     r.tier = r.tier or bal["tier"]
                 r.rate_limit_headers["balance_detail"] = str(bal)
+                r.provider_info.balance_provider = bal.get("gateway", "")
             return r
 
         return await asyncio.gather(*[_one(r) for r in results])

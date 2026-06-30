@@ -15,6 +15,11 @@ from aipocket.validator import (
 BASE = "https://api.example.com"
 VALID_KEY = "sk-proj-validkey1234567890abcdefghijklm"
 CHAT_URL = f"{BASE}/v1/chat/completions"
+MODELS_URL = f"{BASE}/v1/models"
+
+
+def _mock_models_empty():
+    respx.get(MODELS_URL).mock(return_value=httpx.Response(404))
 
 
 def _make_headers(rate_limit: int | None = None, extra: dict[str, str] | None = None):
@@ -28,6 +33,7 @@ def _make_headers(rate_limit: int | None = None, extra: dict[str, str] | None = 
 
 @respx.mock
 async def test_probe_success_200():
+    _mock_models_empty()
     respx.post(CHAT_URL).mock(
         return_value=httpx.Response(
             200,
@@ -47,6 +53,7 @@ async def test_probe_success_200():
 
 @respx.mock
 async def test_probe_rate_limited_429_counts_valid():
+    _mock_models_empty()
     respx.post(CHAT_URL).mock(
         return_value=httpx.Response(429, json={"error": "rate limited"}, headers=_make_headers(rate_limit=5000))
     )
@@ -60,6 +67,7 @@ async def test_probe_rate_limited_429_counts_valid():
 
 @respx.mock
 async def test_probe_401_then_404_no_valid():
+    _mock_models_empty()
     route = respx.post(CHAT_URL)
     route.side_effect = [
         httpx.Response(401, json={"error": "unauthorized"}),
@@ -72,6 +80,7 @@ async def test_probe_401_then_404_no_valid():
 
 @respx.mock
 async def test_probe_connect_error():
+    _mock_models_empty()
     respx.post(CHAT_URL).mock(side_effect=httpx.ConnectError("refused"))
     cred = Credential(apikey=VALID_KEY, apiurl=BASE)
     async with httpx.AsyncClient() as client:
@@ -82,6 +91,7 @@ async def test_probe_connect_error():
 
 @respx.mock
 async def test_probe_timeout():
+    _mock_models_empty()
     respx.post(CHAT_URL).mock(side_effect=httpx.ReadTimeout("slow"))
     cred = Credential(apikey=VALID_KEY, apiurl=BASE)
     async with httpx.AsyncClient() as client:
@@ -92,6 +102,7 @@ async def test_probe_timeout():
 
 @respx.mock
 async def test_probe_server_error_500():
+    _mock_models_empty()
     respx.post(CHAT_URL).mock(return_value=httpx.Response(503, text="unavailable"))
     cred = Credential(apikey=VALID_KEY, apiurl=BASE)
     async with httpx.AsyncClient() as client:
@@ -168,6 +179,8 @@ def test_extract_rate_headers_case_insensitive():
 
 @respx.mock
 async def test_validate_all_runs_concurrently():
+    respx.get("https://a.com/v1/models").mock(return_value=httpx.Response(404))
+    respx.get("https://b.com/v1/models").mock(return_value=httpx.Response(404))
     respx.post("https://a.com/v1/chat/completions").mock(
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
     )
@@ -186,6 +199,7 @@ async def test_validate_all_runs_concurrently():
 @respx.mock
 async def test_probe_rejects_spa_html_200():
     """Regression: Flowise/OpenWebUI SPA returns 200 HTML for any path."""
+    _mock_models_empty()
     respx.post(CHAT_URL).mock(
         return_value=httpx.Response(
             200,
@@ -203,6 +217,7 @@ async def test_probe_rejects_spa_html_200():
 @respx.mock
 async def test_probe_rejects_welcome_page_json_200():
     """Regression: some gateways return 200 with non-completion JSON."""
+    _mock_models_empty()
     respx.post(CHAT_URL).mock(
         return_value=httpx.Response(200, json={"status": "ok", "service": "proxy"})
     )
@@ -215,6 +230,7 @@ async def test_probe_rejects_welcome_page_json_200():
 @respx.mock
 async def test_probe_rejects_html_429():
     """Regression: WAF 429 HTML page must not count as valid."""
+    _mock_models_empty()
     respx.post(CHAT_URL).mock(
         return_value=httpx.Response(429, text="<html><body>Blocked</body></html>")
     )
@@ -227,6 +243,7 @@ async def test_probe_rejects_html_429():
 @respx.mock
 async def test_probe_follows_redirect():
     """Regression: HTTP->HTTPS 301 must be followed."""
+    respx.get("http://api.example.com/v1/models").mock(return_value=httpx.Response(404))
     https_url = "https://api.example.com/v1/chat/completions"
     respx.post("http://api.example.com/v1/chat/completions").mock(
         return_value=httpx.Response(301, headers={"location": https_url})

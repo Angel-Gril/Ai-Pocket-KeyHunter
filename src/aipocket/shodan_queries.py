@@ -127,15 +127,15 @@ SHODAN_PRODUCT_QUERIES: dict[str, list[str]] = {
 SHODAN_CREDENTIAL_QUERIES: list[str] = [
     # --- HTTP header leaks (banner `data`): Authorization / x-api-key ---
     '"authorization: bearer sk-" http.status:200',
-    '"authorization: bearer sk-proj-" http.status:200',
+    '"authorization: bearer sk-proj" http.status:200',
     '"x-api-key: sk-" http.status:200',
-    '"x-api-key: sk-proj-" http.status:200',
+    '"x-api-key: sk-proj" http.status:200',
     '"authorization: bearer sk-ant-" http.status:200',
     # --- page body leaks (.env / config snippets indexed by Shodan) ---
     'http.html:"OPENAI_API_KEY=sk-"',
-    'http.html:"OPENAI_API_KEY=sk-proj-"',
-    'http.html:"api_key=sk-proj-"',
-    'http.html:"apiKey=sk-proj-"',
+    'http.html:"OPENAI_API_KEY=sk-proj"',
+    'http.html:"api_key=sk-proj"',
+    'http.html:"apiKey=sk-proj"',
     'http.html:"api_key=sk-"',
     'http.html:"apiKey=sk-"',
     'http.html:"ANTHROPIC_API_KEY=sk-ant-"',

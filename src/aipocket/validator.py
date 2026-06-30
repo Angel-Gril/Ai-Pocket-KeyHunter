@@ -4,11 +4,12 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from .config import settings
-from .models import Credential, ValidationResult
+from .models import Credential, ProviderInfo, ValidationResult
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +30,27 @@ RATE_LIMIT_HEADERS = [
     "tier",
 ]
 
-PROBE_MODELS = ["gpt-3.5-turbo", "gpt-4o-mini", "gpt-4-mini", "claude-3-5-haiku-20241022"]
+# Domain-fingerprint → (provider, category, probe models in priority order).
+# First model that returns a real chat completion (or a rate-limit error) wins.
+DOMAIN_ROUTING: list[tuple[str, str, str, list[str]]] = [
+    ("openai.com", "openai", "international", ["gpt-4o-mini", "gpt-3.5-turbo", "gpt-4o"]),
+    ("oaiusercontent", "openai", "international", ["gpt-4o-mini", "gpt-3.5-turbo"]),
+    ("anthropic.com", "anthropic", "international", ["claude-3-5-haiku-20241022", "claude-3-haiku-20240307"]),
+    ("deepseek.com", "deepseek", "domestic", ["deepseek-chat", "deepseek-coder"]),
+    ("moonshot.cn", "kimi", "domestic", ["moonshot-v1-8k", "moonshot-v1-32k", "kimi-k2-0905-preview"]),
+    ("bigmodel.cn", "glm", "domestic", ["glm-4-flash", "glm-4-air", "glm-4-flashx"]),
+    ("zhipuai", "glm", "domestic", ["glm-4-flash", "glm-4-air"]),
+    ("siliconflow.cn", "siliconflow", "domestic", ["Qwen/Qwen2.5-7B-Instruct", "deepseek-ai/DeepSeek-V3"]),
+    ("dashscope.aliyuncs.com", "qwen", "domestic", ["qwen-turbo", "qwen-plus"]),
+    ("baidu.com", "qwen", "domestic", ["ernie-bot-turbo", "ernie-4.0-8k"]),
+    ("googleapis.com", "google", "international", ["gemini-1.5-flash"]),
+]
+
+# Fallback model list used when the provider is unknown (e.g. a bare IP gateway).
+FALLBACK_MODELS = ["gpt-3.5-turbo", "gpt-4o-mini", "deepseek-chat", "qwen-turbo"]
+
+# Providers whose native API is NOT /v1/chat/completions.
+ANTHROPIC_PROVIDERS = {"anthropic"}
 
 
 async def validate_all(credentials: list[Credential]) -> list[ValidationResult]:
@@ -51,6 +72,16 @@ async def _probe_one(
         return await _probe(client, cred)
 
 
+def _route_provider(apiurl: str) -> tuple[str, str, list[str]]:
+    """Return (provider, category, probe_models) based on the apiurl domain."""
+    host = urlparse(apiurl).hostname or apiurl
+    host_lower = host.lower()
+    for fingerprint, provider, category, models in DOMAIN_ROUTING:
+        if fingerprint in host_lower:
+            return provider, category, models
+    return "unknown", "unknown", FALLBACK_MODELS
+
+
 async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResult:
     result = ValidationResult(credential=cred, validated_at=datetime.now(UTC).isoformat())
 
@@ -59,7 +90,128 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
         result.error = "no apiurl"
         return result
 
-    for model in PROBE_MODELS:
+    provider, category, probe_models = _route_provider(cred.apiurl)
+    result.provider_info = ProviderInfo.model_validate(
+        {"provider": provider, "category": category}
+    )
+    # Best-effort: query /v1/models to enrich models_available for OpenAI-compatible gateways.
+    available_models = await _fetch_models_list(client, cred, api_url)
+    if available_models:
+        result.provider_info.models_available = available_models
+        # Prefer to probe with a model we know the gateway actually serves.
+        for m in probe_models:
+            if m in available_models:
+                probe_models = [m] + [x for x in probe_models if x != m] + available_models[:3]
+                break
+        else:
+            # None of our routed models are in the list — use the gateway's own list.
+            probe_models = available_models[:5] + probe_models
+
+    if provider in ANTHROPIC_PROVIDERS:
+        return await _probe_anthropic(client, cred, api_url, result, probe_models)
+
+    return await _probe_chat_completions(client, cred, api_url, result, probe_models)
+
+
+async def _fetch_models_list(
+    client: httpx.AsyncClient, cred: Credential, chat_url: str
+) -> list[str]:
+    base = chat_url.replace("/chat/completions", "")
+    models_url = base + "/models"
+    headers = {"Authorization": f"Bearer {cred.apikey}"}
+    try:
+        r = await client.get(models_url, headers=headers)
+    except httpx.HTTPError:
+        return []
+    if r.status_code != 200:
+        return []
+    try:
+        body = r.json()
+    except (ValueError, httpx.DecodingError):
+        return []
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, list):
+        return []
+    out: list[str] = []
+    for item in data:
+        if isinstance(item, dict) and item.get("id"):
+            out.append(str(item["id"]))
+        elif isinstance(item, str):
+            out.append(item)
+    return out
+
+
+async def _probe_anthropic(
+    client: httpx.AsyncClient,
+    cred: Credential,
+    chat_url: str,
+    result: ValidationResult,
+    probe_models: list[str],
+) -> ValidationResult:
+    # Anthropic uses /v1/messages with x-api-key header, not /v1/chat/completions.
+    messages_url = chat_url.replace("/chat/completions", "/messages")
+    for model in probe_models:
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 5,
+        }
+        headers = {
+            "x-api-key": cred.apikey,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        try:
+            r = await client.post(messages_url, headers=headers, json=payload)
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError) as e:
+            result.error = f"{type(e).__name__.lower()}: {e}"
+            return result
+
+        result.status_code = r.status_code
+        result.rate_limit_headers = _extract_rate_headers(r.headers)
+
+        if r.status_code in (401, 403):
+            result.error = f"unauthorized ({r.status_code})"
+            return result
+        if r.status_code == 404:
+            continue
+        if r.status_code >= 500:
+            result.error = f"server {r.status_code}"
+            continue
+
+        if r.status_code == 200:
+            body = _parse_json_body(r)
+            if body and ("content" in body or "id" in body and body.get("type") == "message"):
+                result.valid = True
+                result.tier = _infer_tier(result.rate_limit_headers, r.headers)
+                result.model_available = model
+                result.response_snippet = _snippet(body)
+                result.provider_info.models_verified.append(model)
+                return result
+
+        if r.status_code == 429:
+            body = _parse_json_body(r)
+            if body and _looks_like_api_error(body):
+                result.valid = True
+                result.tier = _infer_tier(result.rate_limit_headers, r.headers)
+                result.model_available = model
+                result.error = "rate-limited but key is valid"
+                result.provider_info.models_verified.append(model)
+                return result
+
+        result.error = f"unexpected {r.status_code}: {r.text[:120]}"
+
+    return result
+
+
+async def _probe_chat_completions(
+    client: httpx.AsyncClient,
+    cred: Credential,
+    api_url: str,
+    result: ValidationResult,
+    probe_models: list[str],
+) -> ValidationResult:
+    for model in probe_models:
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": "hello"}],
@@ -104,6 +256,7 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             result.tier = _infer_tier(result.rate_limit_headers, r.headers)
             result.model_available = model
             result.response_snippet = _snippet(body)
+            result.provider_info.models_verified.append(model)
             return result
 
         if r.status_code == 429:
@@ -118,13 +271,18 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             result.tier = _infer_tier(result.rate_limit_headers, r.headers)
             result.model_available = model
             result.error = "rate-limited but key is valid"
+            result.provider_info.models_verified.append(model)
             return result
 
+        # 400 with "model not found" / "model not exist" → try next model, don't fail the key.
         try:
             body_text = r.text[:300]
         except Exception:
             body_text = ""
-        if "model" in body_text.lower() and "not found" in body_text.lower():
+        low = body_text.lower()
+        if r.status_code == 400 and any(kw in low for kw in ("model", "not found", "not exist", "does not exist")):
+            continue
+        if "model" in low and ("not found" in low or "not exist" in low):
             continue
         result.error = f"unexpected {r.status_code}: {body_text[:120]}"
 

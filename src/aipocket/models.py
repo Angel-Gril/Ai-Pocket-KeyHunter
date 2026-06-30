@@ -7,6 +7,25 @@ from pydantic import BaseModel, Field
 
 SourceType = Literal["header", "banner", "body", "fingerprint"]
 
+# Canonical provider categories
+Provider = Literal[
+    "openai", "anthropic", "deepseek", "kimi", "glm",
+    "qwen", "siliconflow", "google", "gateway", "unknown",
+]
+ProviderCategory = Literal["international", "domestic", "gateway", "unknown"]
+
+
+class ProviderInfo(BaseModel):
+    """Provider classification + model availability for a validated credential."""
+    provider: Provider = "unknown"
+    category: ProviderCategory = "unknown"
+    # Models listed by GET /v1/models (or equivalent)
+    models_available: list[str] = Field(default_factory=list)
+    # Models that actually returned a valid chat completion during probing
+    models_verified: list[str] = Field(default_factory=list)
+    # Official balance endpoint reported this key's provider (redundant w/ balance probes)
+    balance_provider: str = ""
+
 
 class Credential(BaseModel):
     apikey: str
@@ -33,6 +52,7 @@ class ValidationResult(BaseModel):
     rate_limit_headers: dict[str, str] = Field(default_factory=dict)
     model_available: str = ""
     response_snippet: str = ""
+    provider_info: ProviderInfo = Field(default_factory=ProviderInfo)
     validated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
@@ -52,5 +72,6 @@ class ScanRunResult(BaseModel):
 
 
 Credential.model_rebuild()
+ProviderInfo.model_rebuild()
 ValidationResult.model_rebuild()
 ScanRunResult.model_rebuild()

@@ -161,7 +161,7 @@ def build_queries(cves: list[dict[str, Any]] | None = None) -> list[dict[str, st
     out: list[dict[str, str]] = []
 
     for tmpl in CREDENTIAL_QUERIES:
-        q = f'{tmpl} && status_code="200"'
+        q = tmpl
         if q in seen:
             continue
         seen.add(q)

@@ -71,7 +71,14 @@ async def run_scan(max_queries: int | None = None) -> ScanRunResult:
 
     from .analyzer import extract_with_gpt
 
-    gpt_creds = await extract_with_gpt(all_hits[:500])
+    sampled = _sample_hits_for_gpt(all_hits)
+    fofa_sampled = sum(1 for h in sampled if h.get("_source") == "fofa")
+    shodan_sampled = sum(1 for h in sampled if h.get("_source") == "shodan")
+    log.info(
+        "GPT sampling: %d hits (fofa=%d, shodan=%d)",
+        len(sampled), fofa_sampled, shodan_sampled,
+    )
+    gpt_creds = await extract_with_gpt(sampled)
     if gpt_creds:
         existing_keys = {(c.apikey, c.apiurl) for c in creds}
         for gc in gpt_creds:
@@ -188,6 +195,24 @@ def _fetch_shodan(max_queries: int | None) -> list[dict]:
             log.info("  Shodan accumulated %d hits", len(all_hits))
     log.info("Shodan total hits: %d", len(all_hits))
     return all_hits
+
+
+def _sample_hits_for_gpt(hits: list[dict], limit: int = 2000) -> list[dict]:
+    """Deduplicate by host and prefer hits with body/banner content for GPT extraction."""
+    seen_hosts: set[str] = set()
+    with_content: list[dict] = []
+    without_content: list[dict] = []
+    for h in hits:
+        host = h.get("host", "")
+        if host in seen_hosts:
+            continue
+        seen_hosts.add(host)
+        if h.get("body") or h.get("banner") or h.get("header"):
+            with_content.append(h)
+        else:
+            without_content.append(h)
+    sampled = with_content + without_content
+    return sampled[:limit]
 
 
 def _trim_hits(hits: list[dict], limit: int = 500) -> list[dict]:
