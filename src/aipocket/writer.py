@@ -4,11 +4,24 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from .config import settings
 from .models import ScanRunResult
 
 log = logging.getLogger(__name__)
+
+
+def load_latest() -> dict[str, Any] | None:
+    p = settings.results_path / "latest_valid.json"
+    if not p.exists():
+        log.warning("No latest_valid.json found at %s", p)
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        log.error("Failed to read latest_valid.json: %s", e)
+        return None
 
 
 async def write_result(result: ScanRunResult) -> Path:

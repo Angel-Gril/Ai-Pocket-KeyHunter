@@ -26,6 +26,8 @@ class ValidationResult(BaseModel):
     status_code: int | None = None
     error: str = ""
     tier: str = ""
+    gateway: str = ""
+    balance: str = ""
     rate_limit_headers: dict[str, str] = Field(default_factory=dict)
     model_available: str = ""
     response_snippet: str = ""

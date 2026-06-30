@@ -26,10 +26,14 @@ def _setup_logging(verbose: bool):
 @app.command()
 def scan(
     max_queries: int = typer.Option(0, "--max-queries", "-n", help="Limit number of FOFA queries (0=all)"),
+    fast: bool = typer.Option(False, "--fast", help="Fast GPT mode: higher concurrency + bigger batches"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Run a single scan and write JSON results to the results dir."""
     _setup_logging(verbose)
+    if fast:
+        settings.gpt_fast = True
+        log.info("Fast mode enabled")
     from .scheduler import run_once
 
     n = max_queries or None
@@ -82,7 +86,36 @@ def config():
     console.print(f"[bold]Page size / max pages:[/bold] {settings.fofa_page_size} / {settings.fofa_max_pages}")
     console.print(f"[bold]Validation concurrency:[/bold] {settings.validate_concurrency}")
     console.print(f"[bold]Scheduler:[/bold] enabled={settings.scheduler_enabled} interval={settings.scheduler_interval}s")
+    console.print(f"[bold]Tavily:[/bold] {settings.tavily_base_url or '(disabled)'}")
+    console.print(f"[bold]GPT analyzer:[/bold] {settings.gpt_base_url or '(disabled)'} model={settings.gpt_model}")
     console.print(f"[bold]Results dir:[/bold] {settings.results_path.resolve()}")
+
+
+@app.command()
+def cve_sync(
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Sync AI CVEs from Tavily into sources/cve_2026_ai.json."""
+    _setup_logging(verbose)
+    if not settings.tavily_key:
+        console.print("[red]TAVILY_KEY not configured. Set it in .env[/red]")
+        raise typer.Exit(1)
+    from .tavily_client import sync_cves
+
+    merged, added = asyncio.run(sync_cves())
+    console.print(f"[green]CVE sync done: {len(merged)} total, {added} new[/green]")
+
+
+@app.command()
+def balance(
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Query balance/credits for all valid credentials in latest result."""
+    _setup_logging(verbose)
+    from .balance import query_latest_balances
+
+    table = query_latest_balances()
+    console.print(table)
 
 
 def _print_summary(result):

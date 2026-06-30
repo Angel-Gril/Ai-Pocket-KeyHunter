@@ -181,3 +181,60 @@ async def test_validate_all_runs_concurrently():
     results = await validate_all(creds)
     assert len(results) == 2
     assert all(r.valid for r in results)
+
+
+@respx.mock
+async def test_probe_rejects_spa_html_200():
+    """Regression: Flowise/OpenWebUI SPA returns 200 HTML for any path."""
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            text="<!DOCTYPE html><html><head><title>Flowise</title></head></html>",
+            headers={"content-type": "text/html"},
+        )
+    )
+    cred = Credential(apikey=VALID_KEY, apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is False
+    assert "not chat completion" in r.error
+
+
+@respx.mock
+async def test_probe_rejects_welcome_page_json_200():
+    """Regression: some gateways return 200 with non-completion JSON."""
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(200, json={"status": "ok", "service": "proxy"})
+    )
+    cred = Credential(apikey=VALID_KEY, apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is False
+
+
+@respx.mock
+async def test_probe_rejects_html_429():
+    """Regression: WAF 429 HTML page must not count as valid."""
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(429, text="<html><body>Blocked</body></html>")
+    )
+    cred = Credential(apikey=VALID_KEY, apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is False
+
+
+@respx.mock
+async def test_probe_follows_redirect():
+    """Regression: HTTP->HTTPS 301 must be followed."""
+    https_url = "https://api.example.com/v1/chat/completions"
+    respx.post("http://api.example.com/v1/chat/completions").mock(
+        return_value=httpx.Response(301, headers={"location": https_url})
+    )
+    respx.get(https_url).mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
+    )
+    cred = Credential(apikey=VALID_KEY, apiurl="http://api.example.com")
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        r = await _probe(client, cred)
+    assert r.valid is True

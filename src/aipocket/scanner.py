@@ -38,7 +38,18 @@ async def run_scan(max_queries: int | None = None) -> ScanRunResult:
 
     log.info("Total hits: %d. Extracting credentials...", len(all_hits))
     creds = extract_credentials(all_hits)
-    log.info("Extracted %d candidate credentials", len(creds))
+    log.info("Extracted %d candidate credentials (regex)", len(creds))
+
+    from .analyzer import extract_with_gpt
+
+    gpt_creds = await extract_with_gpt(all_hits[:500])
+    if gpt_creds:
+        existing_keys = {(c.apikey, c.apiurl) for c in creds}
+        for gc in gpt_creds:
+            if (gc.apikey, gc.apiurl) not in existing_keys:
+                creds.append(gc)
+                existing_keys.add((gc.apikey, gc.apiurl))
+        log.info("After GPT enrichment: %d candidate credentials", len(creds))
 
     if not creds:
         return ScanRunResult(
@@ -54,8 +65,22 @@ async def run_scan(max_queries: int | None = None) -> ScanRunResult:
 
     log.info("Validating %d credentials (concurrency=%d)...", len(creds), settings.validate_concurrency)
     results: list[ValidationResult] = await validate_all(creds)
+
+    if settings.gpt_key:
+        from .analyzer import recheck_all_with_gpt
+
+        results = list(await recheck_all_with_gpt(results))
+
     valid = [r for r in results if r.valid]
     log.info("Validation done: %d valid / %d total", len(valid), len(results))
+
+    if valid:
+        from .balance import enrich_results
+
+        log.info("Querying balance for %d valid credentials...", len(valid))
+        results = await enrich_results(results)
+        valid = [r for r in results if r.valid]
+        log.info("Balance enrichment done.")
 
     return ScanRunResult(
         started_at=started,

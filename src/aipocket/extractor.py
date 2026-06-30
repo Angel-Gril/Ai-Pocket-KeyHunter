@@ -13,8 +13,33 @@ APIKEY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("openai_legacy", re.compile(r"\bsk-[A-Za-z0-9]{32,}\b")),
     ("anthropic", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b")),
     ("google", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
-    ("generic", re.compile(r"\b(?:api[_-]?key|apikey|authorization|bearer)[\"'\s:=]+([A-Za-z0-9_\-\.]{20,})\b", re.I)),
+    ("generic", re.compile(r"\b(?:api[_-]?key|apikey|bearer)[\"'\s:=]+([A-Za-z0-9_\-\.]{20,})\b", re.I)),
 ]
+
+HTTP_HEADER_NAMES = frozenset({
+    "access-control-allow-methods", "access-control-allow-headers",
+    "access-control-allow-origin", "access-control-allow-credentials",
+    "access-control-expose-headers", "access-control-max-age",
+    "access-control-request-method", "access-control-request-headers",
+    "content-type", "content-length", "content-encoding", "content-language",
+    "content-security-policy", "content-disposition", "content-range",
+    "cache-control", "connection", "keep-alive", "accept", "accept-encoding",
+    "accept-language", "accept-ranges", "authorization", "cookie", "set-cookie",
+    "host", "origin", "referer", "user-agent", "server", "date", "etag",
+    "last-modified", "location", "vary", "transfer-encoding", "upgrade",
+    "x-requested-with", "x-forwarded-for", "x-forwarded-proto",
+    "x-content-type-options", "x-frame-options", "x-xss-protection",
+    "strict-transport-security", "referrer-policy", "permissions-policy",
+    "pragma", "expires", "age", "allow", "via", "warning", "dnt", "te",
+    "trailer", "expect", "from", "if-match", "if-none-match", "if-modified-since",
+    "if-unmodified-since", "if-range", "range", "www-authenticate",
+    "proxy-authenticate", "proxy-authorization", "x-powered-by",
+})
+
+MIME_TYPES = frozenset({"application/json", "text/html", "text/plain", "text/css",
+    "application/javascript", "text/javascript", "image/png", "image/jpeg",
+    "image/gif", "image/svg+xml", "application/xml", "text/xml",
+    "application/octet-stream", "multipart/form-data", "application/x-www-form-urlencoded"})
 
 URL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("openai_url", re.compile(r"\b(?:https?://[a-z0-9.\-]*openai\.com(?:/v1)?)\b", re.I)),
@@ -102,6 +127,8 @@ def _scan_text(
             val = val.strip().strip("\"':,;")
             if len(val) < 15:
                 continue
+            if _is_false_positive(val):
+                continue
             matched_keys.setdefault(val, label)
 
     for _label, pat in URL_PATTERNS:
@@ -145,3 +172,11 @@ def _infer_base_url(hit: dict[str, Any], api_urls: set[str]) -> str:
             return f"{host.rstrip('/')}{suffix}"
 
     return host.rstrip("/")
+
+
+def _is_false_positive(val: str) -> bool:
+    v = val.lower()
+    if v in HTTP_HEADER_NAMES or v in MIME_TYPES:
+        return True
+    compact = v.replace("-", "").replace("_", "").replace(".", "")
+    return compact in HTTP_HEADER_NAMES

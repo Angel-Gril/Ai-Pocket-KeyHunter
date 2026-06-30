@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any
+
+import httpx
+from rich.table import Table
+
+from .config import settings
+from .models import Credential, ValidationResult
+
+log = logging.getLogger(__name__)
+
+
+async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str, Any]:
+    base = cred.apiurl.rstrip("/")
+    if base.endswith("/v1/chat/completions"):
+        base = base[: -len("/v1/chat/completions")]
+    elif base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    if not base.startswith("http"):
+        base = "https://" + base
+
+    probes = [
+        ("oneapi", _probe_oneapi, base),
+        ("newapi", _probe_newapi, base),
+        ("litellm", _probe_litellm, base),
+        ("openai", _probe_openai_billing, base),
+    ]
+
+    for gateway, fn, url in probes:
+        try:
+            result = await fn(client, url, cred.apikey)
+            if result:
+                result["gateway"] = gateway
+                return result
+        except httpx.HTTPError:
+            continue
+    return {}
+
+
+async def _probe_oneapi(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    r = await client.get(
+        f"{base}/api/user/self",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    if r.status_code != 200:
+        return {}
+    data = r.json()
+    if not isinstance(data, dict) or not data.get("success"):
+        return {}
+    user = data.get("data", {})
+    quota = user.get("quota", 0)
+    used = user.get("used_quota", 0)
+    return {
+        "quota": quota,
+        "used": used,
+        "remaining": quota - used,
+        "balance_usd": round(quota / 500000, 4),
+        "raw": user,
+    }
+
+
+async def _probe_newapi(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    r = await client.get(
+        f"{base}/api/user/self",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    if r.status_code != 200:
+        return {}
+    data = r.json()
+    if not isinstance(data, dict) or not data.get("success"):
+        return {}
+    user = data.get("data", {})
+    quota = user.get("quota", 0)
+    used = user.get("used_quota", 0)
+    return {
+        "quota": quota,
+        "used": used,
+        "remaining": quota - used,
+        "balance_usd": round(quota / 500000, 4),
+        "raw": user,
+    }
+
+
+async def _probe_litellm(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    r = await client.get(
+        f"{base}/key/info",
+        headers={"Authorization": f"Bearer {key}"},
+        params={"key": key},
+    )
+    if r.status_code != 200:
+        return {}
+    data = r.json()
+    key_info = data.get("key_info", data)
+    spend = key_info.get("spend", 0)
+    max_budget = key_info.get("max_budget", 0) or key_info.get("max_budget_soft", 0)
+    return {
+        "spend": spend,
+        "max_budget": max_budget,
+        "remaining": max_budget - spend if max_budget else 0,
+        "balance_usd": round(max_budget - spend, 2) if max_budget else 0,
+        "tier": key_info.get("tier", ""),
+        "models": key_info.get("models", []),
+        "raw": key_info,
+    }
+
+
+async def _probe_openai_billing(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    r = await client.get(
+        f"{base}/v1/dashboard/billing/credit_grants",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    if r.status_code != 200:
+        return {}
+    data = r.json()
+    grants = data.get("data", [])
+    total = sum(g.get("grant_amount", 0) - g.get("used", 0) for g in grants)
+    return {
+        "balance_usd": round(total, 2),
+        "grants": grants,
+        "raw": data,
+    }
+
+
+async def enrich_results(results: list[ValidationResult]) -> list[ValidationResult]:
+    sem = asyncio.Semaphore(settings.validate_concurrency)
+    timeout = httpx.Timeout(settings.validate_timeout)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async def _one(r: ValidationResult) -> ValidationResult:
+            if not r.valid:
+                return r
+            async with sem:
+                bal = await query_balance(client, r.credential)
+            if bal:
+                r.balance = str(bal.get("balance_usd", ""))
+                r.gateway = bal.get("gateway", "")
+                if bal.get("tier"):
+                    r.tier = r.tier or bal["tier"]
+                r.rate_limit_headers["balance_detail"] = str(bal)
+            return r
+
+        return await asyncio.gather(*[_one(r) for r in results])
+
+
+async def _query_latest_balances_async() -> list[dict[str, Any]]:
+    from .writer import load_latest
+
+    latest = load_latest()
+    if not latest:
+        return []
+    results_data = latest.get("credentials") or latest.get("results") or []
+    out: list[dict[str, Any]] = []
+    timeout = httpx.Timeout(settings.validate_timeout)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        for item in results_data:
+            raw = item.get("credential") or item
+            if not raw.get("apikey"):
+                continue
+            cred = Credential(
+                apikey=raw["apikey"],
+                apiurl=raw.get("apiurl", ""),
+                host=raw.get("host", ""),
+            )
+            bal = await query_balance(client, cred)
+            out.append(
+                {
+                    "apikey": cred.apikey,
+                    "apiurl": cred.apiurl,
+                    "gateway": bal.get("gateway", "-"),
+                    "balance": bal.get("balance_usd", "-"),
+                    "tier": bal.get("tier", "-"),
+                }
+            )
+    return out
+
+
+def query_latest_balances() -> Table:
+    table = Table(title="Balance check — latest scan")
+    table.add_column("apikey")
+    table.add_column("apiurl")
+    table.add_column("gateway")
+    table.add_column("balance")
+    table.add_column("tier")
+
+    rows = asyncio.run(_query_latest_balances_async())
+    for r in rows:
+        table.add_row(
+            r["apikey"][:12] + "…",
+            r["apiurl"][:40],
+            str(r["gateway"]),
+            str(r["balance"]),
+            str(r["tier"]),
+        )
+    return table

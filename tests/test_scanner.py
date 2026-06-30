@@ -28,6 +28,8 @@ async def test_run_scan_no_hits_returns_empty(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_scan_extracts_and_validates(monkeypatch):
     monkeypatch.setattr("aipocket.scanner.build_queries", lambda: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}])
+    monkeypatch.setattr("aipocket.config.settings.gpt_key", "")
+    monkeypatch.setattr("aipocket.config.settings.gpt_base_url", "")
 
     hits = [{"host": "https://a.com", "ip": "1.1.1.1", "port": "443", "header": "Bearer sk-proj-abc123def456ghi789", "banner": "", "title": "", "product": "", "cert": ""}]
     mock_fofa = MagicMock()

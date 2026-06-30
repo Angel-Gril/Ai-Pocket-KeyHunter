@@ -129,3 +129,28 @@ def test_google_key_pattern():
     hits = [{"host": "https://g.com", "ip": "", "port": "", "header": f"key: {google_key}", "banner": "", "title": "", "product": "", "cert": ""}]
     creds = extract_credentials(hits)
     assert any(c.apikey == google_key for c in creds)
+
+
+def test_rejects_http_header_name_as_apikey():
+    """Regression: 'Access-Control-Allow-Methods' was matched by generic regex."""
+    header_blob = (
+        "HTTP/1.1 200 OK\r\n"
+        "Access-Control-Allow-Credentials: true\r\n"
+        "Access-Control-Allow-Headers: Origin, X-Requested-With, Content-Type, Accept, Authorization\r\n"
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        "Content-Type: text/html; charset=UTF-8\r\n"
+    )
+    hits = [{"host": "https://x.com", "ip": "1.2.3.4", "port": "443",
+             "header": header_blob, "banner": "", "title": "", "product": "", "cert": ""}]
+    creds = extract_credentials(hits)
+    for c in creds:
+        assert c.apikey != "Access-Control-Allow-Methods"
+        assert c.apikey != "GET"
+        assert c.apikey != "POST"
+
+
+def test_rejects_mime_type_as_apikey():
+    hits = [{"host": "https://x.com", "ip": "", "port": "",
+             "header": 'Authorization: Bearer application/json', "banner": "", "title": "", "product": "", "cert": ""}]
+    creds = extract_credentials(hits)
+    assert not any(c.apikey == "application/json" for c in creds)

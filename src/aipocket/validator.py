@@ -37,7 +37,7 @@ async def validate_all(credentials: list[Credential]) -> list[ValidationResult]:
     timeout = httpx.Timeout(settings.validate_timeout)
     limits = httpx.Limits(max_connections=settings.validate_concurrency * 2)
 
-    async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True) as client:
         tasks = [_probe_one(client, sem, c) for c in credentials]
         return await asyncio.gather(*tasks)
 
@@ -96,17 +96,24 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             continue
 
         if r.status_code == 200:
+            body = _parse_json_body(r)
+            if body is None or not _looks_like_chat_completion(body):
+                result.error = f"status 200 but not chat completion (body: {r.text[:120]})"
+                return result
             result.valid = True
             result.tier = _infer_tier(result.rate_limit_headers, r.headers)
             result.model_available = model
-            try:
-                body = r.json()
-                result.response_snippet = _snippet(body)
-            except ValueError:
-                result.response_snippet = r.text[:200]
+            result.response_snippet = _snippet(body)
             return result
 
         if r.status_code == 429:
+            body = _parse_json_body(r)
+            if body is None:
+                result.error = f"status 429 non-json (body: {r.text[:120]})"
+                return result
+            if not _looks_like_api_error(body):
+                result.error = f"status 429 but body not api error (body: {r.text[:120]})"
+                return result
             result.valid = True
             result.tier = _infer_tier(result.rate_limit_headers, r.headers)
             result.model_available = model
@@ -184,3 +191,30 @@ def _snippet(body: dict) -> str:
         return str(body)[:200]
     except Exception:
         return str(body)[:200]
+
+
+def _parse_json_body(r: httpx.Response) -> dict | None:
+    try:
+        body = r.json()
+    except (ValueError, httpx.DecodingError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _looks_like_chat_completion(body: dict) -> bool:
+    if "choices" in body and isinstance(body["choices"], list):
+        return True
+    obj = str(body.get("object", "")).lower()
+    if "chat.completion" in obj:
+        return True
+    if "error" in body and "choices" not in body:
+        return False
+    return False
+
+
+def _looks_like_api_error(body: dict) -> bool:
+    if "error" in body:
+        return True
+    msg = str(body.get("message", "")).lower()
+    detail = str(body.get("detail", "")).lower()
+    return bool(any(kw in msg or kw in detail for kw in ("rate", "limit", "quota", "exceeded", "unauthorized")))

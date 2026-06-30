@@ -19,12 +19,24 @@ class Settings(BaseSettings):
     fofa_page_size: int = 100
     fofa_max_pages: int = 10
     fofa_timeout: float = 30.0
+    fofa_query_concurrency: int = 3
+    fofa_page_delay: float = 0.3
+
+    scan_fast: bool = False
 
     validate_concurrency: int = 20
     validate_timeout: float = 15.0
 
     scheduler_enabled: bool = False
     scheduler_interval: int = 3600
+
+    tavily_base_url: str = ""
+    tavily_key: str = ""
+
+    gpt_base_url: str = ""
+    gpt_key: str = ""
+    gpt_model: str = "gpt-4o-mini"
+    gpt_fast: bool = False
 
     results_dir: str = "results"
 

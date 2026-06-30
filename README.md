@@ -2,7 +2,7 @@
 
 > 基于 FOFA 的 AI 基础设施暴露面扫描器：从公网暴露的 AI 网关 / 代理中提取并验证泄露的 `apikey` + `apiurl` 组合。
 
-aipocket 以一份 AI 相关 CVE 清单为线索，自动生成 FOFA 查询语句，抓取命中主机的 `header` / `banner` / `cert` / `title` 等字段，用正则提取疑似密钥与接口地址，再对其发起探测请求以判定密钥是否有效、属于哪个额度等级（tier），最后把结果落盘为 JSON。
+aipocket 以一份 AI 相关 CVE 清单为线索，自动生成 FOFA 查询语句，抓取命中主机的 `header` / `banner` / `cert` / `title` 等字段，用正则 + GPT 双重提取疑似密钥与接口地址，再对其发起探测请求以判定密钥是否有效、属于哪个额度等级（tier）、网关余额多少，最后把结果落盘为 JSON。
 
 ---
 
@@ -21,22 +21,31 @@ aipocket 以一份 AI 相关 CVE 清单为线索，自动生成 FOFA 查询语�
 ## 工作原理
 
 ```
-CVE 清单 (sources/cve_2026_ai.json)
-        │  queries.build_queries()      按漏洞类型/CVSS 排序，套用产品指纹模板
-        ▼
-   FOFA 查询语句
-        │  fofa_client.FofaClient       多 key 轮询、分页、自动剔除失效 key
-        ▼
-   命中主机原始字段
-        │  extractor.extract_credentials  正则提取 apikey / 推断 apiurl，去重
-        ▼
-   候选凭证 (Credential)
-        │  validator.validate_all       并发探测 /v1/chat/completions，判定有效性 + tier
-        ▼
-   验证结果 (ValidationResult)
-        │  writer.write_result          写入 scan_*.json / valid_*.json / latest_*
-        ▼
-      results/ 目录
+步骤                          命令
+─────────────────────────────────────────────────────────
+1. 同步 CVE 清单              aipocket cve-sync
+   Tavily 搜 AI 漏洞 → 补充 sources/cve_2026_ai.json
+   ↓
+2. 生成 FOFA 查询             aipocket scan --fast
+   queries.build_queries()  CVE → 产品指纹 → 查询语句
+   ↓
+3. FOFA 搜索命中主机
+   fofa_client.FofaClient   多 key 轮询、分页、自动剔除失效 key
+   ↓
+4. 双重提取凭证
+   extractor (正则 + 误报黑名单)  →  analyzer (GPT 批量补充)
+   ↓
+5. 探测验证
+   validator                校验返回体是真实 chat completion JSON
+   ↓
+6. GPT 二次校验
+   analyzer.recheck          排除 SPA/WAF/欢迎页误报
+   ↓
+7. 余额查询
+   balance                   LiteLLM / One-API / New-API / OpenAI billing
+   ↓
+8. 写盘
+   writer.write_result       results/scan_*.json + valid_*.json
 ```
 
 `scheduler.Scheduler` 在以上流程之上提供周期性执行能力。
@@ -53,20 +62,13 @@ CVE 清单 (sources/cve_2026_ai.json)
 ## 安装
 
 ```bash
-# 使用 uv（推荐）
 uv sync                      # 安装运行依赖
 uv sync --extra dev          # 连同开发依赖（ruff / pytest 等）一起安装
-
-# 或使用 pip
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
 ```
 
 ---
 
 ## 配置
-
-复制示例配置并填入你自己的 FOFA key：
 
 ```bash
 cp .env.example .env
@@ -84,95 +86,88 @@ cp .env.example .env
 | `VALIDATE_CONCURRENCY` | `20` | 密钥验证并发数 |
 | `VALIDATE_TIMEOUT` | `15` | 单次验证探测超时（秒） |
 | `SCHEDULER_ENABLED` | `false` | 是否启用周期调度 |
-| `SCHEDULER_INTERVAL` | `3600` | 调度间隔（秒），3600 = 1 小时 |
+| `SCHEDULER_INTERVAL` | `3600` | 调度间隔（秒） |
+| `TAVILY_BASE_URL` | （空） | Tavily 代理地址（CVE 同步用） |
+| `TAVILY_KEY` | （空） | Tavily 代理 key |
+| `GPT_BASE_URL` | （空） | GPT 三方 API 地址（留空则跳过 GPT 增强） |
+| `GPT_KEY` | （空） | GPT 三方 API key |
+| `GPT_MODEL` | `gpt-4o-mini` | GPT 模型名 |
+| `GPT_FAST` | `false` | 快速模式：10 并发 + 30 hits/批 + `reasoning_effort=medium` |
 | `RESULTS_DIR` | `results` | JSON 结果输出目录 |
 
-> ⚠️ `.env` 含真实密钥，已被 `.gitignore` 忽略，请勿提交。仓库内的 `.env.example` 只应包含占位符。
+> ⚠️ `.env` 含真实密钥，已被 `.gitignore` 忽略，请勿提交。
 
 ---
 
 ## 使用
 
-推荐用 `uv run` 执行：
-
 ```bash
-# 单次扫描，并把结果写入 results/ 目录
-uv run aipocket scan
+# 1. 同步 CVE 清单（Tavily 实时搜索 AI 相关漏洞，补充到 sources/cve_2026_ai.json）
+uv run aipocket cve-sync
 
-# 只跑前 5 条查询（调试用），并打开详细日志
-uv run aipocket scan -n 5 -v
+# 2. 扫描（FOFA 搜索 → 提取密钥 → 探测验证 → GPT 二次校验 → 余额查询 → 写 JSON）
+uv run aipocket scan --fast
 
-# Dry-run：仅列出将要执行的 FOFA 查询，不实际请求
-uv run aipocket queries
-
-# 查看当前生效配置（key 自动脱敏）
-uv run aipocket config
-
-# 周期执行（前台运行调度器，需 SCHEDULER_ENABLED=true）
-uv run aipocket watch
+# 3. 查看结果（有效凭证 + 网关余额）
+uv run aipocket balance
 ```
 
-> 也可以先 `source .venv/bin/activate` 激活虚拟环境，激活后即可省略 `uv run` 前缀，直接用 `aipocket <命令>`。
+其他命令：
 
-`scan` 命令选项：
+```bash
+uv run aipocket scan -n 5 -v       # 只跑前 5 条查询（调试）
+uv run aipocket queries             # Dry-run：列出将执行的 FOFA 查询
+uv run aipocket config              # 查看当前配置（key 脱敏）
+uv run aipocket watch               # 周期执行（需 SCHEDULER_ENABLED=true）
+```
 
-| 选项 | 简写 | 说明 |
-|------|------|------|
-| `--max-queries N` | `-n` | 限制执行的 FOFA 查询条数，`0` 表示全部 |
-| `--verbose` | `-v` | 输出 DEBUG 级日志 |
+---
+
+## Fast 模式
+
+GPT 增强分析默认使用 **5 并发 + 15 hits/批**。开启 `--fast` 或 `GPT_FAST=true` 后切换为 **10 并发 + 30 hits/批 + `reasoning_effort=medium`**：
+
+| | 普通模式 | Fast 模式 |
+|---|---|---|
+| GPT extract 并发 | 5 | 10 |
+| GPT extract 批大小 | 15 hits/请求 | 30 hits/请求 |
+| GPT reasoning_effort | （默认） | medium |
+| 500 hits 预估耗时 | ~60s | ~15s |
 
 ---
 
 ## 输出说明
 
-每次 `scan` / 调度运行后，`results/` 目录会生成：
+每次 `scan` / 调度运行后，`results/` 目录生成：
 
 | 文件 | 内容 |
 |------|------|
 | `scan_<时间戳>.json` | 完整结果：查询、命中、全部凭证及验证详情 |
-| `valid_<时间戳>.json` | 仅保留**验证有效**的凭证 |
-| `latest_scan.json` | 指向最近一次完整结果（符号链接，失败时退化为副本） |
-| `latest_valid.json` | 指向最近一次有效凭证结果 |
+| `valid_<时间戳>.json` | 仅保留**验证有效**的凭证（含 tier / gateway / balance） |
+| `latest_scan.json` | 最近一次完整结果（符号链接） |
+| `latest_valid.json` | 最近一次有效凭证结果 |
+
+`ValidationResult` 字段：
+
+| 字段 | 说明 |
+|------|------|
+| `valid` | 是否真正有效（通过 chat completion JSON 校验 + GPT 二次确认） |
+| `status_code` | 探测 HTTP 状态码 |
+| `tier` | 额度等级（tier5 / tier4 / tier3 / limit:N） |
+| `gateway` | 网关类型（litellm / oneapi / newapi / openai） |
+| `balance` | 余额（USD） |
+| `model_available` | 探测成功的模型名 |
+| `rate_limit_headers` | 速率限制相关响应头 |
+| `response_snippet` | 响应体片段 |
 
 时间戳为 UTC，格式 `YYYYMMDDTHHMMSSZ`。
-
----
-
-## 项目结构
-
-```
-gptSteal/
-├── pyproject.toml              # 项目与依赖定义（包名 aipocket）
-├── .env.example                # 配置示例（占位符，勿放真实 key）
-├── sources/
-│   └── cve_2026_ai.json        # AI 相关 CVE 清单，查询线索来源
-├── src/aipocket/
-│   ├── cli.py                  # Typer 命令行入口（scan/watch/queries/config）
-│   ├── config.py               # pydantic-settings 读取 .env
-│   ├── queries.py              # 由 CVE 清单生成 FOFA 查询
-│   ├── fofa_client.py          # FOFA 搜索客户端（多 key 轮询 + 分页）
-│   ├── extractor.py            # 从命中字段中正则提取 apikey / apiurl
-│   ├── validator.py            # 并发探测密钥有效性与 tier
-│   ├── writer.py               # 结果写盘（JSON + latest 链接）
-│   ├── scheduler.py            # 周期调度器
-│   └── models.py               # Credential / ValidationResult 等数据模型
-├── tests/                      # pytest 测试套件
-└── results/                    # 输出目录（已被 gitignore 忽略）
-```
 
 ---
 
 ## 开发
 
 ```bash
-# 运行测试
-uv run pytest -q
-
-# 静态检查
-uv run ruff check src/ tests/
-
-# 自动修复可修复项
-uv run ruff check --fix src/ tests/
+uv run pytest -q                    # 运行测试（respx 拦截 HTTP，不发真实请求）
+uv run ruff check src/ tests/       # 静态检查
+uv run ruff check --fix src/ tests/ # 自动修复
 ```
-
-测试使用 `respx` 拦截 HTTP，不会发起真实网络请求，可放心在本地运行。

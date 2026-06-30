@@ -56,6 +56,44 @@ PRODUCT_QUERIES: dict[str, list[str]] = {
     "GitLab AI Gateway": [
         'header="X-Gitlab-Duo" || body="ai-gateway"',
     ],
+    "FastGPT": [
+        'body="fastgpt" || header="fastgpt"',
+        'body="/api/v1" && body="fastgpt"',
+    ],
+    "New-API": [
+        'body="new-api" || body="new api"',
+        'body="/api/status" && body="new-api"',
+    ],
+    "AnythingLLM": [
+        'body="anythingllm" || header="anythingllm"',
+        'body="/api/v1/workspaces" && body="anythingllm"',
+    ],
+    "ChatGPT-Next-Web": [
+        'body="nextchat" || body="chatgpt-next-web"',
+        'body="ChatGPT Next Web" && body="api"',
+    ],
+    "vLLM": [
+        'header="vllm" || body="vllm"',
+        'body="/v1/models" && body="vllm"',
+    ],
+    "Ollama": [
+        'header="ollama" || body="ollama"',
+        'body="/api/tags" && body="ollama"',
+    ],
+    "LocalAI": [
+        'body="localai" || header="localai"',
+        'body="/v1/models" && body="localai"',
+    ],
+    "Text-Generation-WebUI": [
+        'body="text-generation-webui" || body="oobabooga"',
+    ],
+    "LobeChat": [
+        'body="lobe-chat" || body="lobechat"',
+        'body="LobeChat" && body="/api"',
+    ],
+    "Jan": [
+        'body="jan.ai" || body="Jan AI"',
+    ],
 }
 
 VULN_TYPE_PRIORITIES = {
@@ -77,6 +115,16 @@ def load_cves(path: Path | None = None) -> list[dict[str, Any]]:
         return json.load(f)
 
 
+SKIP_PRODUCTS = frozenset({
+    "claude code", "claude desktop", "langgraph", "langsmith",
+})
+
+
+def _should_skip(product: str) -> bool:
+    p = product.lower()
+    return any(s in p for s in SKIP_PRODUCTS)
+
+
 def build_queries(cves: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
     cves = cves or load_cves()
     seen: set[str] = set()
@@ -89,6 +137,9 @@ def build_queries(cves: list[dict[str, Any]] | None = None) -> list[dict[str, st
         cve_type = cve.get("type", "")
         priority = VULN_TYPE_PRIORITIES.get(cve_type, 9)
         if priority > 3:
+            continue
+
+        if _should_skip(product):
             continue
 
         base_product = _normalize_product(product)
@@ -141,4 +192,26 @@ def _normalize_product(product: str) -> str:
         return "PraisonAI"
     if "gitlab" in p:
         return "GitLab AI Gateway"
+    if "new-api" in p or "newapi" in p:
+        return "New-API"
+    if "fastgpt" in p:
+        return "FastGPT"
+    if "anythingllm" in p:
+        return "AnythingLLM"
+    if "next-web" in p or "nextchat" in p:
+        return "ChatGPT-Next-Web"
+    if "vllm" in p:
+        return "vLLM"
+    if "ollama" in p:
+        return "Ollama"
+    if "localai" in p:
+        return "LocalAI"
+    if "text-generation" in p or "oobabooga" in p:
+        return "Text-Generation-WebUI"
+    if "lobe" in p:
+        return "LobeChat"
+    if "jan.ai" in p:
+        return "Jan"
+    if "wandb" in p or "weight & bias" in p:
+        return "OpenWebUI"
     return product
