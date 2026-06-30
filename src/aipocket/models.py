@@ -13,6 +13,8 @@ class Credential(BaseModel):
     apiurl: str = ""
     source: str = ""
     source_type: SourceType = "fingerprint"
+    # Which discovery backend found this credential: "fofa", "shodan", or "fofa,shodan"
+    backend: str = ""
     host: str = ""
     ip: str = ""
     port: str = ""
@@ -37,7 +39,11 @@ class ValidationResult(BaseModel):
 class ScanRunResult(BaseModel):
     started_at: str
     finished_at: str
+    # Which discovery backends contributed to this run, e.g. ["fofa", "shodan"]
+    sources: list[str] = Field(default_factory=list)
     total_hosts: int
+    # Per-source hit counts, e.g. {"fofa": 320, "shodan": 540}
+    hits_by_source: dict[str, int] = Field(default_factory=dict)
     total_credentials: int
     total_valid: int
     queries_used: list[str]

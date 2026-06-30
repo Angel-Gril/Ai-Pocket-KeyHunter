@@ -2,7 +2,7 @@
 
 > 基于 FOFA 的 AI 基础设施暴露面扫描器：从公网暴露的 AI 网关 / 代理中提取并验证泄露的 `apikey` + `apiurl` 组合。
 
-aipocket 以一份 AI 相关 CVE 清单为线索，自动生成 FOFA 查询语句，抓取命中主机的 `header` / `banner` / `cert` / `title` 等字段，用正则 + GPT 双重提取疑似密钥与接口地址，再对其发起探测请求以判定密钥是否有效、属于哪个额度等级（tier）、网关余额多少，最后把结果落盘为 JSON。
+aipocket 以一份 AI 相关 CVE 清单为线索，自动生成 **FOFA** 与 **Shodan** 两套查询语句，拨取命中主机的 `header` / `banner` / `cert` / `title` 等字段，用正则 + GPT 双重提取疑似密钥与接口地址，再对其发起探测请求以判定密钥是否有效、属于哪个额度等级（tier）、网关余额多少，最后把结果落盘为 JSON。
 
 ---
 
@@ -26,11 +26,14 @@ aipocket 以一份 AI 相关 CVE 清单为线索，自动生成 FOFA 查询语�
 1. 同步 CVE 清单              aipocket cve-sync
    Tavily 搜 AI 漏洞 → 补充 sources/cve_2026_ai.json
    ↓
-2. 生成 FOFA 查询             aipocket scan --fast
-   queries.build_queries()  CVE → 产品指纹 → 查询语句
+2. 生成查询语句           aipocket scan --fast
+   queries.build_queries() / shodan_queries.build_shodan_queries()
+   同一份 CVE → FOFA 语句 + Shodan 语句（两套语法）
    ↓
-3. FOFA 搜索命中主机
-   fofa_client.FofaClient   多 key 轮询、分页、自动剔除失效 key
+3. 双源拨取命中主机
+   fofa_client.FofaClient     FOFA：多 key 轮询、分页、自动剔除失效 key
+   shodan_client.ShodanClient Shodan：多 key 轮询、分页、`data`(banner)+`http.html`(body)
+   两个来源的 hits 合并，每条打上 `_source` 标记
    ↓
 4. 双重提取凭证
    extractor (正则 + 误报黑名单)  →  analyzer (GPT 批量补充)
@@ -46,7 +49,11 @@ aipocket 以一份 AI 相关 CVE 清单为线索，自动生成 FOFA 查询语�
    ↓
 8. 写盘
    writer.write_result       results/scan_*.json + valid_*.json
+   结果里会记录来源：`sources` / `hits_by_source` / 每条凭证的 `backend`
 ```
+
+> 一文 `scan` 会同时走 FOFA 与 Shodan 两个独立后端（各自独立的客户端与查询语法），
+> 结果合并后走同一条提取→验证→余额流水线。某个来源未配置 key 时会自动跳过。
 
 `scheduler.Scheduler` 在以上流程之上提供周期性执行能力。
 
@@ -105,7 +112,7 @@ cp .env.example .env
 # 1. 同步 CVE 清单（Tavily 实时搜索 AI 相关漏洞，补充到 sources/cve_2026_ai.json）
 uv run aipocket cve-sync
 
-# 2. 扫描（FOFA 搜索 → 提取密钥 → 探测验证 → GPT 二次校验 → 余额查询 → 写 JSON）
+# 2. 扫描（FOFA + Shodan 双源拨取 → 提取密钥 → 探测验证 → GPT 二次校验 → 余额查询 → 写 JSON）
 uv run aipocket scan --fast
 
 # 3. 查看结果（有效凭证 + 网关余额）
@@ -116,8 +123,9 @@ uv run aipocket balance
 
 ```bash
 uv run aipocket scan -n 5 -v       # 只跑前 5 条查询（调试）
-uv run aipocket queries             # Dry-run：列出将执行的 FOFA 查询
+uv run aipocket queries             # Dry-run：列出将执行的 FOFA + Shodan 查询
 uv run aipocket config              # 查看当前配置（key 脱敏）
+uv run aipocket shodan-info         # 查看 Shodan 套餐与剩余查询积分
 uv run aipocket watch               # 周期执行（需 SCHEDULER_ENABLED=true）
 ```
 
@@ -151,6 +159,7 @@ GPT 增强分析默认使用 **5 并发 + 15 hits/批**。开启 `--fast` 或 `G
 
 | 字段 | 说明 |
 |------|------|
+| `credential.backend` | **发现来源**：`fofa` / `shodan` / `fofa,shodan`（同一密钥被两个来源都发现时合并） |
 | `valid` | 是否真正有效（通过 chat completion JSON 校验 + GPT 二次确认） |
 | `status_code` | 探测 HTTP 状态码 |
 | `tier` | 额度等级（tier5 / tier4 / tier3 / limit:N） |
@@ -161,6 +170,8 @@ GPT 增强分析默认使用 **5 并发 + 15 hits/批**。开启 `--fast` 或 `G
 | `response_snippet` | 响应体片段 |
 
 时间戳为 UTC，格式 `YYYYMMDDTHHMMSSZ`。
+
+结果文件还包含两个来源字段：`sources`（本次运行启用的来源列表，如 `["fofa","shodan"]`）与 `hits_by_source`（各来源命中数）。
 
 ---
 

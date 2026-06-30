@@ -17,6 +17,7 @@ def test_extract_openai_key_from_header():
         "title": "",
         "product": "LiteLLM",
         "cert": "",
+        "_source": "fofa",
     }]
     creds = extract_credentials(hits)
     assert len(creds) == 1
@@ -24,6 +25,7 @@ def test_extract_openai_key_from_header():
     assert creds[0].source == "openai"
     assert creds[0].source_type == "header"
     assert creds[0].host == "https://ai.example.com"
+    assert creds[0].backend == "fofa"
 
 
 def test_extract_anthropic_key_from_banner():
@@ -96,6 +98,18 @@ def test_extract_different_hosts_keeps_both():
 def test_extract_no_credentials_empty_hits():
     assert extract_credentials([]) == []
     assert extract_credentials([{"host": "", "ip": "", "port": "", "header": "", "banner": "", "title": "", "product": "", "cert": ""}]) == []
+
+
+def test_extract_merges_backend_when_same_key_from_two_sources():
+    """A key found by both FOFA and Shodan keeps both backends on one credential."""
+    base = {"ip": "1.1.1.1", "port": "443", "banner": "", "title": "", "product": "", "cert": ""}
+    hits = [
+        {**base, "host": "https://a.com", "header": f"Bearer {OPENAI_KEY}", "_source": "fofa"},
+        {**base, "host": "https://a.com", "header": f"Bearer {OPENAI_KEY}", "_source": "shodan"},
+    ]
+    creds = extract_credentials(hits)
+    assert len(creds) == 1
+    assert "fofa" in creds[0].backend and "shodan" in creds[0].backend
 
 
 def test_scan_blob_finds_url_in_link():

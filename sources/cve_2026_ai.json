@@ -113,6 +113,16 @@
     "date": "2026-05-22"
   },
   {
+    "id": "CVE-2026-26980",
+    "cvss": 0.0,
+    "product": "litellm",
+    "type": "RCE",
+    "description": "On May 21, 2026, cybersecurity firm XLab published a [technical analysis](https://blog.xlab.qianxin.com/ghost-cms-mass-compromised-via-cve-2026-26980-now-fueling-clickfix-attacks/ \"technical analysis\") detailing large-scale ClickFix poisoning campaigns targeting vulnerable Ghost Content Management S",
+    "huntable": "高",
+    "date": "2026-06-30",
+    "source_url": "https://www.recordedfuture.com/blog/may-2026-cve-landscape"
+  },
+  {
     "id": "CVE-2026-27794",
     "cvss": 1.0,
     "product": "langchain",
@@ -177,6 +187,16 @@
     "description": "LibreChat MCP server integration resolves ${VAR} placeholders against process.env during URL validation. Authenticated user can craft MCP config with env var references, leaking CREDS_KEY, CREDS_IV, JWT_SECRET, and MONGO_URI to attacker-controlled endpoint.",
     "huntable": "高",
     "date": "2026-06-04"
+  },
+  {
+    "id": "CVE-2026-32879",
+    "cvss": 0.0,
+    "product": "new-api",
+    "type": "信息泄露",
+    "description": "Change History 4 change records found show changes  **CVE Modified by CISA-ADP 6/17/2026 6:36:29 AM**  | Action | Type | Old Value | New Value | | --- | --- | --- | --- | | Added | SSVC |  | ``` {\"timestamp\":\"2026-03-24T14:43:16.316975Z\",\"id\":\"CVE-2026-32879\",\"options\":[{\"exploitation\":\"none\"},{\"aut",
+    "huntable": "中",
+    "date": "2026-06-30",
+    "source_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-32879"
   },
   {
     "id": "CVE-2026-33017",
@@ -372,6 +392,16 @@
     "date": "2026-05-12"
   },
   {
+    "id": "CVE-2026-42048",
+    "cvss": 0.0,
+    "product": "langflow",
+    "type": "信息泄露",
+    "description": "Opens in a new window Opens an external website Opens an external website in a new window. This website utilizes technologies such as cookies to enable essential site functionality, as well as for analytics, personalization, and targeted advertising. Survey opens in a new tab or window depending on",
+    "huntable": "中",
+    "date": "2026-06-30",
+    "source_url": "https://www.cve.org/CVERecord?id=CVE-2026-42048"
+  },
+  {
     "id": "CVE-2026-42203",
     "cvss": 8.8,
     "product": "LiteLLM (AI Gateway)",
@@ -534,6 +564,16 @@
     "description": "JsonPlusSerializer in LangGraph SQLite Checkpoint ≤4.1.0 can reconstruct Python objects from modified checkpoint bytes at rest, enabling code execution at checkpoint load time.",
     "huntable": "中",
     "date": "2026-06-16"
+  },
+  {
+    "id": "CVE-2026-48907",
+    "cvss": 0.0,
+    "product": "litellm",
+    "type": "RCE",
+    "description": "Gaslight macOS Malware Is a Warning Shot at the AI Security Stack. PostCSS npm Typosquat: How to Check If Your Machine Is Compromised. CVE-2026-48907: How the Joomla JCE Exploit Works and What to Do About It. SpyCloud Report Finds Phishing Attacks Surge as Employee Data Is Exposed at 86% of Fortune.",
+    "huntable": "高",
+    "date": "2026-06-30",
+    "source_url": "https://latesthackingnews.com/2026/06/16/litellm-vulnerability-chain-ai-gateway-patch"
   },
   {
     "id": "CVE-2026-49468",

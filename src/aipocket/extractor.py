@@ -62,13 +62,15 @@ DETECTION_ENDPOINT_HINTS = {
 
 def extract_credentials(hits: list[dict[str, Any]]) -> list[Credential]:
     creds: list[Credential] = []
-    seen_keys: set[tuple[str, str]] = set()
+    # dedup_key -> Credential, so we can merge backend/source info across backends
+    by_key: dict[tuple[str, str], Credential] = {}
 
     for hit in hits:
         host = hit.get("host", "") or hit.get("link", "")
         ip = hit.get("ip", "")
         port = hit.get("port", "")
         product = hit.get("product", "")
+        backend = hit.get("_source", "")
 
         combined = _scan_blob(hit)
 
@@ -79,15 +81,21 @@ def extract_credentials(hits: list[dict[str, Any]]) -> list[Credential]:
 
         for cred in local_creds:
             dedup_key = (cred.apikey, base_url or cred.host)
-            if dedup_key in seen_keys:
+            existing = by_key.get(dedup_key)
+            if existing is not None:
+                # Same key+url already found — just record where else it showed up.
+                if backend and backend not in existing.backend:
+                    existing.backend = (
+                        f"{existing.backend},{backend}" if existing.backend else backend
+                    )
                 continue
-            seen_keys.add(dedup_key)
-
+            cred.backend = backend
             cred.apiurl = cred.apiurl or base_url
             cred.host = host
             cred.ip = ip
             cred.port = port
             cred.product = product
+            by_key[dedup_key] = cred
             creds.append(cred)
 
     return creds

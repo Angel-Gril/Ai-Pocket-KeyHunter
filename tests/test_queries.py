@@ -16,7 +16,8 @@ def test_build_queries_from_sample(sample_cves):
         assert "query" in q
         assert "cve_id" in q
         assert "product" in q
-        assert q["query"].startswith("body=") or q["query"].startswith("header=") or q["query"].startswith("icon_hash=")
+        # FOFA queries are field-prefix filters (body=/header=/banner=/icon_hash=)
+        assert any(q["query"].startswith(p) for p in ("body=", "header=", "banner=", "icon_hash="))
 
 
 def test_build_queries_dedupes(sample_cves):

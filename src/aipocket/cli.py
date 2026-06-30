@@ -9,7 +9,7 @@ from rich.table import Table
 
 from .config import settings
 
-app = typer.Typer(help="aipocket — scan & validate leaked AI apikey/apiurl pairs via FOFA")
+app = typer.Typer(help="aipocket — scan & validate leaked AI apikey/apiurl pairs via FOFA + Shodan")
 console = Console()
 log = logging.getLogger("aipocket")
 
@@ -25,11 +25,11 @@ def _setup_logging(verbose: bool):
 
 @app.command()
 def scan(
-    max_queries: int = typer.Option(0, "--max-queries", "-n", help="Limit number of FOFA queries (0=all)"),
+    max_queries: int = typer.Option(0, "--max-queries", "-n", help="Limit number of queries per source (0=all)"),
     fast: bool = typer.Option(False, "--fast", help="Fast GPT mode: higher concurrency + bigger batches"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
-    """Run a single scan and write JSON results to the results dir."""
+    """Run a single scan across all configured sources (FOFA + Shodan) and write JSON results."""
     _setup_logging(verbose)
     if fast:
         settings.gpt_fast = True
@@ -60,12 +60,20 @@ def watch(verbose: bool = typer.Option(False, "--verbose", "-v")):
 def queries(
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
-    """List the FOFA queries that would be run (dry-run)."""
+    """List the FOFA and Shodan queries that would be run (dry-run)."""
     _setup_logging(verbose)
     from .queries import build_queries
+    from .shodan_queries import build_shodan_queries
 
-    qs = build_queries()
-    table = Table(title=f"FOFA queries derived from CVE map ({len(qs)})")
+    fofa_qs = build_queries()
+    _print_query_table(fofa_qs, "FOFA queries derived from CVE map")
+
+    shodan_qs = build_shodan_queries()
+    _print_query_table(shodan_qs, "Shodan queries derived from CVE map")
+
+
+def _print_query_table(qs: list[dict[str, str]], title: str):
+    table = Table(title=f"{title} ({len(qs)})")
     table.add_column("#", style="dim")
     table.add_column("CVE")
     table.add_column("Product")
@@ -81,14 +89,47 @@ def config():
     """Show current configuration (keys are masked)."""
     keys = settings.keys
     masked = ", ".join(f"{k[:6]}…{k[-4:]}" for k in keys) or "(none)"
+    console.print("[bold]== FOFA ==[/bold]")
     console.print(f"[bold]FOFA base URL:[/bold] {settings.fofa_base_url}")
     console.print(f"[bold]FOFA keys:[/bold] {masked} ({len(keys)} keys)")
     console.print(f"[bold]Page size / max pages:[/bold] {settings.fofa_page_size} / {settings.fofa_max_pages}")
+
+    skeys = settings.shodan_key_list
+    smasked = ", ".join(f"{k[:6]}…{k[-4:]}" for k in skeys) or "(none)"
+    console.print("[bold]== Shodan ==[/bold]")
+    console.print(f"[bold]Shodan base URL:[/bold] {settings.shodan_base_url}")
+    console.print(f"[bold]Shodan keys:[/bold] {smasked} ({len(skeys)} keys)")
+    console.print(f"[bold]Shodan max pages / page delay:[/bold] {settings.shodan_max_pages} / {settings.shodan_page_delay}s")
+
+    console.print("[bold]== Common ==[/bold]")
     console.print(f"[bold]Validation concurrency:[/bold] {settings.validate_concurrency}")
     console.print(f"[bold]Scheduler:[/bold] enabled={settings.scheduler_enabled} interval={settings.scheduler_interval}s")
     console.print(f"[bold]Tavily:[/bold] {settings.tavily_base_url or '(disabled)'}")
     console.print(f"[bold]GPT analyzer:[/bold] {settings.gpt_base_url or '(disabled)'} model={settings.gpt_model}")
     console.print(f"[bold]Results dir:[/bold] {settings.results_path.resolve()}")
+
+
+@app.command(name="shodan-info")
+def shodan_info():
+    """Check the Shodan API key status (plan & remaining query credits)."""
+    _setup_logging(False)
+    from .shodan_client import ShodanClient
+
+    if not settings.shodan_key_list:
+        console.print("[red]SHODAN_KEYS not configured. Set it in .env[/red]")
+        raise typer.Exit(1)
+    with ShodanClient() as c:
+        info = c.info()
+    if not info:
+        console.print("[red]Failed to reach Shodan API or all keys invalid.[/red]")
+        raise typer.Exit(1)
+    table = Table(title="Shodan API key info")
+    table.add_column("field")
+    table.add_column("value")
+    for k in ("plan", "query_credits", "unlocked_left", "scan_credits", "monitored_ips", "https", "unlocked", "telnet"):
+        if k in info:
+            table.add_row(k, str(info[k]))
+    console.print(table)
 
 
 @app.command()
@@ -119,7 +160,11 @@ def balance(
 
 
 def _print_summary(result):
+    sources = ", ".join(result.sources) if result.sources else "?"
+    by_src = " ".join(f"{k}={v}" for k, v in result.hits_by_source.items())
+    console.print(f"[bold]Sources:[/bold] {sources}   [bold]Hits:[/bold] {by_src}")
     table = Table(title=f"Scan summary — {result.total_valid} valid / {result.total_credentials} creds")
+    table.add_column("source")
     table.add_column("apikey")
     table.add_column("apiurl")
     table.add_column("tier")
@@ -130,6 +175,7 @@ def _print_summary(result):
             continue
         c = r.credential
         table.add_row(
+            c.backend or "-",
             f"{c.apikey[:12]}…",
             c.apiurl[:50],
             r.tier or "-",
