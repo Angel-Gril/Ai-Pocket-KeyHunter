@@ -93,24 +93,26 @@ cp .env.example .env
 
 ## 使用
 
-安装后可用 `aipocket` 命令；未安装时也可用 `python -m aipocket.cli`。
+推荐用 `uv run` 执行：
 
 ```bash
 # 单次扫描，并把结果写入 results/ 目录
-aipocket scan
+uv run aipocket scan
 
 # 只跑前 5 条查询（调试用），并打开详细日志
-aipocket scan -n 5 -v
+uv run aipocket scan -n 5 -v
 
 # Dry-run：仅列出将要执行的 FOFA 查询，不实际请求
-aipocket queries
+uv run aipocket queries
 
 # 查看当前生效配置（key 自动脱敏）
-aipocket config
+uv run aipocket config
 
 # 周期执行（前台运行调度器，需 SCHEDULER_ENABLED=true）
-aipocket watch
+uv run aipocket watch
 ```
+
+> 也可以先 `source .venv/bin/activate` 激活虚拟环境，激活后即可省略 `uv run` 前缀，直接用 `aipocket <命令>`。
 
 `scan` 命令选项：
 
@@ -164,13 +166,13 @@ gptSteal/
 
 ```bash
 # 运行测试
-pytest -q
+uv run pytest -q
 
 # 静态检查
-ruff check src/ tests/
+uv run ruff check src/ tests/
 
 # 自动修复可修复项
-ruff check --fix src/ tests/
+uv run ruff check --fix src/ tests/
 ```
 
 测试使用 `respx` 拦截 HTTP，不会发起真实网络请求，可放心在本地运行。
