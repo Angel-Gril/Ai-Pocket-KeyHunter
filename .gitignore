@@ -1,0 +1,51 @@
+# ===== Secrets (NEVER commit) =====
+.env
+.env.*
+!.env.example
+
+# FOFA keys file (if you paste keys here)
+keys.txt
+fofa_keys.txt
+
+# Results / output
+results/
+output/
+*.jsonl
+!cve_2026_ai.json
+!source/**/*.json
+!sample_*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# DB / state
+*.db
+*.sqlite
+*.sqlite3
+state/
+
+.codegraph
