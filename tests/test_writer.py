@@ -6,7 +6,7 @@ import pytest
 
 from aipocket.config import Settings
 from aipocket.models import Credential, ScanRunResult, ValidationResult
-from aipocket.writer import write_result
+from aipocket.writer import write_raw_hits, write_result
 
 
 @pytest.fixture
@@ -80,3 +80,52 @@ async def test_write_result_empty_results(tmp_path, monkeypatch):
     p = await write_result(empty)
     data = json.loads(p.read_text())
     assert data["total_valid"] == 0
+
+
+async def test_write_result_strips_unicode_line_separators(tmp_path, monkeypatch):
+    # U+2028 (LINE SEPARATOR) 会让 VSCode 的 JSON 语言服务报 unusual line terminators
+    monkeypatch.setattr("aipocket.writer.settings", Settings(results_dir=str(tmp_path)))
+    c = Credential(
+        apikey="sk-x",
+        apiurl="https://a.com",
+        source="openai",
+        raw_context="title=中文标题\u2028 Behind every AI",
+    )
+    result = ScanRunResult(
+        started_at="t0",
+        finished_at="t1",
+        total_hosts=1,
+        total_credentials=1,
+        total_valid=1,
+        queries_used=["q"],
+        results=[ValidationResult(credential=c, valid=True, status_code=200)],
+    )
+    p = await write_result(result)
+
+    raw = p.read_bytes()
+    assert "\u2028".encode("utf-8") not in raw
+    assert "\u2029".encode("utf-8") not in raw
+
+    data = json.loads(p.read_text())
+    ctx = data["results"][0]["credential"]["raw_context"]
+    assert "\u2028" not in ctx
+    assert "中文标题" in ctx
+
+
+def test_write_raw_hits_strips_unicode_line_separators(tmp_path, monkeypatch):
+    monkeypatch.setattr("aipocket.writer.settings", Settings(results_dir=str(tmp_path)))
+    hits = [
+        {
+            "title": "Behind every AI:\u2028a human expert 中文",
+            "cert": "Signature:\n  AA:BB\u2029CC",
+        }
+    ]
+    p = write_raw_hits(hits)
+
+    raw = p.read_bytes()
+    assert "\u2028".encode("utf-8") not in raw
+    assert "\u2029".encode("utf-8") not in raw
+
+    data = json.loads(p.read_text())
+    assert "中文" in data["hits"][0]["title"]
+    assert data["hits"][0]["title"].count(" ") >= 1

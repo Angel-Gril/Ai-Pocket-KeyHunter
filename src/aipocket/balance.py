@@ -36,7 +36,7 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
     for gateway, fn, url in probes:
         try:
             result = await fn(client, url, cred.apikey)
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
             continue
         if result:
             result["gateway"] = gateway
