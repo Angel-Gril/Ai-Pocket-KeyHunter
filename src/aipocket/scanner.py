@@ -40,6 +40,10 @@ async def run_scan(max_queries: int | None = None) -> ScanRunResult:
     creds = extract_credentials(all_hits)
     log.info("Extracted %d candidate credentials (regex)", len(creds))
 
+    from .writer import write_raw_hits
+
+    write_raw_hits(all_hits)
+
     from .analyzer import extract_with_gpt
 
     gpt_creds = await extract_with_gpt(all_hits[:500])

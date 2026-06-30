@@ -24,6 +24,18 @@ def load_latest() -> dict[str, Any] | None:
         return None
 
 
+def write_raw_hits(hits: list[dict[str, Any]]) -> Path:
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    out_dir = settings.results_path
+    path = out_dir / f"raw_hits_{ts}.json"
+    path.write_text(
+        json.dumps({"saved_at": ts, "total": len(hits), "hits": hits}, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    log.info("Raw hits written: %s (total=%d)", path, len(hits))
+    return path
+
+
 async def write_result(result: ScanRunResult) -> Path:
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_dir = settings.results_path

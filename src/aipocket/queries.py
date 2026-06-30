@@ -108,6 +108,36 @@ VULN_TYPE_PRIORITIES = {
     "DoS": 5,
 }
 
+# Credential leak queries — not CVE-bound, hit plaintext keys in exposed headers/banners/bodies.
+# Fields we can RETRIEVE from current FOFA plan: header, banner, cert, title (NOT body).
+# body="..." queries still work as FILTERS (FOFA matches on body) — if those hosts also
+# leak keys in header/banner, we'll catch them. Header/banner queries are highest-ROI
+# because we actually get that content back.
+CREDENTIAL_QUERIES: list[str] = [
+    # --- OpenAI official keys: sk-proj-*, sk-* ---
+    'header="authorization: bearer sk-"',
+    'header="authorization: bearer sk-proj-"',
+    'header="x-api-key: sk-"',
+    'banner="authorization: bearer sk-"',
+    'banner="authorization: bearer sk-proj-"',
+    # --- body-filtered (host has key in body; we catch if also in header/banner) ---
+    'body="OPENAI_API_KEY=sk-"',
+    'body="OPENAI_API_KEY=sk-proj-"',
+    'body="api_key=sk-proj-"',
+    'body="apiKey=sk-proj-"',
+    'body="api_key=sk-"',
+    'body="apiKey=sk-"',
+    'body="authorization=Bearer%20sk-"',
+    'body="sk-ant-"',
+    'body="ANTHROPIC_API_KEY=sk-ant-"',
+    'body=".env" && body="OPENAI_API_KEY"',
+    'body="config.yml" && body="api_key"',
+    'body="OPENAI_API_KEY" && body="sk-"',
+    'body="OPENAI_API_KEY" && body="sk-proj-"',
+    'body="\\"api_key\\":\\"sk-"',
+    'body="DANGEROUSLY_DISABLE_AUTH" && body="sk-"',
+]
+
 
 def load_cves(path: Path | None = None) -> list[dict[str, Any]]:
     p = path or CVE_PATH
@@ -129,6 +159,19 @@ def build_queries(cves: list[dict[str, Any]] | None = None) -> list[dict[str, st
     cves = cves or load_cves()
     seen: set[str] = set()
     out: list[dict[str, str]] = []
+
+    for tmpl in CREDENTIAL_QUERIES:
+        q = f'{tmpl} && status_code="200"'
+        if q in seen:
+            continue
+        seen.add(q)
+        out.append({
+            "query": q,
+            "cve_id": "DIRECT-CRED-LEAK",
+            "product": "generic",
+            "type": "API key泄露",
+            "cvss": "",
+        })
 
     sorted_cves = sorted(cves, key=lambda c: (VULN_TYPE_PRIORITIES.get(c.get("type", ""), 9), -c.get("cvss", 0)))
 

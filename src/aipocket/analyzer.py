@@ -28,12 +28,12 @@ RECHECK_SYSTEM = (
     "valid=false if it's HTML, a welcome page, a WAF block, or an unrelated service."
 )
 
-GPT_CONCURRENCY = 5
+GPT_CONCURRENCY = 3
 EXTRACT_BATCH_SIZE = 15
 
 
 def _concurrency() -> int:
-    return 10 if settings.gpt_fast else GPT_CONCURRENCY
+    return 5 if settings.gpt_fast else GPT_CONCURRENCY
 
 
 def _batch_size() -> int:
@@ -72,6 +72,11 @@ async def _chat(client: httpx.AsyncClient, system: str, user_content: str, max_t
     if settings.gpt_fast:
         body["reasoning_effort"] = "medium"
     r = await client.post(base, json=body)
+    if not r.is_success:
+        log.warning(
+            "GPT _chat non-200: status=%s url=%s body[:500]=%r",
+            r.status_code, base, r.text[:500],
+        )
     r.raise_for_status()
     data = r.json()
     return data["choices"][0]["message"]["content"]
@@ -159,8 +164,29 @@ async def _extract_batch(
     async with sem:
         try:
             resp = await _chat(client, EXTRACT_SYSTEM, payload, max_tokens=2000)
+        except httpx.TimeoutException as e:
+            log.warning(
+                "GPT extract batch %d/%d TIMEOUT (%s): url=%s payload_len=%d",
+                batch_idx, total_batches, type(e).__name__, settings.gpt_base_url, len(payload),
+            )
+            return []
+        except httpx.HTTPStatusError as e:
+            log.warning(
+                "GPT extract batch %d/%d HTTP %s: body[:300]=%r",
+                batch_idx, total_batches, e.response.status_code, e.response.text[:300],
+            )
+            return []
         except httpx.HTTPError as e:
-            log.warning("GPT extract batch %d/%d failed: %s", batch_idx, total_batches, e)
+            log.warning(
+                "GPT extract batch %d/%d failed (%s): %s",
+                batch_idx, total_batches, type(e).__name__, e,
+            )
+            return []
+        except (KeyError, ValueError) as e:
+            log.warning(
+                "GPT extract batch %d/%d malformed response (%s): %s",
+                batch_idx, total_batches, type(e).__name__, e,
+            )
             return []
     creds: list[Credential] = []
     for item in _extract_json_array(resp):
@@ -219,8 +245,17 @@ async def _recheck_one(
     async with sem:
         try:
             resp = await _chat(client, RECHECK_SYSTEM, payload, max_tokens=200)
+        except httpx.TimeoutException as e:
+            log.warning("GPT recheck TIMEOUT for %s (%s)", host, type(e).__name__)
+            return result
+        except httpx.HTTPStatusError as e:
+            log.warning("GPT recheck HTTP %s for %s: body[:300]=%r", e.response.status_code, host, e.response.text[:300])
+            return result
         except httpx.HTTPError as e:
-            log.warning("GPT recheck failed for %s: %s", host, e)
+            log.warning("GPT recheck failed for %s (%s): %s", host, type(e).__name__, e)
+            return result
+        except (KeyError, ValueError) as e:
+            log.warning("GPT recheck malformed response for %s (%s): %s", host, type(e).__name__, e)
             return result
     verdict = _extract_json_object(resp)
     if not verdict:
