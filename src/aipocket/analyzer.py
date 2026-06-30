@@ -18,7 +18,7 @@ EXTRACT_SYSTEM = (
     "You are a security credential extraction tool. Extract leaked API keys and their "
     "corresponding API URLs/base URLs from the given text. Return ONLY a JSON array, "
     'no explanation. Each element: {"host": "...", "apikey": "...", "apiurl": "...", "type": "openai|anthropic|google|deepseek|kimi|glm|qwen|siliconflow|generic"}. '
-    "The apikey may be an OpenAI key (sk-proj-.../sk-...), Anthropic key (sk-ant-...), "
+    "The apikey may be an OpenAI key (sk-proj.../sk-...), Anthropic key (sk-ant...), "
     "Google key (AIza...), DeepSeek key, Moonshot/Kimi key, GLM/Zhipu key, or a generic bearer token. "
     "Skip HTTP header field names, MIME types, and non-key strings. "
     "An apiurl must be a real http(s) URL; if no explicit URL is present in the text, "
