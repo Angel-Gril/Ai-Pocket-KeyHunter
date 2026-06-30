@@ -79,9 +79,26 @@ async def main():
     valid = [r for r in results if r.valid]
     log.info("Validation done: %d valid / %d total", len(valid), len(results))
 
+    # Save partial result before balance (in case balance crashes).
+    partial = ScanRunResult(
+        started_at=started,
+        finished_at=datetime.now(UTC).isoformat(),
+        sources=sources_used,
+        hits_by_source=hits_by_source,
+        total_hosts=len(all_hits),
+        total_credentials=len(creds),
+        total_valid=len(valid),
+        queries_used=[],
+        results=results,
+        raw_hits=[],
+    )
+    partial_path = settings.results_path / "partial_validated.json"
+    partial_path.write_text(partial.model_dump_json(indent=2), encoding="utf-8")
+    log.info("Partial result (pre-balance) saved to %s", partial_path)
+
     # --- Balance ---
     if valid:
-        from src.aipocket.balance import enrich_results
+        from aipocket.balance import enrich_results
         log.info("Querying balance for %d valid credentials...", len(valid))
         results = await enrich_results(results)
         valid = [r for r in results if r.valid]
