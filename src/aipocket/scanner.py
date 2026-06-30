@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 
 from .config import settings
@@ -11,6 +12,9 @@ from .queries import build_queries
 from .validator import validate_all
 
 log = logging.getLogger(__name__)
+
+# Quick regex to detect potential credentials in hit blobs — used for sampling priority.
+_SK_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]{20,}|AIza[0-9A-Za-z_\-]{35}|sk-ant-[A-Za-z0-9_\-]{20,}")
 
 
 async def run_scan(max_queries: int | None = None) -> ScanRunResult:
@@ -197,22 +201,40 @@ def _fetch_shodan(max_queries: int | None) -> list[dict]:
     return all_hits
 
 
-def _sample_hits_for_gpt(hits: list[dict], limit: int = 2000) -> list[dict]:
-    """Deduplicate by host and prefer hits with body/banner content for GPT extraction."""
+def _sample_hits_for_gpt(hits: list[dict], limit: int = 5000) -> list[dict]:
+    """Sample hits for GPT extraction with three-tier priority.
+
+    Tier 1: Hits whose header/banner/body/cert text contains a credential-like pattern.
+    Tier 2: Shodan hits (they carry http.html as banner — the richest text source).
+    Tier 3: Remaining FOFA hits with header/banner content.
+
+    This ensures Shodan's page-body data is never starved out by the larger FOFA set.
+    """
     seen_hosts: set[str] = set()
-    with_content: list[dict] = []
-    without_content: list[dict] = []
+    tier_key: list[dict] = []
+    tier_shodan: list[dict] = []
+    tier_rest: list[dict] = []
+
     for h in hits:
         host = h.get("host", "")
         if host in seen_hosts:
             continue
         seen_hosts.add(host)
-        if h.get("body") or h.get("banner") or h.get("header"):
-            with_content.append(h)
-        else:
-            without_content.append(h)
-    sampled = with_content + without_content
-    return sampled[:limit]
+
+        blob = (h.get("header", "") or "") + " " + (h.get("banner", "") or "")
+        if h.get("_source") == "shodan":
+            blob += " " + (h.get("cert", "") or "")
+        if _SK_PATTERN.search(blob):
+            tier_key.append(h)
+        elif h.get("_source") == "shodan" and (h.get("banner") or h.get("header")):
+            tier_shodan.append(h)
+        elif h.get("header") or h.get("banner") or h.get("body"):
+            tier_rest.append(h)
+
+    result = tier_key + tier_shodan + tier_rest
+    if len(result) > limit:
+        result = result[:limit]
+    return result
 
 
 def _trim_hits(hits: list[dict], limit: int = 500) -> list[dict]:

@@ -13,6 +13,12 @@ APIKEY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("openai_legacy", re.compile(r"\bsk-[A-Za-z0-9]{32,}\b")),
     ("anthropic", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b")),
     ("google", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("anthropic_oauth", re.compile(r"\bsk-ant-oat[A-Za-z0-9_\-]{20,}\b")),
+    ("anthropic_session", re.compile(r"\bsk-ant-sid[A-Za-z0-9_\-]{20,}\b")),
+    ("moonshot", re.compile(r"\bsk-[A-Za-z0-9]{40,}\b")),
+    ("deepseek", re.compile(r"\bsk-[a-f0-9]{32,}\b", re.I)),
+    ("siliconflow", re.compile(r"\bsk-[A-Za-z0-9]{40,}\b")),
+    ("glm_jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\b")),
     ("generic", re.compile(r"\b(?:api[_-]?key|apikey|bearer)[\"'\s:=]+([A-Za-z0-9_\-\.]{20,})\b", re.I)),
 ]
 
@@ -190,9 +196,33 @@ def _infer_base_url(hit: dict[str, Any], api_urls: set[str]) -> str:
     return host.rstrip("/")
 
 
+_FALSE_POSITIVE_SUBSTRINGS = (
+    "replace_with", "your_key", "your-key", "yourkey", "your_api",
+    "example", "fake", "honeypot", "placeholder", "dummy", "test_key",
+    "sample_key", "changeme", "xxx", "todo",
+    "localstorage", "getelementbyid", "getelementbyname",
+    "data-public", "data-private", "data-cookie", "data-domain",
+    "document.", "window.", "process.env",
+    "function(", "=>", "undefined", "null",
+)
+
+_FALSE_POSITIVE_EXACT = frozenset({
+    "sk-replace_with_your_api_key",
+    "sk-fake-key-1234567890abcdef",
+    "sk-your_api_key_here",
+})
+
+
 def _is_false_positive(val: str) -> bool:
     v = val.lower()
     if v in HTTP_HEADER_NAMES or v in MIME_TYPES:
         return True
+    if v in _FALSE_POSITIVE_EXACT:
+        return True
+    if len(v) < 15:
+        return True
+    for sub in _FALSE_POSITIVE_SUBSTRINGS:
+        if sub in v:
+            return True
     compact = v.replace("-", "").replace("_", "").replace(".", "")
     return compact in HTTP_HEADER_NAMES

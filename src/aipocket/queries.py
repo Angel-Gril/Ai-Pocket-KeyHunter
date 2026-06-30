@@ -109,33 +109,38 @@ VULN_TYPE_PRIORITIES = {
 }
 
 # Credential leak queries — not CVE-bound, hit plaintext keys in exposed headers/banners/bodies.
-# Fields we can RETRIEVE from current FOFA plan: header, banner, cert, title (NOT body).
-# body="..." queries still work as FILTERS (FOFA matches on body) — if those hosts also
-# leak keys in header/banner, we'll catch them. Header/banner queries are highest-ROI
-# because we actually get that content back.
+# FOFA proxy (fofoapi.com) does NOT return the `body` field in results, so `body=`
+# queries work as *filters* (FOFA matches the body) but we can only extract keys from
+# the `header`/`banner` fields we actually get back.
+#
+# Strategy: lead with header=/banner= queries (highest ROI — we get that content back),
+# keep a smaller set of body= queries as net to catch hosts that also leak in header/banner.
 CREDENTIAL_QUERIES: list[str] = [
-    # --- OpenAI official keys: sk-proj*, sk-* ---
+    # --- Header/banner queries: we GET this content back, so these are highest-ROI ---
     'header="authorization: bearer sk-"',
     'header="authorization: bearer sk-proj"',
     'header="x-api-key: sk-"',
+    'header="x-api-key: sk-ant-"',
+    'header="authorization: bearer sk-ant-"',
+    'header="api-key: sk-"',
+    'header="apikey: sk-"',
     'banner="authorization: bearer sk-"',
     'banner="authorization: bearer sk-proj"',
+    'banner="authorization: bearer sk-ant-"',
+    'banner="x-api-key: sk-"',
+    'banner="api_key=sk-"',
+    'banner="apikey=sk-"',
+    'banner="OPENAI_API_KEY=sk-"',
+    'banner="ANTHROPIC_API_KEY=sk-ant-"',
     # --- body-filtered (host has key in body; we catch if also in header/banner) ---
-    'body="OPENAI_API_KEY=sk-"',
-    'body="OPENAI_API_KEY=sk-proj"',
-    'body="api_key=sk-proj"',
-    'body="apiKey=sk-proj"',
-    'body="api_key=sk-"',
-    'body="apiKey=sk-"',
-    'body="authorization=Bearer%20sk-"',
-    'body="sk-ant-"',
-    'body="ANTHROPIC_API_KEY=sk-ant-"',
-    'body=".env" && body="OPENAI_API_KEY"',
-    'body="config.yml" && body="api_key"',
-    'body="OPENAI_API_KEY" && body="sk-"',
-    'body="OPENAI_API_KEY" && body="sk-proj"',
-    'body="\\"api_key\\":\\"sk-"',
-    'body="DANGEROUSLY_DISABLE_AUTH" && body="sk-"',
+    'body="OPENAI_API_KEY=sk-" && (header="sk-" || banner="sk-")',
+    'body="api_key=sk-proj" && (header="sk-" || banner="sk-")',
+    'body="apiKey=sk-proj" && (header="sk-" || banner="sk-")',
+    'body="sk-ant-" && (header="sk-ant-" || banner="sk-ant-")',
+    'body="OPENAI_API_KEY" && body="sk-" && (header="sk-" || banner="sk-")',
+    'body="authorization=Bearer%20sk-" && (header="sk-" || banner="sk-")',
+    'body=".env" && body="OPENAI_API_KEY" && (header="sk-" || banner="sk-")',
+    'body="DANGEROUSLY_DISABLE_AUTH" && body="sk-" && (header="sk-" || banner="sk-")',
 ]
 
 

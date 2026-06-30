@@ -12,8 +12,8 @@ from aipocket.validator import (
     validate_all,
 )
 
-BASE = "https://api.example.com"
-VALID_KEY = "sk-proj-validkey1234567890abcdefghijklm"
+BASE = "https://api.openai.com"
+VALID_KEY = "sk-proj-validkey1234567890abcdefghijklmno"
 CHAT_URL = f"{BASE}/v1/chat/completions"
 MODELS_URL = f"{BASE}/v1/models"
 
@@ -47,7 +47,7 @@ async def test_probe_success_200():
     assert r.valid is True
     assert r.status_code == 200
     assert r.tier == "tier5"
-    assert r.model_available == "gpt-3.5-turbo"
+    assert r.model_available == "gpt-4o-mini"
     assert "Hi there" in r.response_snippet
 
 
@@ -179,17 +179,17 @@ def test_extract_rate_headers_case_insensitive():
 
 @respx.mock
 async def test_validate_all_runs_concurrently():
-    respx.get("https://a.com/v1/models").mock(return_value=httpx.Response(404))
-    respx.get("https://b.com/v1/models").mock(return_value=httpx.Response(404))
-    respx.post("https://a.com/v1/chat/completions").mock(
+    respx.get("https://api.openai.com/v1/models").mock(return_value=httpx.Response(404))
+    respx.get("https://api.anthropic.com/v1/models").mock(return_value=httpx.Response(404))
+    respx.post("https://api.openai.com/v1/chat/completions").mock(
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
     )
-    respx.post("https://b.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
+    respx.post("https://api.anthropic.com/v1/messages").mock(
+        return_value=httpx.Response(200, json={"content": [{"text": "hi"}], "type": "message"})
     )
     creds = [
-        Credential(apikey="sk-proj-keyA1234567890abcdefghijklmno", apiurl="https://a.com"),
-        Credential(apikey="sk-proj-keyB1234567890abcdefghijklmno", apiurl="https://b.com"),
+        Credential(apikey="sk-proj-keyA1234567890abcdefghijklmno", apiurl="https://api.openai.com"),
+        Credential(apikey="sk-ant-api03-keyB1234567890abcdefghijklmnop", apiurl="https://api.anthropic.com"),
     ]
     results = await validate_all(creds)
     assert len(results) == 2
@@ -251,7 +251,7 @@ async def test_probe_follows_redirect():
     respx.get(https_url).mock(
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
     )
-    cred = Credential(apikey=VALID_KEY, apiurl="http://api.example.com")
+    cred = Credential(apikey="generickey_no_sk_prefix_1234567890", apiurl="http://api.example.com")
     async with httpx.AsyncClient(follow_redirects=True) as client:
         r = await _probe(client, cred)
     assert r.valid is True

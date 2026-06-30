@@ -52,6 +52,18 @@ FALLBACK_MODELS = ["gpt-3.5-turbo", "gpt-4o-mini", "deepseek-chat", "qwen-turbo"
 # Providers whose native API is NOT /v1/chat/completions.
 ANTHROPIC_PROVIDERS = {"anthropic"}
 
+# Key-prefix → (official_api_url, provider_name).
+# When a credential's key matches one of these prefixes but its apiurl points to an
+# unrelated leaked host (e.g. a PHP blog that exposed the key in response headers),
+# we override the apiurl with the official endpoint so the key is actually testable.
+KEY_PREFIX_ROUTING: list[tuple[str, str, str]] = [
+    ("sk-proj", "https://api.openai.com/v1", "openai"),
+    ("sk-ant-api", "https://api.anthropic.com/v1", "anthropic"),
+    ("sk-ant-oat", "https://api.anthropic.com/v1", "anthropic"),
+    ("sk-ant-sid", "https://api.anthropic.com/v1", "anthropic"),
+    ("AIza", "https://generativelanguage.googleapis.com/v1beta", "google"),
+]
+
 
 async def validate_all(credentials: list[Credential]) -> list[ValidationResult]:
     sem = asyncio.Semaphore(settings.validate_concurrency)
@@ -85,12 +97,29 @@ def _route_provider(apiurl: str) -> tuple[str, str, list[str]]:
 async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResult:
     result = ValidationResult(credential=cred, validated_at=datetime.now(UTC).isoformat())
 
-    api_url = _normalize_apiurl(cred.apiurl)
+    effective_url = cred.apiurl
+
+    for prefix, official_url, _provider_name in KEY_PREFIX_ROUTING:
+        if cred.apikey.startswith(prefix):
+            host = (urlparse(cred.apiurl).hostname or "").lower()
+            is_known_gateway = any(
+                fingerprint in host for fingerprint, _, _, _ in DOMAIN_ROUTING
+            )
+            if not is_known_gateway:
+                effective_url = official_url
+                log.debug(
+                    "Key %s… matches prefix '%s' but apiurl '%s' is not a known "
+                    "provider gateway → overriding to %s",
+                    cred.apikey[:12], prefix, cred.apiurl, official_url,
+                )
+            break
+
+    api_url = _normalize_apiurl(effective_url)
     if not api_url:
         result.error = "no apiurl"
         return result
 
-    provider, category, probe_models = _route_provider(cred.apiurl)
+    provider, category, probe_models = _route_provider(effective_url)
     result.provider_info = ProviderInfo.model_validate(
         {"provider": provider, "category": category}
     )
