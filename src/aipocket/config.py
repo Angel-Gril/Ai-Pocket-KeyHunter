@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     shodan_page_delay: float = 1.0
 
     scan_fast: bool = False
+    scan_prober: bool = True
 
     validate_concurrency: int = 20
     validate_timeout: float = 15.0
@@ -44,6 +45,9 @@ class Settings(BaseSettings):
     gpt_key: str = ""
     gpt_model: str = "gpt-4o-mini"
     gpt_fast: bool = False
+    # When True, dump each GPT batch payload to <run>/gpt_debug/ for debugging
+    # prompt/extract issues. Off by default (writes a lot of files).
+    gpt_debug: bool = False
 
     results_dir: str = "results"
 

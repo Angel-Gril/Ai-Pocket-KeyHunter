@@ -1,0 +1,94 @@
+[
+  {
+    "id": "CVE-2026-32625",
+    "cvss": 9.6,
+    "product": "LibreChat",
+    "type": "API key泄露",
+    "description": "LibreChat MCP server integration resolves ${VAR} placeholders against process.env during URL validation. Authenticated user can craft MCP config with env var references, leaking CREDS_KEY, CREDS_IV, JWT_SECRET, and MONGO_URI to attacker-controlled endpoint.",
+    "huntable": "高",
+    "date": "2026-06-04"
+  },
+  {
+    "id": "CVE-2026-46441",
+    "cvss": 9.6,
+    "product": "Flowise",
+    "type": "认证绕过",
+    "description": "Mass assignment in assistant update endpoint allows modifying workspaceId to reassign assistants across workspaces, breaking tenant isolation in multi-workspace deployments.",
+    "huntable": "高",
+    "date": "2026-06-11"
+  },
+  {
+    "id": "CVE-2026-41948",
+    "cvss": 9.4,
+    "product": "Dify",
+    "type": "认证绕过",
+    "description": "Path traversal in Plugin Daemon REST API allows authenticated users to access internal debug endpoints across tenants using unencoded dot sequences in task IDs or filename parameters.",
+    "huntable": "高",
+    "date": "2026-05-26"
+  },
+  {
+    "id": "CVE-2026-35030",
+    "cvss": 9.1,
+    "product": "LiteLLM (AI Gateway)",
+    "type": "认证绕过",
+    "description": "When JWT auth enabled, OIDC userinfo cache uses token[:20] as key. Identical JWT header prefixes from same algorithm produce cache collisions. Unauthenticated attacker crafts token matching legit user's cache prefix, inheriting identity and permissions.",
+    "huntable": "高",
+    "date": "2026-04-08"
+  },
+  {
+    "id": "CVE-2026-45401",
+    "cvss": 8.5,
+    "product": "OpenWebUI",
+    "type": "信息泄露",
+    "description": "OpenWebUI validate_url() only checks initial URL; downstream HTTP clients follow 3xx redirects to internal addresses (127.0.0.1, 169.254.169.254, RFC1918) without re-validation, leaking internal response bodies.",
+    "huntable": "高",
+    "date": "2026-05-19"
+  },
+  {
+    "id": "CVE-2026-7787",
+    "cvss": 7.5,
+    "product": "IBM Langflow OSS",
+    "type": "认证绕过",
+    "description": "IBM Langflow OSS 1.0.0-1.9.1 allows authenticated users to read/modify sensitive info by bypassing authentication using insecure direct object references (IDOR).",
+    "huntable": "高",
+    "date": "2026-06-16"
+  },
+  {
+    "id": "CVE-2026-25591",
+    "cvss": 1.0,
+    "product": "new-api",
+    "type": "信息泄露",
+    "description": "Change History 2 change records found show changes  **Initial Analysis by NIST 3/03/2026 12:22:36 PM**  | Action | Type | Old Value | New Value | | --- | --- | --- | --- | | Added | CVSS V3.1 |  | ``` AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H ``` | | Added | CPE Configuration |  | ``` OR           *cpe:2.",
+    "huntable": "中",
+    "date": "2026-06-30",
+    "source_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25591"
+  },
+  {
+    "id": "CVE-2026-34162",
+    "cvss": 0.0,
+    "product": "fastgpt",
+    "type": "API key泄露",
+    "description": "Other information and services of the government:  www.belgium.be (opens in a new tab)   Centre for Cybersecurity Belgium. As the national authority for Cybersecurity the CCB has developed several initiatives for specific publics which are presented here. The CCB’s mission include being the national",
+    "huntable": "高",
+    "date": "2026-06-30",
+    "source_url": "https://ccb.belgium.be/advisories/warning-critical-vulnerability-fastgpt-patch-immediately"
+  },
+  {
+    "id": "CVE-2026-34952",
+    "cvss": 9.1,
+    "product": "PraisonAI Gateway",
+    "type": "认证绕过",
+    "description": "PraisonAI Gateway WebSocket /ws and agent topology /info endpoints have no authentication. Any network client can connect, enumerate agents, and send arbitrary messages to agents and tools.",
+    "huntable": "高",
+    "date": "2026-04-10"
+  },
+  {
+    "id": "CVE-2026-41947",
+    "cvss": 9.1,
+    "product": "Dify",
+    "type": "认证绕过",
+    "description": "Authenticated editor users can set trace configurations for any application regardless of tenant ownership, redirecting all messages and responses from victim apps to attacker-controlled LLM trace providers.",
+    "huntable": "高",
+    "date": "2026-06-02"
+  }
+]

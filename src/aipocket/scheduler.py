@@ -4,10 +4,11 @@ import asyncio
 import contextlib
 import logging
 import signal
+from pathlib import Path
 
 from .config import settings
 from .scanner import run_scan
-from .writer import write_result
+from .writer import new_run_dir, write_result
 
 log = logging.getLogger(__name__)
 
@@ -25,8 +26,9 @@ class Scheduler:
         log.info("Scheduler started. interval=%ds", settings.scheduler_interval)
         while not self._stop.is_set():
             try:
-                result = await run_scan()
-                await write_result(result)
+                run_dir = new_run_dir()
+                result = await run_scan(run_dir=run_dir)
+                await write_result(result, run_dir=run_dir)
                 log.info(
                     "Run done: %d valid / %d creds. Sleeping %ds...",
                     result.total_valid,
@@ -48,6 +50,8 @@ class Scheduler:
 
 
 async def run_once(max_queries: int | None = None):
-    result = await run_scan(max_queries=max_queries)
-    await write_result(result)
+    """Run a single scan into its own run folder. Returns the ScanRunResult."""
+    run_dir = new_run_dir()
+    result = await run_scan(max_queries=max_queries, run_dir=run_dir)
+    await write_result(result, run_dir=run_dir)
     return result

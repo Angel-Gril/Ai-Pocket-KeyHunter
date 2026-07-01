@@ -131,6 +131,78 @@ uv run aipocket watch               # 周期执行（需 SCHEDULER_ENABLED=true�
 
 ---
 
+## 小批量真实测试（realtest）
+
+完整端到端流程（联网 FOFA/Shodan → 提取 → prober 主动探测 → 验证 → GPT 复查 → 余额），但用一份精简 CVE 清单，配合 `-n` 严格控制查询数，把额度消耗降到最小。
+
+```bash
+# 全量扫描（默认，读 sources/cve_2026_ai.json）
+uv run aipocket scan --fast
+
+# 小批量真测（加 --realtest，读 sources/cve_realtest.json，默认 -n 1）
+uv run aipocket scan --realtest -v
+```
+
+### 原理
+
+- `--realtest` 切换 CVE 清单为 `sources/cve_realtest.json`，生成约 39 条 FOFA + 26 条 Shodan 候选查询。
+- 这份清单由 **`scripts/carve_realtest.py` 动态生成**（覆盖全部 prober 产品类型优先，再按 CVSS 补满），不是手维护的。`cve-sync` 更新全量后重跑该脚本即可让真测覆盖跟进：
+
+  ```bash
+  uv run python scripts/carve_realtest.py            # 默认 10 条 → sources/cve_realtest.json
+  uv run python scripts/carve_realtest.py --limit 20  # 更大子集
+  uv run python scripts/carve_realtest.py --dry-run   # 只看选了哪些，不写
+  ```
+
+- 开启 `--realtest` 时若未指定 `-n`，**自动默认 `-n 3`** 并**跳过 DIRECT-CRED-LEAK 通用查询**，让前 3 条都是产品指纹查询（LibreChat/Flowise 等）——这样 prober 能拿到网关型 hits 真正跑起来，而不是捞一堆 banner 里带 key 的普通网站。可手动覆盖：`--realtest -n 5`。
+- 全量 `scan`（不带 `--realtest`）**不跳过** DIRECT-CRED-LEAK：因为 `-n` 无限制，通用查询和产品指纹查询都会跑，跳了反而少抓通用 key。跳过是专为"小 `-n` 切片"设计的补丁。
+- `-n N` / `--max-queries N` 控制每个源**实际发起的查询数**（`queries[:N]` 切片），是真正决定额度消耗的开关。子集文件只决定"能生成多少候选查询"。
+- 主动探测（prober）默认开启（`SCAN_PROBER=true`，见 `config.py`），命中指纹的网关会被 `probe_hosts` 读取暴露的配置/凭证端点。prober 对 TLS 证书验证失败的自建网关会自动降级 `verify=False` 重试一次（这类证书不匹配是公网漏网关的常态）。
+
+> 注：`carve_realtest.py` 努力覆盖全部 10 个 prober 类型，但全量 CVE 里目前没有 LobeChat / One-API 的条目，这两类暂不会被 `--realtest` 触发，脚本会在输出里提示。有了对应 CVE 后重跑脚本即自动补上。
+
+### 命令
+
+```bash
+# 小批量真测（默认 -n 3 + 跳过 DIRECT-CRED-LEAK，端到端跑完）
+uv run aipocket scan --realtest -v
+
+# 真测但多跑几条（每源 5 条）
+uv run aipocket scan --realtest -n 5 -v
+
+# 配合 fast 模式
+uv run aipocket scan --realtest --fast -v
+
+# 跑完后只对结果做 balance 复查，不再消耗 FOFA/Shodan 额度
+uv run python scripts/run_balance_only.py results/<run_目录>/scan_<时间戳>.json
+```
+
+### 跑之前确认
+
+1. `.env` 已配置 `FOFA_KEYS` 和/或 `SHODAN_KEYS`（未配置的源会被静默跳过）
+2. `SCAN_PROBER=true`（默认开；这是 realtest 要测的核心环节）
+3. 加 `-v` 进 DEBUG，可看到 prober 对每个 host 的 identify / probe 详情与崩溃日志
+
+### 自定义子集
+
+`--realtest` 固定指向 `sources/cve_realtest.json`。想换自己的清单，用环境变量 `AIPOCKET_CVE_PATH` 指向任意文件：
+
+```bash
+# 从全量里切一份自己的小清单（示例：只保留 RCE / API key 泄露类）
+python3 -c "
+import json
+data = json.load(open('sources/cve_2026_ai.json'))
+keep = [c for c in data if c.get('type') in ('RCE','API key泄露')]
+json.dump(keep, open('sources/cve_realtest_mine.json','w'), ensure_ascii=False, indent=2)
+print(len(keep), 'CVEs')
+"
+AIPOCKET_CVE_PATH=sources/cve_realtest_mine.json uv run aipocket scan --fast -n 2 -v
+```
+
+> 注意：`--realtest` 与 `AIPOCKET_CVE_PATH` 同时存在时，`--realtest` 优先。`build_queries` 会过滤掉 `type` 优先级 > 3 的 CVE（只保留 API key 泄露 / RCE / 认证绕过 / 信息泄露 / SQL 注入类），切子集时挑这几类才能生成查询。
+
+---
+
 ## Fast 模式
 
 GPT 增强分析默认使用 **5 并发 + 15 hits/批**。开启 `--fast` 或 `GPT_FAST=true` 后切换为 **10 并发 + 30 hits/批 + `reasoning_effort=medium`**：
@@ -146,14 +218,21 @@ GPT 增强分析默认使用 **5 并发 + 15 hits/批**。开启 `--fast` 或 `G
 
 ## 输出说明
 
-每次 `scan` / 调度运行后，`results/` 目录生成：
+每次 `scan` / 调度运行都会在 `results/` 下生成一个**按时间命名的 run 文件夹** `run_YYYY_MM_DD_HH-MM-SS/`，把这次的所有产物放在一起（不再散落在根目录）：
 
-| 文件 | 内容 |
-|------|------|
-| `scan_<时间戳>.json` | 完整结果：查询、命中、全部凭证及验证详情 |
-| `valid_<时间戳>.json` | 仅保留**验证有效**的凭证（含 tier / gateway / balance） |
-| `latest_scan.json` | 最近一次完整结果（符号链接） |
-| `latest_valid.json` | 最近一次有效凭证结果 |
+```
+results/
+└── run_2026_07_01_13-35-53/
+    ├── run.log                  # 本次扫描的完整日志（默认写，全量/realtest 都写）
+    ├── scan_<时间戳>.json       # 完整结果：查询、命中、全部凭证及验证详情
+    ├── valid_<时间戳>.json      # 仅保留**验证有效**的凭证（含 tier / gateway / balance）
+    ├── raw_hits_<时间戳>.json   # 原始 hits（FOFA/Shodan 抓回来的原始数据）
+    └── gpt_debug/               # 仅 GPT_DEBUG=true 时生成：每批 GPT payload
+        └── batch_0001.txt
+```
+
+- `latest_valid.json` / `latest_scan.json` **不再以符号链接形式存在于根目录**。要找最近一次结果，直接看最新的 `run_*/` 文件夹（程序内通过 `writer.load_latest()` 自动解析最新 run 的 `valid_*.json`，例如 `aipocket balance` 命令）。
+- **GPT 调试日志**默认关闭。需要排查 GPT 提取/二次校验问题时，在 `.env` 设 `GPT_DEBUG=true`，每次 GPT 批次的 payload 会落到 `<run>/gpt_debug/batch_NNNN.txt`。
 
 `ValidationResult` 字段：
 

@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime
+from pathlib import Path
 
 from .config import settings
 from .extractor import extract_credentials
 from .fofa_client import FofaClient
-from .models import ScanRunResult, ValidationResult
+from .models import Credential, ScanRunResult, ValidationResult
 from .queries import build_queries
 from .validator import validate_all
 
@@ -17,8 +18,13 @@ log = logging.getLogger(__name__)
 _SK_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]{20,}|AIza[0-9A-Za-z_\-]{35}|sk-ant-[A-Za-z0-9_\-]{20,}")
 
 
-async def run_scan(max_queries: int | None = None) -> ScanRunResult:
+async def run_scan(max_queries: int | None = None, run_dir: Path | None = None) -> ScanRunResult:
     started = datetime.now(UTC).isoformat()
+
+    # Stamp the run dir so GPT debug/failed-batch dumps land inside it.
+    from . import analyzer as _analyzer
+
+    _analyzer.set_run_dir(run_dir)
 
     all_hits: list[dict] = []
     queries_used: list[str] = []
@@ -71,7 +77,22 @@ async def run_scan(max_queries: int | None = None) -> ScanRunResult:
 
     from .writer import write_raw_hits
 
-    write_raw_hits(all_hits)
+    write_raw_hits(all_hits, run_dir=run_dir)
+
+    # Active probing — read exposed config/credential endpoints on fingerprinted
+    # gateways. Catches live keys that passive banner extraction misses.
+    from .prober import probe_hosts
+
+    probed_creds: list[Credential] = []
+    if settings.scan_prober:
+        log.info("Probing %d hosts for exposed credentials...", len(all_hits))
+        probed_creds = await probe_hosts(all_hits)
+        existing_keys = {(c.apikey, c.apiurl) for c in creds}
+        for pc in probed_creds:
+            if (pc.apikey, pc.apiurl) not in existing_keys:
+                creds.append(pc)
+                existing_keys.add((pc.apikey, pc.apiurl))
+        log.info("After active probing: %d candidate credentials", len(creds))
 
     from .analyzer import extract_with_gpt
 

@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
 
-CVE_PATH = Path(__file__).resolve().parents[2] / "sources" / "cve_2026_ai.json"
+# Default CVE map. Override with AIPOCKET_CVE_PATH (e.g. sources/cve_realtest.json)
+# to run a small end-to-end real scan against a trimmed CVE subset.
+_DEFAULT_CVE_PATH = Path(__file__).resolve().parents[2] / "sources" / "cve_2026_ai.json"
+CVE_PATH = Path(os.environ.get("AIPOCKET_CVE_PATH", _DEFAULT_CVE_PATH))
+
+# Module-level switch: when True, the generic DIRECT-CRED-LEAK queries are
+# skipped so the scanner starts from product-fingerprint queries — used by
+# `scan --realtest` so the prober receives gateway-shaped hits instead of
+# random sites that merely leaked a key in their banner.
+SKIP_DIRECT_QUERIES: bool = False
 
 
 PRODUCT_QUERIES: dict[str, list[str]] = {
@@ -166,6 +176,8 @@ def build_queries(cves: list[dict[str, Any]] | None = None) -> list[dict[str, st
     out: list[dict[str, str]] = []
 
     for tmpl in CREDENTIAL_QUERIES:
+        if SKIP_DIRECT_QUERIES:
+            continue
         q = tmpl
         if q in seen:
             continue

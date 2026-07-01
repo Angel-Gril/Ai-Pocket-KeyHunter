@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -9,36 +11,86 @@ from rich.table import Table
 
 from .config import settings
 
+# Path to the trimmed CVE subset used by `scan --realtest`.
+REALTEST_CVE_PATH = "sources/cve_realtest.json"
+
 app = typer.Typer(help="aipocket — scan & validate leaked AI apikey/apiurl pairs via FOFA + Shodan")
 console = Console()
 log = logging.getLogger("aipocket")
 
 
-def _setup_logging(verbose: bool):
+def _setup_logging(verbose: bool, log_file: Path | None = None):
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    root = logging.getLogger()
+    root.setLevel(level)
+    # Console handler (replace basicConfig's default so we control format).
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
+    # File handler — write every scan's log into its run folder.
+    if log_file:
+        fh = logging.FileHandler(log_file, encoding="utf-8")
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
 
 
 @app.command()
 def scan(
     max_queries: int = typer.Option(0, "--max-queries", "-n", help="Limit number of queries per source (0=all)"),
     fast: bool = typer.Option(False, "--fast", help="Fast GPT mode: higher concurrency + bigger batches"),
+    realtest: bool = typer.Option(
+        False,
+        "--realtest",
+        help="Small-batch real test: use sources/cve_realtest.json (10 CVEs) and default -n 3, "
+             "skipping generic DIRECT-CRED-LEAK queries so the prober gets product-fingerprint hits. "
+             "Full end-to-end (fetch → probe → validate) with minimal quota cost.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Run a single scan across all configured sources (FOFA + Shodan) and write JSON results."""
-    _setup_logging(verbose)
     if fast:
         settings.gpt_fast = True
+
+    if realtest:
+        # Override the CVE map before queries.py is imported (each `uv run` is a
+        # fresh process, so setting os.environ here takes effect at import time).
+        os.environ["AIPOCKET_CVE_PATH"] = REALTEST_CVE_PATH
+        import importlib
+
+        from . import queries as _queries_mod
+
+        importlib.reload(_queries_mod)
+        _queries_mod.CVE_PATH = Path(REALTEST_CVE_PATH)
+        # Skip generic DIRECT-CRED-LEAK queries so the first product-fingerprint
+        # query (LobeChat/Dify/LiteLLM/…) is what gets scanned — that yields
+        # gateway-shaped hits the prober can identify, instead of random sites
+        # that merely leaked a key in their banner.
+        _queries_mod.SKIP_DIRECT_QUERIES = True
+        log.info("Realtest mode: CVE map = %s (%d CVEs), skipping DIRECT-CRED-LEAK queries",
+                 _queries_mod.CVE_PATH, len(_queries_mod.load_cves()))
+        if not max_queries:
+            max_queries = 3  # default: 3 product-fingerprint queries per source
+            log.info("Realtest mode: defaulting to -n 3 (override with --max-queries)")
+
+    # Create the run folder first so the log file lands inside it.
+    from .writer import new_run_dir, write_result
+    from .scanner import run_scan
+
+    run_dir = new_run_dir()
+    _setup_logging(verbose, log_file=run_dir / "run.log")
+    if fast:
         log.info("Fast mode enabled")
-    from .scheduler import run_once
 
     n = max_queries or None
-    result = asyncio.run(run_once(max_queries=n))
+    result = asyncio.run(run_scan(max_queries=n, run_dir=run_dir))
+    asyncio.run(write_result(result, run_dir=run_dir))
     _print_summary(result)
+    log.info("Run folder: %s", run_dir)
 
 
 @app.command()

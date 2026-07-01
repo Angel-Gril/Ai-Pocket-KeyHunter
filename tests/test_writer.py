@@ -53,17 +53,23 @@ async def test_write_result_creates_valid_file(tmp_path, sample_result, monkeypa
     assert valid_data["credentials"][0]["credential"]["apikey"] == "sk-proj-valid123"
 
 
-async def test_write_result_updates_latest(tmp_path, sample_result, monkeypatch):
+async def test_write_result_writes_into_run_dir(tmp_path, sample_result, monkeypatch):
+    # Per-run folders: scan_*.json + valid_*.json live inside run_*/, no root-level
+    # latest_*.json anymore.
+    from aipocket.writer import new_run_dir
+
     monkeypatch.setattr("aipocket.writer.settings", Settings(results_dir=str(tmp_path)))
 
-    await write_result(sample_result)
+    run_dir = new_run_dir(tmp_path)
+    full_path = await write_result(sample_result, run_dir=run_dir)
 
-    latest_valid = tmp_path / "latest_valid.json"
-    latest_full = tmp_path / "latest_scan.json"
-    assert latest_valid.exists()
-    assert latest_full.exists()
-    latest_data = json.loads(latest_valid.read_text())
-    assert latest_data["total_valid"] == 1
+    # Files land inside the run_* folder.
+    assert full_path.parent == run_dir
+    assert run_dir.parent == tmp_path
+    assert run_dir.name.startswith("run_")
+    # No root-level latest symlinks/files anymore.
+    assert not (tmp_path / "latest_valid.json").exists()
+    assert not (tmp_path / "latest_scan.json").exists()
 
 
 async def test_write_result_empty_results(tmp_path, monkeypatch):

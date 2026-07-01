@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -13,6 +14,16 @@ from .config import settings
 from .models import Credential, ValidationResult
 
 log = logging.getLogger(__name__)
+
+# Set by scanner.run_scan() at the start of a run so GPT debug/failed-batch dumps
+# land inside the run folder. None → fall back to results/ root (scripts, tests).
+_CURRENT_RUN_DIR: Path | None = None
+
+
+def set_run_dir(run_dir: Path | None) -> None:
+    """Stamp the active run dir so _dump_* helpers write into it."""
+    global _CURRENT_RUN_DIR
+    _CURRENT_RUN_DIR = run_dir
 
 EXTRACT_SYSTEM = (
     "You are a security credential extraction tool. Extract leaked API keys and their "
@@ -73,14 +84,14 @@ async def _chat(client: httpx.AsyncClient, system: str, user_content: str, max_t
         "model": settings.gpt_model,
         "messages": [
             {"role": "system", "content": system},
-            {"role": "user", "content": user_content[:16000]},
+            {"role": "user", "content": user_content},
         ],
         "max_tokens": max_tokens,
         "temperature": 0,
         "stream": False,
     }
     if settings.gpt_fast:
-        body["reasoning_effort"] = "medium"
+        body["reasoning_effort"] = "low"
 
     last_status = 0
     last_body = ""
@@ -172,10 +183,10 @@ def _hit_to_blob(hit: dict[str, Any]) -> str:
     return (
         f"host: {hit.get('host', '')}\n"
         f"title: {title}\n"
-        f"header:\n{header[:800]}\n"
+        f"header:\n{header[:4000]}\n"
         f"banner:\n{banner_ctx}\n"
         f"body:\n{body_ctx}\n"
-        f"cert:\n{cert[:300]}"
+        f"cert:\n{cert[:2000]}"
     )
 
 
@@ -203,7 +214,7 @@ def _blob_to_credential(item: dict[str, Any], fallback_host: str) -> Credential 
 
 def _dump_failed_batch(batch: list[dict[str, Any]], batch_idx: int) -> None:
     try:
-        out_dir = settings.results_path
+        out_dir = _CURRENT_RUN_DIR or settings.results_path
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         path = out_dir / f"gpt_failed_batch_{ts}_{batch_idx}.json"
         path.write_text(
@@ -217,7 +228,7 @@ def _dump_failed_batch(batch: list[dict[str, Any]], batch_idx: int) -> None:
 
 def _dump_debug_payload(batch_idx: int, payload: str, batch: list[dict[str, Any]]) -> None:
     try:
-        debug_dir = settings.results_path / "gpt_debug"
+        debug_dir = (_CURRENT_RUN_DIR or settings.results_path) / "gpt_debug"
         debug_dir.mkdir(parents=True, exist_ok=True)
         path = debug_dir / f"batch_{batch_idx:04d}.txt"
         meta = (
@@ -248,7 +259,8 @@ async def _extract_batch(
     if not payload_parts:
         return []
     payload = "\n\n".join(payload_parts)
-    _dump_debug_payload(batch_idx, payload, batch)
+    if settings.gpt_debug:
+        _dump_debug_payload(batch_idx, payload, batch)
     async with sem:
         try:
             resp = await _chat(client, EXTRACT_SYSTEM, payload, max_tokens=8000)

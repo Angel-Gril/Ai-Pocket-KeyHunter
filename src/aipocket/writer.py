@@ -27,21 +27,46 @@ def _dump_json(obj: Any, *, indent: int = 2) -> str:
     )
 
 
+def _run_dir_name(when: datetime | None = None) -> str:
+    """Folder name for one scan run: run_YYYY_MM_DD_HH-MM-SS."""
+    ts = (when or datetime.now(UTC)).strftime("%Y_%m_%d_%H-%M-%S")
+    return f"run_{ts}"
+
+
+def new_run_dir(base: Path | None = None) -> Path:
+    """Create and return a fresh run directory under results/."""
+    root = base or settings.results_path
+    d = root / _run_dir_name()
+    d.mkdir(parents=True, exist_ok=True)
+    log.info("Run directory: %s", d)
+    return d
+
+
 def load_latest() -> dict[str, Any] | None:
-    p = settings.results_path / "latest_valid.json"
-    if not p.exists():
-        log.warning("No latest_valid.json found at %s", p)
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (ValueError, OSError) as e:
-        log.error("Failed to read latest_valid.json: %s", e)
-        return None
+    """Load the most recent run's valid result.
+
+    Per-run folders mean there's no shared ``latest_valid.json`` at the root;
+    resolve the newest ``run_*/valid_*.json`` instead.
+    """
+    root = settings.results_path
+    runs = sorted(
+        (p for p in root.glob("run_*") if p.is_dir()),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+    for run in runs:
+        for vf in sorted(run.glob("valid_*.json"), reverse=True):
+            try:
+                return json.loads(vf.read_text(encoding="utf-8"))
+            except (ValueError, OSError) as e:
+                log.warning("Failed to read %s: %s", vf, e)
+    log.warning("No run_*/valid_*.json found under %s", root)
+    return None
 
 
-def write_raw_hits(hits: list[dict[str, Any]]) -> Path:
+def write_raw_hits(hits: list[dict[str, Any]], run_dir: Path | None = None) -> Path:
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    out_dir = settings.results_path
+    out_dir = run_dir or settings.results_path
     path = out_dir / f"raw_hits_{ts}.json"
     path.write_text(
         _dump_json({"saved_at": ts, "total": len(hits), "hits": hits}),
@@ -51,9 +76,9 @@ def write_raw_hits(hits: list[dict[str, Any]]) -> Path:
     return path
 
 
-async def write_result(result: ScanRunResult) -> Path:
+async def write_result(result: ScanRunResult, run_dir: Path | None = None) -> Path:
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    out_dir = settings.results_path
+    out_dir = run_dir or settings.results_path
 
     full_path = out_dir / f"scan_{ts}.json"
     valid_path = out_dir / f"valid_{ts}.json"
@@ -70,20 +95,4 @@ async def write_result(result: ScanRunResult) -> Path:
     valid_path.write_text(_dump_json(valid_payload), encoding="utf-8")
     log.info("Valid credentials written: %s", valid_path)
 
-    _update_latest(out_dir, valid_path, full_path)
     return full_path
-
-
-def _update_latest(out_dir: Path, valid_path: Path, full_path: Path):
-    latest_valid = out_dir / "latest_valid.json"
-    latest_full = out_dir / "latest_scan.json"
-    try:
-        if latest_valid.exists():
-            latest_valid.unlink()
-        if latest_full.exists():
-            latest_full.unlink()
-        latest_valid.symlink_to(valid_path.name)
-        latest_full.symlink_to(full_path.name)
-    except OSError:
-        latest_valid.write_text(valid_path.read_text(encoding="utf-8"), encoding="utf-8")
-        latest_full.write_text(full_path.read_text(encoding="utf-8"), encoding="utf-8")

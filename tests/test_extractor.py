@@ -22,7 +22,7 @@ def test_extract_openai_key_from_header():
     creds = extract_credentials(hits)
     assert len(creds) == 1
     assert creds[0].apikey == OPENAI_KEY
-    assert creds[0].source == "openai"
+    assert creds[0].source.startswith("openai")
     assert creds[0].source_type == "header"
     assert creds[0].host == "https://ai.example.com"
     assert creds[0].backend == "fofa"
@@ -139,7 +139,7 @@ def test_infer_base_url_empty_host():
 
 
 def test_google_key_pattern():
-    google_key = "AIzaSyA" + "B" * 32
+    google_key = "AIzaSy" + "B" * 35
     hits = [{"host": "https://g.com", "ip": "", "port": "", "header": f"key: {google_key}", "banner": "", "title": "", "product": "", "cert": ""}]
     creds = extract_credentials(hits)
     assert any(c.apikey == google_key for c in creds)

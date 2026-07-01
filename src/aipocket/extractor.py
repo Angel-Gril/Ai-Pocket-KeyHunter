@@ -9,17 +9,27 @@ from .models import Credential
 log = logging.getLogger(__name__)
 
 APIKEY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("openai", re.compile(r"\bsk-proj[A-Za-z0-9_\-]{20,}\b")),
-    ("openai_legacy", re.compile(r"\bsk-[A-Za-z0-9]{32,}\b")),
+    # Order matters: first match wins (finditer + setdefault).
+    # Strategy: broad collection, let _is_false_positive narrow down.
+    # Specific known prefixes first (for labeling), then broad fallbacks.
+    ("openrouter", re.compile(r"\bsk-or-v1-[a-f0-9\-]{30,}\b", re.I)),
     ("anthropic", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b")),
-    ("google", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
-    ("anthropic_oauth", re.compile(r"\bsk-ant-oat[A-Za-z0-9_\-]{20,}\b")),
-    ("anthropic_session", re.compile(r"\bsk-ant-sid[A-Za-z0-9_\-]{20,}\b")),
-    ("moonshot", re.compile(r"\bsk-[A-Za-z0-9]{40,}\b")),
-    ("deepseek", re.compile(r"\bsk-[a-f0-9]{32,}\b", re.I)),
-    ("siliconflow", re.compile(r"\bsk-[A-Za-z0-9]{40,}\b")),
+    ("openai_proj", re.compile(r"\bsk-(?:proj|admin|svcacct)-[A-Za-z0-9_\-]{20,}\b")),
+    ("google", re.compile(r"\bAIzaSy[A-Za-z0-9_\-]{35}\b")),
+    ("groq", re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b")),
+    ("perplexity", re.compile(r"\bpplx-[A-Za-z0-9]{20,}\b")),
+    ("replicate", re.compile(r"\br8_[A-Za-z0-9]{20,}\b")),
+    ("huggingface", re.compile(r"\bhf_[A-Za-z0-9]{20,}\b")),
+    ("xai", re.compile(r"\bxai-[A-Za-z0-9]{20,}\b")),
+    ("runway", re.compile(r"\bkey_[A-Za-z0-9]{20,}\b")),
+    ("glm", re.compile(r"\b[a-f0-9]{32}\.[A-Za-z0-9]{16}\b")),
+    # sk- is itself a strong signal — accept short keys (self-hosted gateways
+    # like New-API let admins set custom tokens of any length).
+    ("sk_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}\b")),
     ("glm_jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\b")),
-    ("generic", re.compile(r"\b(?:api[_-]?key|apikey|bearer)[\"'\s:=]+([A-Za-z0-9_\-\.]{20,})\b", re.I)),
+    # Context-anchored: catches self-hosted gateway custom tokens (any format)
+    # by requiring a key-indicating keyword nearby.
+    ("generic", re.compile(r"\b(?:api[_-]?key|apikey|bearer|token|secret|authorization|access[_-]?token|sk)[\"'\s:=]+([A-Za-z0-9_\-\.]{6,})\b", re.I)),
 ]
 
 HTTP_HEADER_NAMES = frozenset({
@@ -204,6 +214,10 @@ _FALSE_POSITIVE_SUBSTRINGS = (
     "data-public", "data-private", "data-cookie", "data-domain",
     "document.", "window.", "process.env",
     "function(", "=>", "undefined", "null",
+    # jwt.io standard example token (appears in tutorials / default configs)
+    "eyjhbgcioijiuzi1niisinr5cci6ikpxvcj9",
+    # CSS/JS class names that start with sk-
+    "sk-mocha", "sk-index", "skip", "skeleton", "schema",
 )
 
 _FALSE_POSITIVE_EXACT = frozenset({
@@ -219,7 +233,7 @@ def _is_false_positive(val: str) -> bool:
         return True
     if v in _FALSE_POSITIVE_EXACT:
         return True
-    if len(v) < 15:
+    if len(v) < 6:
         return True
     for sub in _FALSE_POSITIVE_SUBSTRINGS:
         if sub in v:
