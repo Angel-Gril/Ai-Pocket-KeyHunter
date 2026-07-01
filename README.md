@@ -1,263 +1,150 @@
 # aipocket
 
-> 基于 FOFA 的 AI 基础设施暴露面扫描器：从公网暴露的 AI 网关 / 代理中提取并验证泄露的 `apikey` + `apiurl` 组合。
-
-aipocket 以一份 AI 相关 CVE 清单为线索，自动生成 **FOFA** 与 **Shodan** 两套查询语句，拨取命中主机的 `header` / `banner` / `cert` / `title` 等字段，用正则 + GPT 双重提取疑似密钥与接口地址，再对其发起探测请求以判定密钥是否有效、属于哪个额度等级（tier）、网关余额多少，最后把结果落盘为 JSON。
+> 基于 FOFA + Shodan 的 AI 基础设施暴露面扫描器：从公网暴露的 AI 网关/代理中提取并验证泄露的 `apikey` + `apiurl` 组合。
 
 ---
 
-## ⚠️ 合规与免责声明
+## ⚠️ 免责声明
 
-本项目仅用于**已获授权的安全研究、泄露凭证排查与红蓝对抗演练**。
-
-- 请勿对未经授权的系统进行扫描或探测。
-- 请勿使用、转售或滥用任何第三方泄露的 API 密钥——未经授权使用他人凭证可能触犯法律，并会消耗他人账户的真实费用。
-- 推荐用途：检测**自己组织**的密钥是否已泄露到公网，以便及时吊销。
-
-使用者需自行承担因使用本工具产生的一切后果。
+本项目仅用于**已获授权的安全研究与泄露凭证排查**。请勿对未授权系统扫描、勿滥用泄露密钥。使用者自行承担一切后果。
 
 ---
 
 ## 工作原理
 
 ```
-步骤                          命令
-─────────────────────────────────────────────────────────
-1. 同步 CVE 清单              aipocket cve-sync
-   Tavily 搜 AI 漏洞 → 补充 sources/cve_2026_ai.json
-   ↓
-2. 生成查询语句           aipocket scan --fast
-   queries.build_queries() / shodan_queries.build_shodan_queries()
-   同一份 CVE → FOFA 语句 + Shodan 语句（两套语法）
-   ↓
-3. 双源拨取命中主机
-   fofa_client.FofaClient     FOFA：多 key 轮询、分页、自动剔除失效 key
-   shodan_client.ShodanClient Shodan：多 key 轮询、分页、`data`(banner)+`http.html`(body)
-   两个来源的 hits 合并，每条打上 `_source` 标记
-   ↓
-4. 双重提取凭证
-   extractor (正则 + 误报黑名单)  →  analyzer (GPT 批量补充)
-   ↓
-5. 探测验证
-   validator                校验返回体是真实 chat completion JSON
-   ↓
-6. GPT 二次校验
-   analyzer.recheck          排除 SPA/WAF/欢迎页误报
-   ↓
-7. 余额查询
-   balance                   LiteLLM / One-API / New-API / OpenAI billing
-   ↓
-8. 写盘
-   writer.write_result       results/scan_*.json + valid_*.json
-   结果里会记录来源：`sources` / `hits_by_source` / 每条凭证的 `backend`
+CVE 同步 → 生成 FOFA/Shodan 查询 → 双源拨取命中主机
+    → 正则+GPT 提取凭证 → 主动探测网关 → 验证有效性
+    → GPT 二次校验 → 余额查询 → 写盘 JSON
 ```
 
-> 一文 `scan` 会同时走 FOFA 与 Shodan 两个独立后端（各自独立的客户端与查询语法），
-> 结果合并后走同一条提取→验证→余额流水线。某个来源未配置 key 时会自动跳过。
-
-`scheduler.Scheduler` 在以上流程之上提供周期性执行能力。
-
 ---
 
-## 环境要求
+## 快速开始
 
-- Python ≥ 3.11
-- 推荐使用 [uv](https://github.com/astral-sh/uv) 管理依赖
-
----
-
-## 安装
+### 本地运行
 
 ```bash
-uv sync                      # 安装运行依赖
-uv sync --extra dev          # 连同开发依赖（ruff / pytest 等）一起安装
+# 安装
+uv sync
+
+# 配置
+cp .env.example .env
+# 编辑 .env，填入 FOFA_KEYS / SHODAN_KEYS 等
+
+# 扫描
+uv run aipocket scan --fast
+
+# 查看结果
+uv run aipocket balance
+```
+
+### Docker 部署
+
+```bash
+# 构建并启动（默认 watch 模式，定时扫描）
+docker compose up -d
+
+# 首次启动会自动将 .env.example 复制到 /data/aipocket/.env
+# 编辑配置后重启
+vim /data/aipocket/.env
+docker compose restart
+
+# 单次扫描
+docker compose run --rm aipocket scan --fast
+
+# 查看结果
+ls /data/aipocket/results/
+```
+
+容器数据持久化到宿主机 `/data/aipocket/`，目录结构：
+
+```
+/data/aipocket/
+├── .env              # 配置文件（首次自动生成）
+├── results/          # 扫描结果
+│   └── run_YYYY_MM_DD_HH-MM-SS/
+│       ├── run.log
+│       ├── scan_*.json
+│       ├── valid_*.json
+│       └── raw_hits_*.json
+└── sources/          # CVE 数据（预留）
+```
+
+---
+
+## 命令一览
+
+```bash
+aipocket scan [--fast] [-n N] [-v]     # 扫描（-n 限制查询数）
+aipocket scan --realtest -v            # 小批量真测（精简 CVE + 默认 -n 3）
+aipocket watch                         # 周期执行（需 SCHEDULER_ENABLED=true）
+aipocket balance                       # 查询最近扫描结果的余额
+aipocket cve-sync                      # 同步 CVE 清单
+aipocket queries                       # 列出将执行的查询（dry-run）
+aipocket config                        # 查看当前配置（key 脱敏）
+aipocket shodan-info                   # Shodan 套餐与剩余积分
 ```
 
 ---
 
 ## 配置
 
-```bash
-cp .env.example .env
-```
-
-`.env` 字段说明：
+`.env` 主要字段：
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `FOFA_KEYS` | （空） | 逗号分隔的 FOFA key，支持多 key 轮询与容错 |
+| `FOFA_KEYS` | — | FOFA key，逗号分隔，支持多 key 轮询 |
 | `FOFA_BASE_URL` | `https://fofoapi.com` | FOFA 代理地址 |
-| `FOFA_PAGE_SIZE` | `100` | 每页结果数（上限 100） |
-| `FOFA_MAX_PAGES` | `10` | 每条查询最多翻页数 |
-| `FOFA_TIMEOUT` | `30` | FOFA 请求超时（秒） |
-| `VALIDATE_CONCURRENCY` | `20` | 密钥验证并发数 |
-| `VALIDATE_TIMEOUT` | `15` | 单次验证探测超时（秒） |
-| `SCHEDULER_ENABLED` | `false` | 是否启用周期调度 |
-| `SCHEDULER_INTERVAL` | `3600` | 调度间隔（秒） |
-| `TAVILY_BASE_URL` | （空） | Tavily 代理地址（CVE 同步用） |
-| `TAVILY_KEY` | （空） | Tavily 代理 key |
-| `GPT_BASE_URL` | （空） | GPT 三方 API 地址（留空则跳过 GPT 增强） |
-| `GPT_KEY` | （空） | GPT 三方 API key |
+| `SHODAN_KEYS` | — | Shodan key，逗号分隔 |
+| `VALIDATE_CONCURRENCY` | `20` | 验证并发数 |
+| `GPT_BASE_URL` / `GPT_KEY` | — | GPT API（留空跳过 GPT 增强） |
 | `GPT_MODEL` | `gpt-4o-mini` | GPT 模型名 |
-| `GPT_FAST` | `false` | 快速模式：10 并发 + 30 hits/批 + `reasoning_effort=medium` |
-| `RESULTS_DIR` | `results` | JSON 结果输出目录 |
+| `GPT_FAST` | `false` | 快速模式：10 并发 + 30 hits/批 |
+| `SCHEDULER_ENABLED` | `false` | 周期调度开关 |
+| `SCHEDULER_INTERVAL` | `3600` | 调度间隔（秒） |
+| `RESULTS_DIR` | `results` | 结果输出目录 |
 
-> ⚠️ `.env` 含真实密钥，已被 `.gitignore` 忽略，请勿提交。
-
----
-
-## 使用
-
-```bash
-# 1. 同步 CVE 清单（Tavily 实时搜索 AI 相关漏洞，补充到 sources/cve_2026_ai.json）
-uv run aipocket cve-sync
-
-# 2. 扫描（FOFA + Shodan 双源拨取 → 提取密钥 → 探测验证 → GPT 二次校验 → 余额查询 → 写 JSON）
-uv run aipocket scan --fast
-
-# 3. 查看结果（有效凭证 + 网关余额）
-uv run aipocket balance
-```
-
-其他命令：
-
-```bash
-uv run aipocket scan -n 5 -v       # 只跑前 5 条查询（调试）
-uv run aipocket queries             # Dry-run：列出将执行的 FOFA + Shodan 查询
-uv run aipocket config              # 查看当前配置（key 脱敏）
-uv run aipocket shodan-info         # 查看 Shodan 套餐与剩余查询积分
-uv run aipocket watch               # 周期执行（需 SCHEDULER_ENABLED=true）
-```
+完整字段见 `.env.example`。
 
 ---
 
-## 小批量真实测试（realtest）
+## Realtest 模式
 
-完整端到端流程（联网 FOFA/Shodan → 提取 → prober 主动探测 → 验证 → GPT 复查 → 余额），但用一份精简 CVE 清单，配合 `-n` 严格控制查询数，把额度消耗降到最小。
-
-```bash
-# 全量扫描（默认，读 sources/cve_2026_ai.json）
-uv run aipocket scan --fast
-
-# 小批量真测（加 --realtest，读 sources/cve_realtest.json，默认 -n 1）
-uv run aipocket scan --realtest -v
-```
-
-### 原理
-
-- `--realtest` 切换 CVE 清单为 `sources/cve_realtest.json`，生成约 39 条 FOFA + 26 条 Shodan 候选查询。
-- 这份清单由 **`scripts/carve_realtest.py` 动态生成**（覆盖全部 prober 产品类型优先，再按 CVSS 补满），不是手维护的。`cve-sync` 更新全量后重跑该脚本即可让真测覆盖跟进：
-
-  ```bash
-  uv run python scripts/carve_realtest.py            # 默认 10 条 → sources/cve_realtest.json
-  uv run python scripts/carve_realtest.py --limit 20  # 更大子集
-  uv run python scripts/carve_realtest.py --dry-run   # 只看选了哪些，不写
-  ```
-
-- 开启 `--realtest` 时若未指定 `-n`，**自动默认 `-n 3`** 并**跳过 DIRECT-CRED-LEAK 通用查询**，让前 3 条都是产品指纹查询（LibreChat/Flowise 等）——这样 prober 能拿到网关型 hits 真正跑起来，而不是捞一堆 banner 里带 key 的普通网站。可手动覆盖：`--realtest -n 5`。
-- 全量 `scan`（不带 `--realtest`）**不跳过** DIRECT-CRED-LEAK：因为 `-n` 无限制，通用查询和产品指纹查询都会跑，跳了反而少抓通用 key。跳过是专为"小 `-n` 切片"设计的补丁。
-- `-n N` / `--max-queries N` 控制每个源**实际发起的查询数**（`queries[:N]` 切片），是真正决定额度消耗的开关。子集文件只决定"能生成多少候选查询"。
-- 主动探测（prober）默认开启（`SCAN_PROBER=true`，见 `config.py`），命中指纹的网关会被 `probe_hosts` 读取暴露的配置/凭证端点。prober 对 TLS 证书验证失败的自建网关会自动降级 `verify=False` 重试一次（这类证书不匹配是公网漏网关的常态）。
-
-> 注：`carve_realtest.py` 努力覆盖全部 10 个 prober 类型，但全量 CVE 里目前没有 LobeChat / One-API 的条目，这两类暂不会被 `--realtest` 触发，脚本会在输出里提示。有了对应 CVE 后重跑脚本即自动补上。
-
-### 命令
+小批量端到端真实测试，最小化额度消耗：
 
 ```bash
-# 小批量真测（默认 -n 3 + 跳过 DIRECT-CRED-LEAK，端到端跑完）
-uv run aipocket scan --realtest -v
-
-# 真测但多跑几条（每源 5 条）
-uv run aipocket scan --realtest -n 5 -v
-
-# 配合 fast 模式
-uv run aipocket scan --realtest --fast -v
-
-# 跑完后只对结果做 balance 复查，不再消耗 FOFA/Shodan 额度
-uv run python scripts/run_balance_only.py results/<run_目录>/scan_<时间戳>.json
+uv run aipocket scan --realtest -v          # 默认 -n 3
+uv run aipocket scan --realtest -n 5 -v     # 多跑几条
 ```
 
-### 跑之前确认
-
-1. `.env` 已配置 `FOFA_KEYS` 和/或 `SHODAN_KEYS`（未配置的源会被静默跳过）
-2. `SCAN_PROBER=true`（默认开；这是 realtest 要测的核心环节）
-3. 加 `-v` 进 DEBUG，可看到 prober 对每个 host 的 identify / probe 详情与崩溃日志
-
-### 自定义子集
-
-`--realtest` 固定指向 `sources/cve_realtest.json`。想换自己的清单，用环境变量 `AIPOCKET_CVE_PATH` 指向任意文件：
-
-```bash
-# 从全量里切一份自己的小清单（示例：只保留 RCE / API key 泄露类）
-python3 -c "
-import json
-data = json.load(open('sources/cve_2026_ai.json'))
-keep = [c for c in data if c.get('type') in ('RCE','API key泄露')]
-json.dump(keep, open('sources/cve_realtest_mine.json','w'), ensure_ascii=False, indent=2)
-print(len(keep), 'CVEs')
-"
-AIPOCKET_CVE_PATH=sources/cve_realtest_mine.json uv run aipocket scan --fast -n 2 -v
-```
-
-> 注意：`--realtest` 与 `AIPOCKET_CVE_PATH` 同时存在时，`--realtest` 优先。`build_queries` 会过滤掉 `type` 优先级 > 3 的 CVE（只保留 API key 泄露 / RCE / 认证绕过 / 信息泄露 / SQL 注入类），切子集时挑这几类才能生成查询。
+- 使用精简 CVE 清单 `sources/cve_realtest.json`（由 `scripts/carve_realtest.py` 生成）
+- 跳过通用凭证泄露查询，优先产品指纹查询（让 prober 能匹配网关型 hits）
+- 可用 `AIPOCKET_CVE_PATH` 环境变量指向自定义 CVE 文件
 
 ---
 
-## Fast 模式
+## 输出格式
 
-GPT 增强分析默认使用 **5 并发 + 15 hits/批**。开启 `--fast` 或 `GPT_FAST=true` 后切换为 **10 并发 + 30 hits/批 + `reasoning_effort=medium`**：
+每次扫描生成 `results/run_YYYY_MM_DD_HH-MM-SS/` 目录：
 
-| | 普通模式 | Fast 模式 |
-|---|---|---|
-| GPT extract 并发 | 5 | 10 |
-| GPT extract 批大小 | 15 hits/请求 | 30 hits/请求 |
-| GPT reasoning_effort | （默认） | medium |
-| 500 hits 预估耗时 | ~60s | ~15s |
-
----
-
-## 输出说明
-
-每次 `scan` / 调度运行都会在 `results/` 下生成一个**按时间命名的 run 文件夹** `run_YYYY_MM_DD_HH-MM-SS/`，把这次的所有产物放在一起（不再散落在根目录）：
-
-```
-results/
-└── run_2026_07_01_13-35-53/
-    ├── run.log                  # 本次扫描的完整日志（默认写，全量/realtest 都写）
-    ├── scan_<时间戳>.json       # 完整结果：查询、命中、全部凭证及验证详情
-    ├── valid_<时间戳>.json      # 仅保留**验证有效**的凭证（含 tier / gateway / balance）
-    ├── raw_hits_<时间戳>.json   # 原始 hits（FOFA/Shodan 抓回来的原始数据）
-    └── gpt_debug/               # 仅 GPT_DEBUG=true 时生成：每批 GPT payload
-        └── batch_0001.txt
-```
-
-- `latest_valid.json` / `latest_scan.json` **不再以符号链接形式存在于根目录**。要找最近一次结果，直接看最新的 `run_*/` 文件夹（程序内通过 `writer.load_latest()` 自动解析最新 run 的 `valid_*.json`，例如 `aipocket balance` 命令）。
-- **GPT 调试日志**默认关闭。需要排查 GPT 提取/二次校验问题时，在 `.env` 设 `GPT_DEBUG=true`，每次 GPT 批次的 payload 会落到 `<run>/gpt_debug/batch_NNNN.txt`。
-
-`ValidationResult` 字段：
-
-| 字段 | 说明 |
+| 文件 | 内容 |
 |------|------|
-| `credential.backend` | **发现来源**：`fofa` / `shodan` / `fofa,shodan`（同一密钥被两个来源都发现时合并） |
-| `valid` | 是否真正有效（通过 chat completion JSON 校验 + GPT 二次确认） |
-| `status_code` | 探测 HTTP 状态码 |
-| `tier` | 额度等级（tier5 / tier4 / tier3 / limit:N） |
-| `gateway` | 网关类型（litellm / oneapi / newapi / openai） |
-| `balance` | 余额（USD） |
-| `model_available` | 探测成功的模型名 |
-| `rate_limit_headers` | 速率限制相关响应头 |
-| `response_snippet` | 响应体片段 |
+| `scan_*.json` | 完整结果：查询、命中、全部凭证及验证详情 |
+| `valid_*.json` | 仅有效凭证（含 tier / gateway / balance） |
+| `raw_hits_*.json` | FOFA/Shodan 原始命中数据 |
+| `run.log` | 本次扫描日志 |
 
-时间戳为 UTC，格式 `YYYYMMDDTHHMMSSZ`。
-
-结果文件还包含两个来源字段：`sources`（本次运行启用的来源列表，如 `["fofa","shodan"]`）与 `hits_by_source`（各来源命中数）。
+`ValidationResult` 关键字段：`valid`、`tier`（tier3-5）、`gateway`（litellm/oneapi/newapi）、`balance`（USD）、`credential.backend`（fofa/shodan/both）。
 
 ---
 
 ## 开发
 
 ```bash
-uv run pytest -q                    # 运行测试（respx 拦截 HTTP，不发真实请求）
+uv sync --extra dev                 # 安装开发依赖
+uv run pytest -q                    # 运行测试（respx mock，不发真实请求）
 uv run ruff check src/ tests/       # 静态检查
-uv run ruff check --fix src/ tests/ # 自动修复
 ```
+
+项目文档见 `docs/` 目录。

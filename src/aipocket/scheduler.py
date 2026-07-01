@@ -28,7 +28,7 @@ class Scheduler:
             try:
                 run_dir = new_run_dir()
                 result = await run_scan(run_dir=run_dir)
-                await write_result(result, run_dir=run_dir)
+                write_result(result, run_dir=run_dir)
                 log.info(
                     "Run done: %d valid / %d creds. Sleeping %ds...",
                     result.total_valid,
@@ -53,5 +53,5 @@ async def run_once(max_queries: int | None = None):
     """Run a single scan into its own run folder. Returns the ScanRunResult."""
     run_dir = new_run_dir()
     result = await run_scan(max_queries=max_queries, run_dir=run_dir)
-    await write_result(result, run_dir=run_dir)
+    write_result(result, run_dir=run_dir)
     return result

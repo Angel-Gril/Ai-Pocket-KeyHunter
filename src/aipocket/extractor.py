@@ -4,32 +4,15 @@ import logging
 import re
 from typing import Any
 
+from .key_patterns import KEY_PATTERNS, is_noise as _is_noise_key
 from .models import Credential
 
 log = logging.getLogger(__name__)
 
-APIKEY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    # Order matters: first match wins (finditer + setdefault).
-    # Strategy: broad collection, let _is_false_positive narrow down.
-    # Specific known prefixes first (for labeling), then broad fallbacks.
-    ("openrouter", re.compile(r"\bsk-or-v1-[a-f0-9\-]{30,}\b", re.I)),
-    ("anthropic", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}\b")),
-    ("openai_proj", re.compile(r"\bsk-(?:proj|admin|svcacct)-[A-Za-z0-9_\-]{20,}\b")),
-    ("google", re.compile(r"\bAIzaSy[A-Za-z0-9_\-]{35}\b")),
-    ("groq", re.compile(r"\bgsk_[A-Za-z0-9]{20,}\b")),
-    ("perplexity", re.compile(r"\bpplx-[A-Za-z0-9]{20,}\b")),
-    ("replicate", re.compile(r"\br8_[A-Za-z0-9]{20,}\b")),
-    ("huggingface", re.compile(r"\bhf_[A-Za-z0-9]{20,}\b")),
-    ("xai", re.compile(r"\bxai-[A-Za-z0-9]{20,}\b")),
-    ("runway", re.compile(r"\bkey_[A-Za-z0-9]{20,}\b")),
-    ("glm", re.compile(r"\b[a-f0-9]{32}\.[A-Za-z0-9]{16}\b")),
-    # sk- is itself a strong signal — accept short keys (self-hosted gateways
-    # like New-API let admins set custom tokens of any length).
-    ("sk_key", re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}\b")),
-    ("glm_jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\b")),
+APIKEY_PATTERNS: list[tuple[str, re.Pattern[str]]] = KEY_PATTERNS + [
     # Context-anchored: catches self-hosted gateway custom tokens (any format)
     # by requiring a key-indicating keyword nearby.
-    ("generic", re.compile(r"\b(?:api[_-]?key|apikey|bearer|token|secret|authorization|access[_-]?token|sk)[\"'\s:=]+([A-Za-z0-9_\-\.]{6,})\b", re.I)),
+    ("generic", re.compile(r'\b(?:api[_-]?key|apikey|bearer|token|secret|authorization|access[_-]?token|sk)["\'\'\s:=]+([A-Za-z0-9_\-\.]{6,})\b', re.I)),
 ]
 
 HTTP_HEADER_NAMES = frozenset({
@@ -206,20 +189,6 @@ def _infer_base_url(hit: dict[str, Any], api_urls: set[str]) -> str:
     return host.rstrip("/")
 
 
-_FALSE_POSITIVE_SUBSTRINGS = (
-    "replace_with", "your_key", "your-key", "yourkey", "your_api",
-    "example", "fake", "honeypot", "placeholder", "dummy", "test_key",
-    "sample_key", "changeme", "xxx", "todo",
-    "localstorage", "getelementbyid", "getelementbyname",
-    "data-public", "data-private", "data-cookie", "data-domain",
-    "document.", "window.", "process.env",
-    "function(", "=>", "undefined", "null",
-    # jwt.io standard example token (appears in tutorials / default configs)
-    "eyjhbgcioijiuzi1niisinr5cci6ikpxvcj9",
-    # CSS/JS class names that start with sk-
-    "sk-mocha", "sk-index", "skip", "skeleton", "schema",
-)
-
 _FALSE_POSITIVE_EXACT = frozenset({
     "sk-replace_with_your_api_key",
     "sk-fake-key-1234567890abcdef",
@@ -233,10 +202,7 @@ def _is_false_positive(val: str) -> bool:
         return True
     if v in _FALSE_POSITIVE_EXACT:
         return True
-    if len(v) < 6:
+    if _is_noise_key(val):
         return True
-    for sub in _FALSE_POSITIVE_SUBSTRINGS:
-        if sub in v:
-            return True
     compact = v.replace("-", "").replace("_", "").replace(".", "")
     return compact in HTTP_HEADER_NAMES

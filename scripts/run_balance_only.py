@@ -49,7 +49,7 @@ async def main():
         raw_hits=[],
     )
 
-    path = await write_result(result)
+    path = write_result(result)
     log.info("Final result written to %s", path)
     log.info("=== FINAL: %d creds → %d valid ===", len(results), len(valid))
 

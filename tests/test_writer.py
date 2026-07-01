@@ -30,7 +30,7 @@ def sample_result():
 async def test_write_result_creates_files(tmp_path, sample_result, monkeypatch):
     monkeypatch.setattr("aipocket.writer.settings", Settings(results_dir=str(tmp_path)))
 
-    full_path = await write_result(sample_result)
+    full_path = write_result(sample_result)
 
     assert full_path.exists()
     assert full_path.suffix == ".json"
@@ -43,7 +43,7 @@ async def test_write_result_creates_files(tmp_path, sample_result, monkeypatch):
 async def test_write_result_creates_valid_file(tmp_path, sample_result, monkeypatch):
     monkeypatch.setattr("aipocket.writer.settings", Settings(results_dir=str(tmp_path)))
 
-    await write_result(sample_result)
+    write_result(sample_result)
 
     valid_files = list(tmp_path.glob("valid_*.json"))
     assert len(valid_files) == 1
@@ -61,7 +61,7 @@ async def test_write_result_writes_into_run_dir(tmp_path, sample_result, monkeyp
     monkeypatch.setattr("aipocket.writer.settings", Settings(results_dir=str(tmp_path)))
 
     run_dir = new_run_dir(tmp_path)
-    full_path = await write_result(sample_result, run_dir=run_dir)
+    full_path = write_result(sample_result, run_dir=run_dir)
 
     # Files land inside the run_* folder.
     assert full_path.parent == run_dir
@@ -83,7 +83,7 @@ async def test_write_result_empty_results(tmp_path, monkeypatch):
         queries_used=[],
         results=[],
     )
-    p = await write_result(empty)
+    p = write_result(empty)
     data = json.loads(p.read_text())
     assert data["total_valid"] == 0
 
@@ -106,7 +106,7 @@ async def test_write_result_strips_unicode_line_separators(tmp_path, monkeypatch
         queries_used=["q"],
         results=[ValidationResult(credential=c, valid=True, status_code=200)],
     )
-    p = await write_result(result)
+    p = write_result(result)
 
     raw = p.read_bytes()
     assert "\u2028".encode("utf-8") not in raw

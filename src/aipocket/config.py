@@ -58,11 +58,11 @@ class Settings(BaseSettings):
 
     @property
     def keys(self) -> list[str]:
-        return [k.strip() for k in self.fofa_keys.split(",") if k.strip()]
+        return [k for k in self.fofa_keys.split(",") if k]
 
     @property
     def shodan_key_list(self) -> list[str]:
-        return [k.strip() for k in self.shodan_keys.split(",") if k.strip()]
+        return [k for k in self.shodan_keys.split(",") if k]
 
     @property
     def results_path(self) -> Path:

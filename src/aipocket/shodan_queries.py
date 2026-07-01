@@ -143,7 +143,7 @@ SHODAN_CREDENTIAL_QUERIES: list[str] = [
 ]
 
 
-def build_shodan_queries(cves: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
+def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direct: bool = False) -> list[dict[str, str]]:
     """Build the full list of Shodan queries to run.
 
     Returns a list of dicts with the same keys as FOFA's build_queries():
@@ -155,12 +155,8 @@ def build_shodan_queries(cves: list[dict[str, Any]] | None = None) -> list[dict[
     out: list[dict[str, str]] = []
 
     # 1. Direct credential-leak queries first (highest ROI).
-    # Read the flag at call time (not import time) so `scan --realtest` can flip
-    # it via reload without shodan_queries holding a stale False binding.
-    from . import queries as _q
-
     for q in SHODAN_CREDENTIAL_QUERIES:
-        if _q.SKIP_DIRECT_QUERIES:
+        if skip_direct:
             continue
         if q in seen:
             continue

@@ -56,6 +56,7 @@ def scan(
     if fast:
         settings.gpt_fast = True
 
+    skip_direct = False
     if realtest:
         # Override the CVE map before queries.py is imported (each `uv run` is a
         # fresh process, so setting os.environ here takes effect at import time).
@@ -70,7 +71,7 @@ def scan(
         # query (LobeChat/Dify/LiteLLM/…) is what gets scanned — that yields
         # gateway-shaped hits the prober can identify, instead of random sites
         # that merely leaked a key in their banner.
-        _queries_mod.SKIP_DIRECT_QUERIES = True
+        skip_direct = True
         log.info("Realtest mode: CVE map = %s (%d CVEs), skipping DIRECT-CRED-LEAK queries",
                  _queries_mod.CVE_PATH, len(_queries_mod.load_cves()))
         settings.fofa_max_pages = 1
@@ -90,8 +91,8 @@ def scan(
         log.info("Fast mode enabled")
 
     n = max_queries or None
-    result = asyncio.run(run_scan(max_queries=n, run_dir=run_dir))
-    asyncio.run(write_result(result, run_dir=run_dir))
+    result = asyncio.run(run_scan(max_queries=n, run_dir=run_dir, skip_direct=skip_direct))
+    write_result(result, run_dir=run_dir)
     _print_summary(result)
     log.info("Run folder: %s", run_dir)
 

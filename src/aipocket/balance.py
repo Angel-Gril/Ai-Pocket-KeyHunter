@@ -13,6 +13,29 @@ from .models import Credential, ValidationResult
 log = logging.getLogger(__name__)
 
 
+async def _safe_get(
+    client: httpx.AsyncClient,
+    url: str,
+    key: str,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """GET with error handling. Returns parsed JSON dict or None on failure."""
+    if headers is None:
+        headers = {"Authorization": f"Bearer {key}"}
+    try:
+        r = await client.get(url, headers=headers, params=params)
+    except httpx.HTTPError:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        data = r.json()
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
 async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str, Any]:
     base = cred.apiurl.rstrip("/")
     if base.endswith("/v1/chat/completions"):
@@ -45,14 +68,8 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
 
 
 async def _probe_oneapi(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
-    r = await client.get(
-        f"{base}/api/user/self",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    if r.status_code != 200:
-        return {}
-    data = r.json()
-    if not isinstance(data, dict) or not data.get("success"):
+    data = await _safe_get(client, f"{base}/api/user/self", key)
+    if data is None or not data.get("success"):
         return {}
     user = data.get("data", {})
     quota = user.get("quota", 0)
@@ -67,14 +84,8 @@ async def _probe_oneapi(client: httpx.AsyncClient, base: str, key: str) -> dict[
 
 
 async def _probe_newapi(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
-    r = await client.get(
-        f"{base}/api/user/self",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    if r.status_code != 200:
-        return {}
-    data = r.json()
-    if not isinstance(data, dict) or not data.get("success"):
+    data = await _safe_get(client, f"{base}/api/user/self", key)
+    if data is None or not data.get("success"):
         return {}
     user = data.get("data", {})
     quota = user.get("quota", 0)
@@ -89,14 +100,9 @@ async def _probe_newapi(client: httpx.AsyncClient, base: str, key: str) -> dict[
 
 
 async def _probe_litellm(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
-    r = await client.get(
-        f"{base}/key/info",
-        headers={"Authorization": f"Bearer {key}"},
-        params={"key": key},
-    )
-    if r.status_code != 200:
+    data = await _safe_get(client, f"{base}/key/info", key, params={"key": key})
+    if data is None:
         return {}
-    data = r.json()
     key_info = data.get("key_info", data)
     spend = key_info.get("spend", 0)
     max_budget = key_info.get("max_budget", 0) or key_info.get("max_budget_soft", 0)
@@ -112,13 +118,9 @@ async def _probe_litellm(client: httpx.AsyncClient, base: str, key: str) -> dict
 
 
 async def _probe_openai_billing(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
-    r = await client.get(
-        f"{base}/v1/dashboard/billing/credit_grants",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    if r.status_code != 200:
+    data = await _safe_get(client, f"{base}/v1/dashboard/billing/credit_grants", key)
+    if data is None:
         return {}
-    data = r.json()
     grants = data.get("data", [])
     total = sum(g.get("grant_amount", 0) - g.get("used", 0) for g in grants)
     return {
@@ -129,14 +131,8 @@ async def _probe_openai_billing(client: httpx.AsyncClient, base: str, key: str) 
 
 
 async def _probe_deepseek(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
-    r = await client.get(
-        f"{base}/user/balance",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    if r.status_code != 200:
-        return {}
-    data = r.json()
-    if not isinstance(data, dict):
+    data = await _safe_get(client, f"{base}/user/balance", key)
+    if data is None:
         return {}
     infos = data.get("balance_infos") or []
     total_cny = 0.0
@@ -150,14 +146,8 @@ async def _probe_deepseek(client: httpx.AsyncClient, base: str, key: str) -> dic
 
 
 async def _probe_moonshot(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
-    r = await client.get(
-        f"{base}/v1/users/me/balance",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    if r.status_code != 200:
-        return {}
-    data = r.json()
-    if not isinstance(data, dict):
+    data = await _safe_get(client, f"{base}/v1/users/me/balance", key)
+    if data is None:
         return {}
     avail = 0.0
     d = data.get("data")
@@ -171,14 +161,8 @@ async def _probe_moonshot(client: httpx.AsyncClient, base: str, key: str) -> dic
 
 
 async def _probe_glm(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
-    r = await client.get(
-        f"{base}/api/paas/v4/biz/finance/balance",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    if r.status_code != 200:
-        return {}
-    data = r.json()
-    if not isinstance(data, dict):
+    data = await _safe_get(client, f"{base}/api/paas/v4/biz/finance/balance", key)
+    if data is None:
         return {}
     d = data.get("data")
     bal = float(d.get("balance", 0) or 0) if isinstance(d, dict) else 0.0
@@ -190,14 +174,8 @@ async def _probe_glm(client: httpx.AsyncClient, base: str, key: str) -> dict[str
 
 
 async def _probe_siliconflow(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
-    r = await client.get(
-        f"{base}/v1/user/info",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    if r.status_code != 200:
-        return {}
-    data = r.json()
-    if not isinstance(data, dict):
+    data = await _safe_get(client, f"{base}/v1/user/info", key)
+    if data is None:
         return {}
     d = data.get("data")
     bal = float(d.get("balance", 0) or 0) if isinstance(d, dict) else 0.0
