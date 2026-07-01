@@ -18,7 +18,23 @@ log = logging.getLogger(__name__)
 _SK_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]{20,}|AIza[0-9A-Za-z_\-]{35}|sk-ant-[A-Za-z0-9_\-]{20,}")
 
 
-async def run_scan(max_queries: int | None = None, run_dir: Path | None = None) -> ScanRunResult:
+
+def _merge_credentials(
+    existing: list[Credential],
+    new: list[Credential],
+    seen: set[tuple[str, str]] | None = None,
+) -> set[tuple[str, str]]:
+    """Merge *new* credentials into *existing* in-place, deduplicating by (apikey, apiurl).
+    Returns the updated seen-set."""
+    if seen is None:
+        seen = {(c.apikey, c.apiurl) for c in existing}
+    for c in new:
+        if (c.apikey, c.apiurl) not in seen:
+            existing.append(c)
+            seen.add((c.apikey, c.apiurl))
+    return seen
+
+async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, *, skip_direct: bool = False) -> ScanRunResult:
     started = datetime.now(UTC).isoformat()
 
     # Stamp the run dir so GPT debug/failed-batch dumps land inside it.
@@ -36,7 +52,7 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None) 
     # ------------------------------------------------------------------
     if settings.keys:
         sources_used.append("fofa")
-        fofa_hits = _fetch_fofa(max_queries)
+        fofa_hits = _fetch_fofa(max_queries, skip_direct=skip_direct)
         for h in fofa_hits:
             if isinstance(h, dict):
                 h.setdefault("_source", "fofa")
@@ -50,7 +66,7 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None) 
     # ------------------------------------------------------------------
     if settings.shodan_key_list:
         sources_used.append("shodan")
-        shodan_hits = _fetch_shodan(max_queries)
+        shodan_hits = _fetch_shodan(max_queries, skip_direct=skip_direct)
         for h in shodan_hits:
             if isinstance(h, dict):
                 h.setdefault("_source", "shodan")
@@ -73,6 +89,7 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None) 
     # -> GPT recheck -> balance
     # ------------------------------------------------------------------
     creds = extract_credentials(all_hits)
+    seen = {(c.apikey, c.apiurl) for c in creds}
     log.info("Extracted %d candidate credentials (regex)", len(creds))
 
     from .writer import write_raw_hits
@@ -87,11 +104,7 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None) 
     if settings.scan_prober:
         log.info("Probing %d hosts for exposed credentials...", len(all_hits))
         probed_creds = await probe_hosts(all_hits)
-        existing_keys = {(c.apikey, c.apiurl) for c in creds}
-        for pc in probed_creds:
-            if (pc.apikey, pc.apiurl) not in existing_keys:
-                creds.append(pc)
-                existing_keys.add((pc.apikey, pc.apiurl))
+        seen = _merge_credentials(creds, probed_creds, seen)
         log.info("After active probing: %d candidate credentials", len(creds))
 
     from .analyzer import extract_with_gpt
@@ -105,11 +118,7 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None) 
     )
     gpt_creds = await extract_with_gpt(sampled)
     if gpt_creds:
-        existing_keys = {(c.apikey, c.apiurl) for c in creds}
-        for gc in gpt_creds:
-            if (gc.apikey, gc.apiurl) not in existing_keys:
-                creds.append(gc)
-                existing_keys.add((gc.apikey, gc.apiurl))
+        seen = _merge_credentials(creds, gpt_creds, seen)
         log.info("After GPT enrichment: %d candidate credentials", len(creds))
 
     if not creds:
@@ -159,9 +168,9 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None) 
     )
 
 
-def _fetch_fofa(max_queries: int | None) -> list[dict]:
+def _fetch_fofa(max_queries: int | None, *, skip_direct: bool = False) -> list[dict]:
     """Run the FOFA backend: build queries, paginate each, tag hits with _cve/_product."""
-    queries = build_queries()
+    queries = build_queries(skip_direct=skip_direct)
     if max_queries:
         queries = queries[:max_queries]
     log.info("Built %d FOFA queries from CVE map", len(queries))
@@ -184,12 +193,12 @@ def _fetch_fofa(max_queries: int | None) -> list[dict]:
     return all_hits
 
 
-def _fetch_shodan(max_queries: int | None) -> list[dict]:
+def _fetch_shodan(max_queries: int | None, *, skip_direct: bool = False) -> list[dict]:
     """Run the Shodan backend: build Shodan-syntax queries, paginate each."""
     from .shodan_client import ShodanClient
     from .shodan_queries import build_shodan_queries
 
-    queries = build_shodan_queries()
+    queries = build_shodan_queries(skip_direct=skip_direct)
     if max_queries:
         queries = queries[:max_queries]
     log.info("Built %d Shodan queries from CVE map", len(queries))

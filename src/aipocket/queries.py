@@ -13,12 +13,6 @@ log = logging.getLogger(__name__)
 _DEFAULT_CVE_PATH = Path(__file__).resolve().parents[2] / "sources" / "cve_2026_ai.json"
 CVE_PATH = Path(os.environ.get("AIPOCKET_CVE_PATH", _DEFAULT_CVE_PATH))
 
-# Module-level switch: when True, the generic DIRECT-CRED-LEAK queries are
-# skipped so the scanner starts from product-fingerprint queries — used by
-# `scan --realtest` so the prober receives gateway-shaped hits instead of
-# random sites that merely leaked a key in their banner.
-SKIP_DIRECT_QUERIES: bool = False
-
 
 PRODUCT_QUERIES: dict[str, list[str]] = {
     "LiteLLM": [
@@ -170,13 +164,13 @@ def _should_skip(product: str) -> bool:
     return any(s in p for s in SKIP_PRODUCTS)
 
 
-def build_queries(cves: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
+def build_queries(cves: list[dict[str, Any]] | None = None, *, skip_direct: bool = False) -> list[dict[str, str]]:
     cves = cves or load_cves()
     seen: set[str] = set()
     out: list[dict[str, str]] = []
 
     for tmpl in CREDENTIAL_QUERIES:
-        if SKIP_DIRECT_QUERIES:
+        if skip_direct:
             continue
         q = tmpl
         if q in seen:

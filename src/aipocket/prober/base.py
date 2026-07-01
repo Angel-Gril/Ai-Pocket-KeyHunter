@@ -10,6 +10,8 @@ from typing import Any
 
 import httpx
 
+from ..key_patterns import KEY_PATTERNS as _PROBE_KEY_PATTERNS_BASE
+from ..key_patterns import is_noise as _is_noise
 from ..models import Credential
 
 log = logging.getLogger(__name__)
@@ -99,47 +101,12 @@ def extract_keys_from_text(
 
 
 # ---------------------------------------------------------------------------
-# Key patterns — expanded to cover all platforms in FINGERPRINTS.md.
-# Order matters: most specific prefix first (avoids sk- generic stealing
-# deepseek/openai/siliconflow classification).
+# Key patterns — imported from key_patterns, with prober-only generic_bearer
+# appended.
 # ---------------------------------------------------------------------------
-_PROBE_KEY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    # Order matters: first match wins. Specific prefixes first for labeling,
-    # then broad fallbacks. Broad collection, let _is_noise narrow down.
-    ("openrouter", re.compile(r"\b(sk-or-v1-[a-f0-9\-]{30,})\b", re.I)),
-    ("anthropic", re.compile(r"\b(sk-ant-[A-Za-z0-9_\-]{20,})\b")),
-    ("openai_proj", re.compile(r"\b(sk-(?:proj|admin|svcacct)-[A-Za-z0-9_\-]{20,})\b")),
-    ("google", re.compile(r"\b(AIzaSy[A-Za-z0-9_\-]{35})\b")),
-    ("groq", re.compile(r"\b(gsk_[A-Za-z0-9]{20,})\b")),
-    ("perplexity", re.compile(r"\b(pplx-[A-Za-z0-9]{20,})\b")),
-    ("replicate", re.compile(r"\b(r8_[A-Za-z0-9]{20,})\b")),
-    ("huggingface", re.compile(r"\b(hf_[A-Za-z0-9]{20,})\b")),
-    ("xai", re.compile(r"\b(xai-[A-Za-z0-9]{20,})\b")),
-    ("runway", re.compile(r"\b(key_[A-Za-z0-9]{20,})\b")),
-    ("glm", re.compile(r"\b([a-f0-9]{32}\.[A-Za-z0-9]{16})\b")),
-    # Broad sk- catch-all: any sk- key regardless of length/charset.
-    ("sk_key", re.compile(r"\b(sk-[A-Za-z0-9_\-]{20,})\b")),
-    ("glm_jwt", re.compile(r"\b(eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,})\b")),
+_PROBE_KEY_PATTERNS = _PROBE_KEY_PATTERNS_BASE + [
     ("generic_bearer", re.compile(r'(?:api[_-]?key|apikey|bearer|token|secret|authorization)["\']?\s*[:=]\s*["\']?([A-Za-z0-9_\-]{32,})["\']?', re.I)),
 ]
-
-_NOISE_SUBSTRINGS = (
-    "replace_with", "your_key", "yourkey", "your_api", "example", "fake",
-    "honeypot", "placeholder", "dummy", "test_key", "sample", "changeme",
-    "xxx", "todo", "undefined", "null", "none", "process.env",
-    "data-public", "data-private", "document.", "window.",
-    # jwt.io example token (common in tutorials / default configs)
-    "eyjhbgcioijiuzi1niisinr5cci6ikpxvcj9",
-    # CSS/JS false positives
-    "sk-mocha", "sk-index", "skip", "skeleton", "schema",
-)
-
-
-def _is_noise(val: str) -> bool:
-    v = val.lower()
-    if len(v) < 15:
-        return True
-    return any(sub in v for sub in _NOISE_SUBSTRINGS)
 
 
 class Prober(ABC):

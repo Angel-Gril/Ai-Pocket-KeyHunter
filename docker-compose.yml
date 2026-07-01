@@ -1,0 +1,10 @@
+services:
+  aipocket:
+    build: .
+    container_name: aipocket
+    volumes:
+      - /data/aipocket:/data/aipocket
+    environment:
+      - RESULTS_DIR=/data/aipocket/results
+    restart: unless-stopped
+    command: ["watch"]

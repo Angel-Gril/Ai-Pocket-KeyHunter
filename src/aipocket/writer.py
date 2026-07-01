@@ -76,7 +76,7 @@ def write_raw_hits(hits: list[dict[str, Any]], run_dir: Path | None = None) -> P
     return path
 
 
-async def write_result(result: ScanRunResult, run_dir: Path | None = None) -> Path:
+def write_result(result: ScanRunResult, run_dir: Path | None = None) -> Path:
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_dir = run_dir or settings.results_path
 

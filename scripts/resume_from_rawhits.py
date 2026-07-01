@@ -118,7 +118,7 @@ async def main():
         raw_hits=_trim_hits(all_hits),
     )
 
-    path = await write_result(result)
+    path = write_result(result)
     log.info("Result written to %s", path)
     log.info("=== SUMMARY: %d hits → %d creds → %d valid ===", len(all_hits), len(creds), len(valid))
 

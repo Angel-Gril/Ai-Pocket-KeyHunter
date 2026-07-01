@@ -25,11 +25,11 @@ async def test_run_scan_fofa_and_shodan_both_run(monkeypatch):
     """One scan walks BOTH sources and merges their hits."""
     monkeypatch.setattr(
         "aipocket.scanner.build_queries",
-        lambda: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}],
+        lambda **kw: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}],
     )
     monkeypatch.setattr(
         "aipocket.shodan_queries.build_shodan_queries",
-        lambda: [{"query": "sq", "cve_id": "sc", "product": "sp", "type": "t"}],
+        lambda **kw: [{"query": "sq", "cve_id": "sc", "product": "sp", "type": "t"}],
     )
     # Enable both sources
     monkeypatch.setattr("aipocket.config.settings.fofa_keys", "k")
@@ -70,8 +70,8 @@ async def test_run_scan_fofa_and_shodan_both_run(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_scan_same_key_from_both_sources_merges_backend(monkeypatch):
     """When both sources find the same apikey+url, the credential keeps both backends."""
-    monkeypatch.setattr("aipocket.scanner.build_queries", lambda: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}])
-    monkeypatch.setattr("aipocket.shodan_queries.build_shodan_queries", lambda: [{"query": "sq", "cve_id": "sc", "product": "sp", "type": "t"}])
+    monkeypatch.setattr("aipocket.scanner.build_queries", lambda **kw: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}])
+    monkeypatch.setattr("aipocket.shodan_queries.build_shodan_queries", lambda **kw: [{"query": "sq", "cve_id": "sc", "product": "sp", "type": "t"}])
     monkeypatch.setattr("aipocket.config.settings.fofa_keys", "k")
     monkeypatch.setattr("aipocket.config.settings.shodan_keys", "sk")
     monkeypatch.setattr("aipocket.config.settings.gpt_key", "")
@@ -99,7 +99,7 @@ async def test_run_scan_same_key_from_both_sources_merges_backend(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_scan_fofa_only_when_shodan_unconfigured(monkeypatch):
-    monkeypatch.setattr("aipocket.scanner.build_queries", lambda: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}])
+    monkeypatch.setattr("aipocket.scanner.build_queries", lambda **kw: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}])
     monkeypatch.setattr("aipocket.config.settings.fofa_keys", "k")
     monkeypatch.setattr("aipocket.config.settings.shodan_keys", "")
     monkeypatch.setattr("aipocket.config.settings.gpt_key", "")
