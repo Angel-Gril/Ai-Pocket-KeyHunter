@@ -73,6 +73,9 @@ def scan(
         _queries_mod.SKIP_DIRECT_QUERIES = True
         log.info("Realtest mode: CVE map = %s (%d CVEs), skipping DIRECT-CRED-LEAK queries",
                  _queries_mod.CVE_PATH, len(_queries_mod.load_cves()))
+        settings.fofa_max_pages = 1
+        settings.shodan_max_pages = 1
+        log.info("Realtest mode: fofa_max_pages=1, shodan_max_pages=1")
         if not max_queries:
             max_queries = 3  # default: 3 product-fingerprint queries per source
             log.info("Realtest mode: defaulting to -n 3 (override with --max-queries)")
