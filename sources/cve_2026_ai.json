@@ -30,6 +30,16 @@
     "source_url": "https://www.cve.org/CVERecord?id=CVE-2026-12822"
   },
   {
+    "id": "CVE-2026-12957",
+    "cvss": 0.0,
+    "product": "dify",
+    "type": "RCE",
+    "description": "*   [Code](https://github.com/webpro255/awesome-ai-agent-attacks). *   [Issues 5](https://github.com/webpro255/awesome-ai-agent-attacks/issues). *   [Actions](https://github.com/webpro255/awesome-ai-agent-attacks/actions). *   [Security and quality 0](https://github.com/webpro255/awesome-ai-agent-at",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://github.com/webpro255/awesome-ai-agent-attacks"
+  },
+  {
     "id": "CVE-2026-1868",
     "cvss": 9.9,
     "product": "GitLab AI Gateway",

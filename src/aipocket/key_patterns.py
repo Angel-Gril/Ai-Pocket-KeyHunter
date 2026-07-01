@@ -51,6 +51,7 @@ NOISE_SUBSTRINGS: tuple[str, ...] = (
     "function(",
     "getelementbyid",
     "getelementbyname",
+    "gocspx-",
     "honeypot",
     "localstorage",
     "none",

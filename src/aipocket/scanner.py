@@ -143,6 +143,11 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
 
         results = list(await recheck_all_with_gpt(results))
 
+    # Honeypot / cluster detection — reject fake positives before balance queries
+    from .honeypot import filter_honeypots
+
+    results = filter_honeypots(results)
+
     valid = [r for r in results if r.valid]
     log.info("Validation done: %d valid / %d total", len(valid), len(results))
 
