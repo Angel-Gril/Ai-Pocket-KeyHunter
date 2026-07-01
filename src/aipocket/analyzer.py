@@ -38,9 +38,10 @@ EXTRACT_SYSTEM = (
 )
 
 RECHECK_SYSTEM = (
-    "You are a security validation tool. Given a chat completion API probe's HTTP status code and response body, "
-    "determine if the API key is genuinely valid for LLM inference. Return JSON: "
-    '{"valid": true/false, "reason": "...", "gateway": "litellm|oneapi|openai|unknown"}. '
+    "You are a security validation tool. Given one or more chat completion API probe results, "
+    "determine if each API key is genuinely valid for LLM inference. "
+    "Return a JSON ARRAY with one object per entry in the same order: "
+    '[{"idx": 0, "valid": true/false, "reason": "...", "gateway": "litellm|oneapi|openai|unknown"}, ...]. '
     "valid=true ONLY if the response is a real chat completion JSON or a rate-limit error from an LLM gateway. "
     "valid=false if it's HTML, a welcome page, a WAF block, or an unrelated service."
 )
@@ -61,14 +62,15 @@ def _batch_size() -> int:
     return 10 if settings.gpt_fast else EXTRACT_BATCH_SIZE
 
 
-def _make_client() -> httpx.AsyncClient:
+def _make_client(max_connections: int | None = None) -> httpx.AsyncClient:
+    pool_size = max_connections or _concurrency() * 2
     return httpx.AsyncClient(
         timeout=60.0,
         headers={
             "Authorization": f"Bearer {settings.gpt_key}",
             "Content-Type": "application/json",
         },
-        limits=httpx.Limits(max_connections=_concurrency() * 2),
+        limits=httpx.Limits(max_connections=pool_size),
     )
 
 
@@ -331,57 +333,113 @@ async def extract_with_gpt(raw_hits: list[dict[str, Any]]) -> list[Credential]:
     return all_creds
 
 
-async def _recheck_one(
-    client: httpx.AsyncClient,
-    sem: asyncio.Semaphore,
-    result: ValidationResult,
-) -> ValidationResult:
-    if not result.valid:
-        return result
+def _recheck_concurrency() -> int:
+    """Re-check uses its own (higher) concurrency to move faster."""
+    return settings.gpt_recheck_concurrency
+
+
+def _recheck_batch_size() -> int:
+    return settings.gpt_recheck_batch_size
+
+
+def _format_recheck_entry(idx: int, result: ValidationResult) -> str:
     host = result.credential.apiurl
     snippet = (result.response_snippet or "")[:300]
-    payload = (
+    return (
+        f"--- ENTRY {idx} ---\n"
         f"URL: {host}\nStatus: {result.status_code}\n"
         f"Rate headers: {json.dumps(result.rate_limit_headers)}\n"
         f"Response body (first 300 chars): {snippet}"
     )
+
+
+async def _recheck_batch(
+    client: httpx.AsyncClient,
+    sem: asyncio.Semaphore,
+    batch: list[ValidationResult],
+    batch_idx: int,
+    total_batches: int,
+) -> list[ValidationResult]:
+    """Re-check a batch of valid results in one GPT call."""
+    payload_parts = []
+    for i, r in enumerate(batch):
+        payload_parts.append(_format_recheck_entry(i, r))
+    payload = "\n\n".join(payload_parts)
+
     async with sem:
         try:
-            resp = await _chat(client, RECHECK_SYSTEM, payload, max_tokens=200)
+            resp = await _chat(client, RECHECK_SYSTEM, payload, max_tokens=200 + 80 * len(batch))
         except httpx.TimeoutException as e:
-            log.warning("GPT recheck TIMEOUT for %s (%s)", host, type(e).__name__)
-            return result
+            log.warning("GPT recheck batch %d/%d TIMEOUT (%s)", batch_idx, total_batches, type(e).__name__)
+            return batch
         except httpx.HTTPStatusError as e:
-            log.warning("GPT recheck HTTP %s for %s: body[:300]=%r", e.response.status_code, host, e.response.text[:300])
-            return result
+            log.warning(
+                "GPT recheck batch %d/%d HTTP %s: body[:300]=%r",
+                batch_idx, total_batches, e.response.status_code, e.response.text[:300],
+            )
+            return batch
         except httpx.HTTPError as e:
-            log.warning("GPT recheck failed for %s (%s): %s", host, type(e).__name__, e)
-            return result
+            log.warning("GPT recheck batch %d/%d failed (%s): %s", batch_idx, total_batches, type(e).__name__, e)
+            return batch
         except (KeyError, ValueError) as e:
-            log.warning("GPT recheck malformed response for %s (%s): %s", host, type(e).__name__, e)
-            return result
-    verdict = _extract_json_object(resp)
-    if not verdict:
-        return result
-    if verdict.get("valid") is False:
-        result.valid = False
-        result.error = f"gpt-rejected: {verdict.get('reason', 'unknown')}"
-    gateway = verdict.get("gateway", "")
-    if gateway and gateway != "unknown":
-        result.gateway = gateway
-    return result
+            log.warning("GPT recheck batch %d/%d malformed (%s): %s", batch_idx, total_batches, type(e).__name__, e)
+            return batch
+
+    verdicts = _extract_json_array(resp)
+    # Build index map from GPT response
+    verdict_map: dict[int, dict[str, Any]] = {}
+    for v in verdicts:
+        idx = v.get("idx")
+        if idx is not None:
+            verdict_map[int(idx)] = v
+
+    # Apply verdicts
+    rejected = 0
+    for i, result in enumerate(batch):
+        verdict = verdict_map.get(i)
+        if not verdict:
+            continue
+        if verdict.get("valid") is False:
+            result.valid = False
+            result.error = f"gpt-rejected: {verdict.get('reason', 'unknown')}"
+            rejected += 1
+        gateway = verdict.get("gateway", "")
+        if gateway and gateway != "unknown":
+            result.gateway = gateway
+
+    if rejected:
+        log.info("GPT recheck batch %d/%d: rejected %d/%d", batch_idx, total_batches, rejected, len(batch))
+    return batch
 
 
 async def recheck_all_with_gpt(results: list[ValidationResult]) -> list[ValidationResult]:
     if not settings.gpt_key or not settings.gpt_base_url:
         return results
-    valid_count = sum(1 for r in results if r.valid)
-    if valid_count == 0:
+    valid_results = [r for r in results if r.valid]
+    if not valid_results:
         return results
-    log.info("GPT re-checking %d valid results (concurrency=%d)...", valid_count, _concurrency())
-    sem = asyncio.Semaphore(_concurrency())
-    async with _make_client() as client:
-        return await asyncio.gather(*[_recheck_one(client, sem, r) for r in results])
+
+    concurrency = _recheck_concurrency()
+    batch_size = _recheck_batch_size()
+    batches = [valid_results[i : i + batch_size] for i in range(0, len(valid_results), batch_size)]
+    total = len(batches)
+
+    log.info(
+        "GPT re-checking %d valid results (%d batches, batch_size=%d, concurrency=%d)...",
+        len(valid_results), total, batch_size, concurrency,
+    )
+
+    # Cooldown between GPT extract and re-check to reduce 529 rate-limit storms
+    if settings.gpt_recheck_cooldown > 0:
+        log.info("Cooling down %.1fs before GPT re-check to avoid rate-limit...", settings.gpt_recheck_cooldown)
+        await asyncio.sleep(settings.gpt_recheck_cooldown)
+
+    sem = asyncio.Semaphore(concurrency)
+    async with _make_client(max_connections=concurrency * 2) as client:
+        tasks = [_recheck_batch(client, sem, b, idx + 1, total) for idx, b in enumerate(batches)]
+        await asyncio.gather(*tasks)
+
+    return results
 
 
 async def recheck_with_gpt(result: ValidationResult) -> ValidationResult:

@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     gpt_key: str = ""
     gpt_model: str = "gpt-4o-mini"
     gpt_fast: bool = False
+    gpt_recheck_concurrency: int = 10
+    gpt_recheck_batch_size: int = 10
+    # Seconds to wait between GPT extract and GPT re-check to avoid rate-limit storms
+    gpt_recheck_cooldown: float = 5.0
     # When True, dump each GPT batch payload to <run>/gpt_debug/ for debugging
     # prompt/extract issues. Off by default (writes a lot of files).
     gpt_debug: bool = False
