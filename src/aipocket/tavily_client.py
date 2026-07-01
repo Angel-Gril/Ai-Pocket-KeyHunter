@@ -14,43 +14,70 @@ from .config import settings
 log = logging.getLogger(__name__)
 
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}", re.I)
-CVSS_RE = re.compile(r"CVSS[:\s]*v?[23]?\.?1?\s*[:\s]*([0-9]+\.?[0-9]*)", re.I)
+CVSS_RE = re.compile(r"CVSS\s*(?:v[23](?:\.\d)?)?\s*[:/]\s*([0-9]\.[0-9])", re.I)
 
+# Products that STORE or PROXY multiple API keys — one compromise = key jackpot
 KNOWN_AI_PRODUCTS = [
-    "dify", "flowise", "librechat", "litellm", "open webui", "openwebui",
-    "langflow", "mlflow", "langchain", "langgraph", "portkey", "praison",
-    "one-api", "new-api", "fastgpt", "anythingllm", "vllm", "text-generation-webui",
-    "qdrant", "chromadb", "pinea", "llamafile", "ollama", "localai",
-    "glitter", "lobe-chat", "lobechat", "cherry-studio", "dify.ai",
-    "baichuan", "qwen", "chatglm", "xmchat",
-    "mistral.rs", "mistralrs", "text-generation-inference", "tgi",
-    "jan", "chatbox", "chatbot-ollama",
-    "simpleoneai", "chatgpt-next-web", "nextchat", "gpt-next-web",
-    "chatgpt-next", "chat-ollama",
+    # --- P0: Gateway/Aggregator (stores dozens~hundreds of provider keys) ---
+    "one-api", "new-api", "litellm", "openrouter",
+    "siliconflow", "silicon flow", "302ai", "302.ai",
+    "portkey", "lobe-chat", "lobechat",
+    "praisonai", "praison",  # PraisonAI Gateway
+    "gitlab ai gateway",
+    # --- P1: AI Platforms (stores provider keys in config/DB) ---
+    "dify", "flowise", "librechat", "open webui", "openwebui",
+    "fastgpt", "anythingllm", "langflow", "mlflow",
+    "langchain-chatchat", "langchain chatchat",
+    "wandb",  # hardcoded LITELLM_MASTER_KEY
+    # --- P2: Chat UIs (often deployed with naked provider keys in env) ---
+    "chatgpt-next-web", "nextchat", "cherry-studio",
+    "chat-ollama", "chatbox",
+    # --- Chinese AI platforms (direct key targets) ---
+    "deepseek", "chatglm", "qwen", "dashscope", "moonshot",
 ]
 
+# Only CVE types that lead to API key extraction
 CVE_TYPE_KEYWORDS = {
-    "RCE": ["remote code execution", "code execution", "rce", "arbitrary code", "command execution"],
-    "认证绕过": ["authentication bypass", "auth bypass", "bypass authentication", "idor"],
-    "API key泄露": ["api key", "apikey", "credential leak", "secret leak", "token leak", "hardcoded"],
-    "信息泄露": ["information disclosure", "info leak", "data leak", "sensitive info", "ssrf"],
-    "权限提升": ["privilege escalation", "privesc", "escalation"],
-    "SQL注入": ["sql injection", "sqli"],
-    "SSRF": ["ssrf", "server-side request forgery"],
-    "沙箱逃逸": ["sandbox escape", "sandbox bypass", "escape sandbox"],
-    "DoS": ["denial of service", "dos", "crash", "oom", "out of memory"],
+    "API key泄露": ["api key", "apikey", "api_key", "credential leak", "secret leak",
+                   "token leak", "hardcoded", "env var", "environment variable",
+                   "exfiltrat", "leaking", "expose key", "expose credential",
+                   "default credential", "default password", "plaintext"],
+    "认证绕过": ["authentication bypass", "auth bypass", "bypass authentication",
+                "idor", "unauthorized access", "no authentication",
+                "without authentication", "unauthenticated", "cors"],
+    "SSRF": ["ssrf", "server-side request forgery", "internal endpoint",
+             "metadata endpoint", "169.254", "redirect", "internal service"],
+    "信息泄露": ["information disclosure", "info leak", "data leak",
+                "config leak", "path traversal", "directory traversal",
+                "env exposure", ".env"],
+    "SQL注入": ["sql injection", "sqli", "database", "read/modify",
+               "cypher injection"],
+    "RCE": ["remote code execution", "code execution", "rce", "arbitrary code",
+             "command execution", "command injection"],
+    "权限提升": ["privilege escalation", "privesc", "role elevation",
+                "proxy_admin", "admin access"],
 }
 
+# Queries laser-focused on key-leaking attack surfaces
 SEARCH_QUERIES = [
-    "AI LLM gateway CVE 2026 vulnerability RCE",
-    "Dify Flowise Langflow CVE 2026",
-    "LiteLLM LibreChat OpenWebUI CVE 2026",
-    "LangChain LangGraph MLflow CVE 2026 vulnerability",
-    "one-api new-api fastgpt CVE 2026",
-    "AI proxy gateway api_key leak CVE 2026",
-    "site:nvd.nist.gov AI LLM 2026",
-    "site:huntr.dev AI LLM vulnerability 2026",
-    "site:github.com GHSA AI gateway vulnerability 2026",
+    # Direct key leak CVEs in AI gateways (2025+2026, old CVEs still exploitable)
+    "one-api new-api LiteLLM CVE 2026 API key leak credential",
+    "one-api new-api LiteLLM CVE 2025 API key credential",
+    "AI gateway credential exposure environment variable leak CVE 2026",
+    # Auth bypass → access gateway key management
+    "LiteLLM Dify Flowise authentication bypass CVE 2026",
+    "one-api new-api admin bypass unauthenticated CVE 2026",
+    "Portkey PraisonAI gateway SSRF authentication bypass CVE",
+    # SSRF → reach internal key stores / cloud metadata
+    "OpenWebUI LibreChat Dify SSRF CVE 2026 internal",
+    # RCE on gateways = dump all stored keys
+    "LiteLLM Flowise LibreChat RCE CVE 2026 gateway",
+    "Langflow MLflow RCE credential CVE 2026",
+    # Config/env leak in AI deployments
+    "LobeChat FastGPT config leak api_key env CVE 2026",
+    # Authoritative sources (narrowed to key-relevant)
+    "site:huntr.dev AI LLM api key leak 2026",
+    "site:nvd.nist.gov litellm one-api dify flowise 2026",
 ]
 
 
@@ -81,7 +108,7 @@ def _parse_cve_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     cve_id = cve_matches[0].upper()
-    if not cve_id.startswith("CVE-2026"):
+    if not (cve_id.startswith("CVE-2026") or cve_id.startswith("CVE-2025")):
         return None
 
     product = _extract_products(combined)
@@ -93,7 +120,19 @@ def _parse_cve_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
 
     cve_type = _classify_type(combined)
 
-    description = content[:300].strip().replace("\n", " ")
+    # Filter garbage: skip descriptions that are clearly page boilerplate
+    description = content[:500].strip().replace("\n", " ")
+    garbage_signals = [
+        "cookie", "opens in a new window", "opens in a new tab",
+        "this website utilizes technologies", "survey opens",
+        "change history", "change records found show changes",
+    ]
+    desc_lower = description.lower()
+    if any(sig in desc_lower for sig in garbage_signals):
+        # Fall back to title which is usually cleaner
+        description = title
+    # Trim to reasonable length
+    description = description[:300]
     if not description:
         description = title
 
@@ -103,7 +142,7 @@ def _parse_cve_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
         "product": product,
         "type": cve_type,
         "description": description,
-        "huntable": "高" if cvss >= 7.0 or cve_type in ("RCE", "认证绕过", "API key泄露") else "中",
+        "huntable": "高" if cve_type in ("API key泄露", "认证绕过", "SSRF") or cvss >= 8.0 else "中",
         "date": datetime.now(UTC).strftime("%Y-%m-%d"),
         "source_url": url,
     }

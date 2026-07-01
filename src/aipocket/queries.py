@@ -150,8 +150,11 @@ CREDENTIAL_QUERIES: list[str] = [
 
 def load_cves(path: Path | None = None) -> list[dict[str, Any]]:
     p = path or CVE_PATH
-    with p.open(encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        text = p.read_text(encoding="utf-8").strip()
+        return json.loads(text) if text else []
+    except (json.JSONDecodeError, FileNotFoundError):
+        return []
 
 
 SKIP_PRODUCTS = frozenset({

@@ -1,43 +1,126 @@
 [
   {
+    "id": "CVE-2025-0330",
+    "cvss": 0.0,
+    "product": "litellm",
+    "type": "API key泄露",
+    "description": "The CVE-2025-0330 issue affects berriai/litellm v1.52.1, where a flaw in proxy_server.py leads to leakage of Langfuse API keys (langfuse_secret and",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://vulners.com/search/vendors/litellm/products/litellm"
+  },
+  {
+    "id": "CVE-2025-3248",
+    "cvss": 0.0,
+    "product": "langflow",
+    "type": "认证绕过",
+    "description": "## Navigation Menu. # Search code, repositories, users, issues, pull requests... # Provide feedback. We read every piece of feedback, and take your input very seriously. # Saved searches. ## Use saved searches to filter your results more quickly. # Unauthenticated Remote Code Execution in Langflow v",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://github.com/langflow-ai/langflow/security/advisories/GHSA-vwmf-pq79-vjvx"
+  },
+  {
+    "id": "CVE-2025-34291",
+    "cvss": 0.0,
+    "product": "langflow",
+    "type": "API key泄露",
+    "description": "# CVE-2025-34291: Critical Account Takeover and RCE Vulnerability in the Langflow AI Agent & Workflow Platform. Security researchers at **Obsidian Security** have uncovered a **critical vulnerability chain** in **Langflow**, a popular open-source AI agent and workflow platform (over 140K GitHub star",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://www.obsidiansecurity.com/blog/cve-2025-34291-critical-account-takeover-and-rce-vulnerability-in-the-langflow-ai-agent-workflow-platform"
+  },
+  {
+    "id": "CVE-2025-45809",
+    "cvss": 5.4,
+    "product": "LiteLLM",
+    "type": "SQL注入",
+    "description": "SQL injection in /key/block and /key/unblock API endpoints via key parameter. Attackers can execute arbitrary SQL commands against LiteLLM database.",
+    "huntable": "高",
+    "date": "2026-03-12"
+  },
+  {
+    "id": "CVE-2025-56157",
+    "cvss": 9.8,
+    "product": "Dify",
+    "type": "API key泄露",
+    "description": "Default PostgreSQL credentials (username/password) specified in docker-compose.yaml included in Dify source code through v1.5.1.",
+    "huntable": "高",
+    "date": "2026-01-29"
+  },
+  {
+    "id": "CVE-2025-61260",
+    "cvss": 9.8,
+    "product": "OpenAI Codex CLI",
+    "type": "RCE",
+    "description": "OpenAI Codex CLI v0.23.0 auto-loads project-local .env and .codex/config.toml without user confirmation. Malicious repo can embed arbitrary commands that execute immediately via MCP configuration files.",
+    "huntable": "高",
+    "date": "2026-06-17"
+  },
+  {
+    "id": "CVE-2025-63386",
+    "cvss": 9.1,
+    "product": "Dify",
+    "type": "认证绕过",
+    "description": "CORS misconfiguration in /console/api/setup reflects arbitrary Origin with Access-Control-Allow-Credentials: true, permitting external domains to make authenticated cross-origin requests.",
+    "huntable": "中",
+    "date": "2026-02-11"
+  },
+  {
+    "id": "CVE-2025-66405",
+    "cvss": 9.8,
+    "product": "Portkey AI Gateway",
+    "type": "SSRF",
+    "description": "Portkey Gateway determines destination baseURL from x-portkey-custom-host header. Malicious users can perform SSRF attacks by setting custom host to internal targets.",
+    "huntable": "高",
+    "date": "2026-02-20"
+  },
+  {
+    "id": "CVE-2025-67732",
+    "cvss": 6.5,
+    "product": "Dify",
+    "type": "API key泄露",
+    "description": "Dify API key exposed in plaintext to frontend, allowing non-admin users to view and reuse it for unauthorized access to third-party services and quota consumption.",
+    "huntable": "高",
+    "date": "2026-01-12"
+  },
+  {
+    "id": "CVE-2025-69222",
+    "cvss": 9.1,
+    "product": "LibreChat",
+    "type": "SSRF",
+    "description": "LibreChat default configuration has no restrictions on agent Action services. Agents can access internal components like RAG API, enabling SSRF to internal network resources.",
+    "huntable": "高",
+    "date": "2026-01-15"
+  },
+  {
     "id": "CVE-2026-0766",
     "cvss": 0.0,
     "product": "open webui",
-    "type": "信息泄露",
-    "description": "No action required. This CVE describes intended functionality. Tools execute Python code on the server by design. If you have granted workspace.",
+    "type": "RCE",
+    "description": "# CVE-2026-0766. | **CVE ID** | CVE-2026-0766 |. The function `load_tool_module_by_id` in `backend/open_webui/utils/plugin.py` allegedly allows a low-privileged authenticated remote attacker to execute arbitrary Python code by submitting a Tool whose source contains arbitrary Python, which the funct",
     "huntable": "中",
-    "date": "2026-06-30",
+    "date": "2026-07-01",
     "source_url": "https://docs.openwebui.com/security/vendor-dispositions/cve-2026-0766"
   },
   {
-    "id": "CVE-2026-12795",
-    "cvss": 1.0,
-    "product": "litellm",
-    "type": "API key泄露",
-    "description": "CVE | Vendors | Products | Updated | CVSS v3.1 || CVE-2026-12795 | 2 Berriai, Litellm | 2 Litellm, Litellm | 2026-06-23 | 7.3 High |. | A vulnerability was determined in BerriAI litellm up to 1.82.2. This affects the function json.dumps of the file litellm/proxy/management\\_endpoints/ui\\_sso.py of t",
-    "huntable": "高",
-    "date": "2026-06-30",
-    "source_url": "https://app.opencve.io/cve?vendor=litellm"
-  },
-  {
-    "id": "CVE-2026-12822",
-    "cvss": 1.0,
-    "product": "langflow",
-    "type": "RCE",
-    "description": "Opens in a new window Opens an external website Opens an external website in a new window. This website utilizes technologies such as cookies to enable essential site functionality, as well as for analytics, personalization, and targeted advertising. Survey opens in a new tab or window depending on",
-    "huntable": "高",
-    "date": "2026-06-30",
-    "source_url": "https://www.cve.org/CVERecord?id=CVE-2026-12822"
-  },
-  {
-    "id": "CVE-2026-12957",
+    "id": "CVE-2026-0767",
     "cvss": 0.0,
-    "product": "dify",
+    "product": "open webui",
     "type": "RCE",
-    "description": "*   [Code](https://github.com/webpro255/awesome-ai-agent-attacks). *   [Issues 5](https://github.com/webpro255/awesome-ai-agent-attacks/issues). *   [Actions](https://github.com/webpro255/awesome-ai-agent-attacks/actions). *   [Security and quality 0](https://github.com/webpro255/awesome-ai-agent-at",
+    "description": "| **CVE ID** | CVE-2026-0767 |. User credentials (email and password) submitted to Open WebUI's login endpoint are transmitted in cleartext if the application is deployed over plain HTTP rather than HTTPS, allowing a network-adjacent attacker to intercept them. ## Why This Is Not a Vulnerability​. T",
+    "huntable": "中",
+    "date": "2026-07-01",
+    "source_url": "https://docs.openwebui.com/security/vendor-dispositions/cve-2026-0767"
+  },
+  {
+    "id": "CVE-2026-10564",
+    "cvss": 0.0,
+    "product": "langflow",
+    "type": "API key泄露",
+    "description": "Live Exposure Defense: From CVE to Confirmed Exposure in 12 Hours – See more. # CVE-2026-10564 – SSRF / Cloud Metadata Credential Theft – IBM Langflow OSS 1.0.0–1.9.6. **CVE-2026-10564** is a high-severity Server-Side Request Forgery (SSRF) vulnerability (CWE-918) affecting IBM Langflow OSS versions",
     "huntable": "高",
     "date": "2026-07-01",
-    "source_url": "https://github.com/webpro255/awesome-ai-agent-attacks"
+    "source_url": "https://www.ionix.io/threat-center/cve-2026-10564"
   },
   {
     "id": "CVE-2026-1868",
@@ -77,12 +160,12 @@
   },
   {
     "id": "CVE-2026-25591",
-    "cvss": 1.0,
+    "cvss": 0.0,
     "product": "new-api",
     "type": "信息泄露",
-    "description": "Change History 2 change records found show changes  **Initial Analysis by NIST 3/03/2026 12:22:36 PM**  | Action | Type | Old Value | New Value | | --- | --- | --- | --- | | Added | CVSS V3.1 |  | ``` AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H ``` | | Added | CPE Configuration |  | ``` OR           *cpe:2.",
+    "description": "NVD - CVE-2026-25591",
     "huntable": "中",
-    "date": "2026-06-30",
+    "date": "2026-07-01",
     "source_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25591"
   },
   {
@@ -104,14 +187,14 @@
     "date": "2026-04-17"
   },
   {
-    "id": "CVE-2026-25802",
-    "cvss": 1.0,
-    "product": "new-api",
+    "id": "CVE-2026-26003",
+    "cvss": 0.0,
+    "product": "fastgpt",
     "type": "信息泄露",
-    "description": "Change History 4 change records found show changes  **CVE Modified by CISA-ADP 6/17/2026 6:25:16 AM**  | Action | Type | Old Value | New Value | | --- | --- | --- | --- | | Added | SSVC |  | ``` {\"timestamp\":\"2026-02-26T14:58:19.417572Z\",\"id\":\"CVE-2026-25802\",\"options\":[{\"exploitation\":\"poc\"},{\"auto",
+    "description": "This may cause the plugin system to crash and the loss of plugin installation status, but it will not result in key leakage. For older versions,",
     "huntable": "中",
-    "date": "2026-06-30",
-    "source_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25802"
+    "date": "2026-07-01",
+    "source_url": "https://cvefeed.io/vuln/detail/CVE-2026-26003"
   },
   {
     "id": "CVE-2026-2611",
@@ -123,26 +206,6 @@
     "date": "2026-05-22"
   },
   {
-    "id": "CVE-2026-26980",
-    "cvss": 0.0,
-    "product": "litellm",
-    "type": "RCE",
-    "description": "On May 21, 2026, cybersecurity firm XLab published a [technical analysis](https://blog.xlab.qianxin.com/ghost-cms-mass-compromised-via-cve-2026-26980-now-fueling-clickfix-attacks/ \"technical analysis\") detailing large-scale ClickFix poisoning campaigns targeting vulnerable Ghost Content Management S",
-    "huntable": "高",
-    "date": "2026-06-30",
-    "source_url": "https://www.recordedfuture.com/blog/may-2026-cve-landscape"
-  },
-  {
-    "id": "CVE-2026-27794",
-    "cvss": 1.0,
-    "product": "langchain",
-    "type": "RCE",
-    "description": "| CVE-2026-27794 Detail **Not Scheduled**   ---   This CVE record is not being prioritized for NVD enrichment efforts due to resource or other concerns. ``` | | Added | CVSS V3.1 |  | ``` AV:N/AC:H/PR:H/UI:N/S:U/C:H/I:H/A:H ``` | | Added | CWE |  | ``` CWE-502 ``` | | Added | Reference |  | ``` http",
-    "huntable": "高",
-    "date": "2026-06-30",
-    "source_url": "https://nvd.nist.gov/vuln/detail/cve-2026-27794"
-  },
-  {
     "id": "CVE-2026-27966",
     "cvss": 9.8,
     "product": "Langflow",
@@ -152,16 +215,6 @@
     "date": "2026-04-18"
   },
   {
-    "id": "CVE-2026-28277",
-    "cvss": 6.8,
-    "product": "langchain",
-    "type": "RCE",
-    "description": "Skip to main contentPSA: Two LangGraph checkpoint vulnerabilities disclosed -- unsafe msgpack deserialization (CVE-2026-28277) and Redis query injection (CVE-2026-27022). Image 1 Go to LangChain. # PSA: Two LangGraph checkpoint vulnerabilities disclosed -- unsafe msgpack deserialization (CVE-2026-28",
-    "huntable": "高",
-    "date": "2026-06-30",
-    "source_url": "https://www.reddit.com/r/LangChain/comments/1rycurg/psa_two_langgraph_checkpoint_vulnerabilities"
-  },
-  {
     "id": "CVE-2026-30617",
     "cvss": 8.6,
     "product": "LangChain-ChatChat",
@@ -169,16 +222,6 @@
     "description": "LangChain-ChatChat 0.3.1 MCP STDIO server configuration allows remote attackers to access publicly exposed MCP management interface and configure server with attacker-controlled commands for RCE.",
     "huntable": "高",
     "date": "2026-04-17"
-  },
-  {
-    "id": "CVE-2026-30886",
-    "cvss": 0.0,
-    "product": "new-api",
-    "type": "信息泄露",
-    "description": "Change History 4 change records found show changes  **CVE Modified by CISA-ADP 6/17/2026 6:33:05 AM**  | Action | Type | Old Value | New Value | | --- | --- | --- | --- | | Added | SSVC |  | ``` {\"timestamp\":\"2026-03-25T14:40:22.987585Z\",\"id\":\"CVE-2026-30886\",\"options\":[{\"exploitation\":\"poc\"},{\"auto",
-    "huntable": "中",
-    "date": "2026-06-30",
-    "source_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-30886"
   },
   {
     "id": "CVE-2026-31942",
@@ -199,34 +242,24 @@
     "date": "2026-06-04"
   },
   {
-    "id": "CVE-2026-32879",
-    "cvss": 0.0,
-    "product": "new-api",
-    "type": "信息泄露",
-    "description": "Change History 4 change records found show changes  **CVE Modified by CISA-ADP 6/17/2026 6:36:29 AM**  | Action | Type | Old Value | New Value | | --- | --- | --- | --- | | Added | SSVC |  | ``` {\"timestamp\":\"2026-03-24T14:43:16.316975Z\",\"id\":\"CVE-2026-32879\",\"options\":[{\"exploitation\":\"none\"},{\"aut",
-    "huntable": "中",
-    "date": "2026-06-30",
-    "source_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-32879"
-  },
-  {
     "id": "CVE-2026-33017",
     "cvss": 0.0,
     "product": "langflow",
-    "type": "RCE",
+    "type": "SQL注入",
     "description": "# Langflow RCE CVE-2026-33017: Exploited Within 20 Hours. A single compromised Langflow instance is not simply a server breach; it is a potential entry point into every connected AI service credential, cloud account, and database the platform has been configured to access. Langflow deployments are o",
-    "huntable": "高",
-    "date": "2026-06-30",
+    "huntable": "中",
+    "date": "2026-07-01",
     "source_url": "https://labs.cloudsecurityalliance.org/research/csa-research-note-cve-2026-33017-langflow-ai-pipeline-rce-20"
   },
   {
-    "id": "CVE-2026-33873",
+    "id": "CVE-2026-33475",
     "cvss": 0.0,
     "product": "langflow",
-    "type": "RCE",
-    "description": "CVE-2026-33873 is a remote code execution flaw in Langflow Agentic Assistant that executes LLM-generated Python code server-side. Prior to version 1.9.0, the Agentic Assistant feature in Langflow executes LLM-generated Python code during its validation phase. In deployments where an attacker can acc",
+    "type": "API key泄露",
+    "description": "| CVE-2026-33475 Detail Description Langflow is a tool for building and deploying AI-powered agents and workflows. --- ### Impact - \\*\\*Type:\\*\\* Shell Injection / Remote Code Execution in CI - \\*\\*Scope:\\*\\* Any public Langflow fork with GitHub Actions enabled - \\*\\*Impact:\\*\\* Full access to CI se",
     "huntable": "高",
-    "date": "2026-06-30",
-    "source_url": "https://www.sentinelone.com/vulnerability-database/cve-2026-33873"
+    "date": "2026-07-01",
+    "source_url": "https://nvd.nist.gov/vuln/detail/cve-2026-33475"
   },
   {
     "id": "CVE-2026-34070",
@@ -247,14 +280,14 @@
     "date": "2026-04-23"
   },
   {
-    "id": "CVE-2026-34162",
+    "id": "CVE-2026-34225",
     "cvss": 0.0,
-    "product": "fastgpt",
-    "type": "API key泄露",
-    "description": "Other information and services of the government:  www.belgium.be (opens in a new tab)   Centre for Cybersecurity Belgium. As the national authority for Cybersecurity the CCB has developed several initiatives for specific publics which are presented here. The CCB’s mission include being the national",
+    "product": "open webui",
+    "type": "SSRF",
+    "description": "# CVE-2026-34225: Open WebUI Blind SSRF Vulnerability. CVE-2026-34225 is a blind server-side request forgery flaw in Open WebUI that enables attackers to scan internal networks and interact with local services. ## CVE-2026-34225 Overview. CVE-2026-34225 is a Blind Server-Side Request Forgery (SSRF) ",
     "huntable": "高",
-    "date": "2026-06-30",
-    "source_url": "https://ccb.belgium.be/advisories/warning-critical-vulnerability-fastgpt-patch-immediately"
+    "date": "2026-07-01",
+    "source_url": "https://www.sentinelone.com/vulnerability-database/cve-2026-34225"
   },
   {
     "id": "CVE-2026-34936",
@@ -264,6 +297,16 @@
     "description": "PraisonAI passthrough() accepts caller-controlled api_base parameter concatenated with endpoint and passed directly to httpx.Client without URL scheme validation or private IP filtering.",
     "huntable": "中",
     "date": "2026-04-15"
+  },
+  {
+    "id": "CVE-2026-34937",
+    "cvss": 0.0,
+    "product": "praisonai",
+    "type": "认证绕过",
+    "description": "**Source attribution note:** The NVD description text for `CVE-2026-34937` refers to `run_python() in praisonai`, while the GHSA package field and the 1.5.x fix version series both indicate the affected package is `praisonaiagents`. references:  -  https://nvd.nist.gov/vuln/detail/CVE-2026-34935  - ",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://raxe.ai/labs/advisories/RAXE-2026-050"
   },
   {
     "id": "CVE-2026-34952",
@@ -338,6 +381,16 @@
     "date": "2026-06-04"
   },
   {
+    "id": "CVE-2026-40351",
+    "cvss": 0.0,
+    "product": "fastgpt",
+    "type": "认证绕过",
+    "description": "### Search Results (14 CVEs found). ### Search. CVE | Vendors | Products | Updated | CVSS v3.1 || CVE-2026-40351 | 2 Fastgpt, Labring | 2 Fastgpt, Fastgpt | 2026-04-27 | 9.8 Critical |. In versions prior to 4.14.9.5, the password-based login endpoint uses TypeScript type assertion without runtime va",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://app.opencve.io/cve?vendor=fastgpt"
+  },
+  {
     "id": "CVE-2026-41137",
     "cvss": 8.8,
     "product": "Flowise",
@@ -354,16 +407,6 @@
     "description": "GraphCypherQAChain node forwards user input directly into Cypher query pipeline without sanitization. Attacker can inject arbitrary Cypher commands for data exfiltration, modification, or deletion on Neo4j database.",
     "huntable": "高",
     "date": "2026-05-04"
-  },
-  {
-    "id": "CVE-2026-41432",
-    "cvss": 1.0,
-    "product": "new-api",
-    "type": "信息泄露",
-    "description": "Change History 5 change records found show changes  **CVE Modified by CISA-ADP 6/17/2026 6:46:43 AM**  | Action | Type | Old Value | New Value | | --- | --- | --- | --- | | Added | SSVC |  | ``` {\"timestamp\":\"2026-05-12T02:11:52.287293Z\",\"id\":\"CVE-2026-41432\",\"options\":[{\"exploitation\":\"poc\"},{\"auto",
-    "huntable": "中",
-    "date": "2026-06-30",
-    "source_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-41432"
   },
   {
     "id": "CVE-2026-41481",
@@ -402,16 +445,6 @@
     "date": "2026-05-12"
   },
   {
-    "id": "CVE-2026-42048",
-    "cvss": 0.0,
-    "product": "langflow",
-    "type": "信息泄露",
-    "description": "Opens in a new window Opens an external website Opens an external website in a new window. This website utilizes technologies such as cookies to enable essential site functionality, as well as for analytics, personalization, and targeted advertising. Survey opens in a new tab or window depending on",
-    "huntable": "中",
-    "date": "2026-06-30",
-    "source_url": "https://www.cve.org/CVERecord?id=CVE-2026-42048"
-  },
-  {
     "id": "CVE-2026-42203",
     "cvss": 8.8,
     "product": "LiteLLM (AI Gateway)",
@@ -439,16 +472,6 @@
     "date": "2026-06-08"
   },
   {
-    "id": "CVE-2026-42339",
-    "cvss": 1.0,
-    "product": "new-api",
-    "type": "信息泄露",
-    "description": "Change History 5 change records found show changes  **CVE Modified by CISA-ADP 6/17/2026 6:47:42 AM**  | Action | Type | Old Value | New Value | | --- | --- | --- | --- | | Added | SSVC |  | ``` {\"timestamp\":\"2026-05-11T15:56:42.403641Z\",\"id\":\"CVE-2026-42339\",\"options\":[{\"exploitation\":\"poc\"},{\"auto",
-    "huntable": "中",
-    "date": "2026-06-30",
-    "source_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-42339"
-  },
-  {
     "id": "CVE-2026-43995",
     "cvss": 9.8,
     "product": "Flowise",
@@ -456,6 +479,26 @@
     "description": "Multiple Flowise tool implementations (OpenAPIToolkit, WebScraperTool, MCP, Arxiv) use raw HTTP clients without SSRF protection, allowing requests to internal/metadata endpoints.",
     "huntable": "高",
     "date": "2026-05-20"
+  },
+  {
+    "id": "CVE-2026-44335",
+    "cvss": 0.0,
+    "product": "praisonai",
+    "type": "SSRF",
+    "description": "Summary. The URL checking logic in PraisonAI has a logical flaw that could be bypassed by attackers, leading to SSRF attacks.",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://www.endorlabs.com/vulnerability/cve-2026-44335"
+  },
+  {
+    "id": "CVE-2026-44338",
+    "cvss": 0.0,
+    "product": "praisonai",
+    "type": "认证绕过",
+    "description": "# PraisonAI CVE-2026-44338 Auth Bypass Targeted Within Hours of Disclosure. Threat actors have been observed attempting to exploit a recently disclosed security vulnerability in **PraisonAI**, an open-source multi-agent orchestration framework, within four hours of its public disclosure. The vulnera",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://thehackernews.com/2026/05/praisonai-cve-2026-44338-auth-bypass.html"
   },
   {
     "id": "CVE-2026-44467",
@@ -483,6 +526,16 @@
     "description": "/responses OpenAI router endpoint accepts any authenticated user and forwards to upstream LLM providers without per-model access control, bypassing model ownership and AccessGrants checks.",
     "huntable": "中",
     "date": "2026-05-19"
+  },
+  {
+    "id": "CVE-2026-44560",
+    "cvss": 0.0,
+    "product": "open webui",
+    "type": "信息泄露",
+    "description": "Prior to 0.8.11, the ydoc:document:join Socket.IO handler checks note ownership only when the document\\_id starts with note: (colon). Access control on these routes validates only whether the user may use the requested model, never which backend the request is routed to. Any authenticated user can a",
+    "huntable": "中",
+    "date": "2026-07-01",
+    "source_url": "https://feedly.com/cve/vendors/openwebui"
   },
   {
     "id": "CVE-2026-44843",
@@ -516,9 +569,9 @@
     "cvss": 0.0,
     "product": "open webui",
     "type": "信息泄露",
-    "description": "CVE-2026-45398 Detail. Description. Open WebUI is a self-hosted artificial intelligence platform designed to operate entirely offline. Prior to",
+    "description": "NVD - cve-2026-45398",
     "huntable": "中",
-    "date": "2026-06-30",
+    "date": "2026-07-01",
     "source_url": "https://nvd.nist.gov/vuln/detail/cve-2026-45398"
   },
   {
@@ -567,6 +620,16 @@
     "date": "2026-06-11"
   },
   {
+    "id": "CVE-2026-4789",
+    "cvss": 0.0,
+    "product": "dify",
+    "type": "API key泄露",
+    "description": "Abstract cyberpunk illustration of a green energy conduit breaking outward from inside a secure data cube to snatch a glowing digital key, representing an SSRF vulnerability and credential theft. # Kyverno SSRF: Breaking Kubernetes Namespace Isolation (CVE-2026-4789). A critical SSRF (Server-Side Re",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://orca.security/resources/blog/kyverno-ssrf-vulnerability-cve-2026-4789"
+  },
+  {
     "id": "CVE-2026-48775",
     "cvss": 6.8,
     "product": "LangGraph SQLite Checkpoint",
@@ -576,24 +639,14 @@
     "date": "2026-06-16"
   },
   {
-    "id": "CVE-2026-48907",
-    "cvss": 0.0,
-    "product": "litellm",
-    "type": "RCE",
-    "description": "Gaslight macOS Malware Is a Warning Shot at the AI Security Stack. PostCSS npm Typosquat: How to Check If Your Machine Is Compromised. CVE-2026-48907: How the Joomla JCE Exploit Works and What to Do About It. SpyCloud Report Finds Phishing Attacks Surge as Employee Data Is Exposed at 86% of Fortune.",
-    "huntable": "高",
-    "date": "2026-06-30",
-    "source_url": "https://latesthackingnews.com/2026/06/16/litellm-vulnerability-chain-ai-gateway-patch"
-  },
-  {
     "id": "CVE-2026-49468",
-    "cvss": 1.0,
+    "cvss": 3.1,
     "product": "litellm",
-    "type": "信息泄露",
-    "description": "Change History 4 change records found show changes  **Initial Analysis by NIST 6/24/2026 3:16:25 PM**  | Action | Type | Old Value | New Value | | --- | --- | --- | --- | | Added | CVSS V3.1 |  | ``` AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H ``` | | Added | CPE Configuration |  | ``` OR           *cpe:2.3",
-    "huntable": "中",
-    "date": "2026-06-30",
-    "source_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-49468"
+    "type": "认证绕过",
+    "description": "# CVE-2026-49468: LiteLLM: Authentication Bypass via Host Header Injection. A Host-header parsing flaw in the LiteLLM proxy could, under specific conditions, allow unauthenticated access to protected management routes. The auth layer derived the effective route from `request.url.path` in `litellm/pr",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://advisories.gitlab.com/pypi/litellm/CVE-2026-49468"
   },
   {
     "id": "CVE-2026-4993",
@@ -608,11 +661,21 @@
     "id": "CVE-2026-5027",
     "cvss": 0.0,
     "product": "langflow",
-    "type": "RCE",
-    "description": "They run with default authentication settings and sit on public IPs because someone needed to demo a flow to a stakeholder...\". A critical vulnerability in AI toolkit Langflow is getting exploited in the wild – but has yet to hit CISA’s KEV, a week after exploitation was first reported. The vulnerab",
+    "type": "认证绕过",
+    "description": "[___](https://orca.security/resources/blog/cve-2026-5027-langflow-path-traversal-rce#). [Platform Overview](https://orca.security/platform/). [Technology](https://orca.security/solutions/industries/technology-services/). [Resource Library](https://orca.security/resources/). [Blog](https://orca.secur",
     "huntable": "高",
-    "date": "2026-06-30",
-    "source_url": "https://www.thestack.technology/langflow-instances-are-getting-exploited-again"
+    "date": "2026-07-01",
+    "source_url": "https://orca.security/resources/blog/cve-2026-5027-langflow-path-traversal-rce"
+  },
+  {
+    "id": "CVE-2026-54018",
+    "cvss": 0.0,
+    "product": "open webui",
+    "type": "信息泄露",
+    "description": "CVE-2026-54018 is a high-severity vulnerability (CVSS 7.7). It affects Open Webui. See affected versions, exploit status, EPSS, and fix guidance.",
+    "huntable": "中",
+    "date": "2026-07-01",
+    "source_url": "https://o3.security/vulnerability/CVE-2026-54018"
   },
   {
     "id": "CVE-2026-5497",
@@ -622,6 +685,16 @@
     "description": "vLLM ≥0.8.0 vulnerable to OOM DoS via unbounded frame count in VideoMediaIO.load_base64(). Unauthenticated attacker can crash server with crafted video/jpeg data URL containing thousands of JPEG frames.",
     "huntable": "中",
     "date": "2026-06-15"
+  },
+  {
+    "id": "CVE-2026-56399",
+    "cvss": 0.0,
+    "product": "open webui",
+    "type": "SSRF",
+    "description": "### Search. ### Search Results (107 CVEs found). CVE | Vendors | Products | Updated | CVSS v3.1 || CVE-2026-56399 | 1 Openwebui | 1 Open Webui | 2026-06-30 | 5 Medium |. | Open WebUI before 0.6.27 contains a server-side request forgery vulnerability in the /api/v1/retrieval/process/web endpoint that",
+    "huntable": "高",
+    "date": "2026-07-01",
+    "source_url": "https://app.opencve.io/cve?product=open_webui&vendor=openwebui"
   },
   {
     "id": "CVE-2026-6617",

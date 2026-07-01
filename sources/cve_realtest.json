@@ -1,5 +1,14 @@
 [
   {
+    "id": "CVE-2025-56157",
+    "cvss": 9.8,
+    "product": "Dify",
+    "type": "API key泄露",
+    "description": "Default PostgreSQL credentials (username/password) specified in docker-compose.yaml included in Dify source code through v1.5.1.",
+    "huntable": "高",
+    "date": "2026-01-29"
+  },
+  {
     "id": "CVE-2026-32625",
     "cvss": 9.6,
     "product": "LibreChat",
@@ -16,15 +25,6 @@
     "description": "Mass assignment in assistant update endpoint allows modifying workspaceId to reassign assistants across workspaces, breaking tenant isolation in multi-workspace deployments.",
     "huntable": "高",
     "date": "2026-06-11"
-  },
-  {
-    "id": "CVE-2026-41948",
-    "cvss": 9.4,
-    "product": "Dify",
-    "type": "认证绕过",
-    "description": "Path traversal in Plugin Daemon REST API allows authenticated users to access internal debug endpoints across tenants using unencoded dot sequences in task IDs or filename parameters.",
-    "huntable": "高",
-    "date": "2026-05-26"
   },
   {
     "id": "CVE-2026-35030",
@@ -55,40 +55,40 @@
   },
   {
     "id": "CVE-2026-25591",
-    "cvss": 1.0,
+    "cvss": 0.0,
     "product": "new-api",
     "type": "信息泄露",
-    "description": "Change History 2 change records found show changes  **Initial Analysis by NIST 3/03/2026 12:22:36 PM**  | Action | Type | Old Value | New Value | | --- | --- | --- | --- | | Added | CVSS V3.1 |  | ``` AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:H ``` | | Added | CPE Configuration |  | ``` OR           *cpe:2.",
+    "description": "NVD - CVE-2026-25591",
     "huntable": "中",
-    "date": "2026-06-30",
+    "date": "2026-07-01",
     "source_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25591"
   },
   {
-    "id": "CVE-2026-34162",
+    "id": "CVE-2026-26003",
     "cvss": 0.0,
     "product": "fastgpt",
-    "type": "API key泄露",
-    "description": "Other information and services of the government:  www.belgium.be (opens in a new tab)   Centre for Cybersecurity Belgium. As the national authority for Cybersecurity the CCB has developed several initiatives for specific publics which are presented here. The CCB’s mission include being the national",
-    "huntable": "高",
-    "date": "2026-06-30",
-    "source_url": "https://ccb.belgium.be/advisories/warning-critical-vulnerability-fastgpt-patch-immediately"
+    "type": "信息泄露",
+    "description": "This may cause the plugin system to crash and the loss of plugin installation status, but it will not result in key leakage. For older versions,",
+    "huntable": "中",
+    "date": "2026-07-01",
+    "source_url": "https://cvefeed.io/vuln/detail/CVE-2026-26003"
   },
   {
-    "id": "CVE-2026-34952",
-    "cvss": 9.1,
-    "product": "PraisonAI Gateway",
+    "id": "CVE-2026-41948",
+    "cvss": 9.4,
+    "product": "Dify",
     "type": "认证绕过",
-    "description": "PraisonAI Gateway WebSocket /ws and agent topology /info endpoints have no authentication. Any network client can connect, enumerate agents, and send arbitrary messages to agents and tools.",
+    "description": "Path traversal in Plugin Daemon REST API allows authenticated users to access internal debug endpoints across tenants using unencoded dot sequences in task IDs or filename parameters.",
     "huntable": "高",
-    "date": "2026-04-10"
+    "date": "2026-05-26"
   },
   {
-    "id": "CVE-2026-41947",
+    "id": "CVE-2025-63386",
     "cvss": 9.1,
     "product": "Dify",
     "type": "认证绕过",
-    "description": "Authenticated editor users can set trace configurations for any application regardless of tenant ownership, redirecting all messages and responses from victim apps to attacker-controlled LLM trace providers.",
-    "huntable": "高",
-    "date": "2026-06-02"
+    "description": "CORS misconfiguration in /console/api/setup reflects arbitrary Origin with Access-Control-Allow-Credentials: true, permitting external domains to make authenticated cross-origin requests.",
+    "huntable": "中",
+    "date": "2026-02-11"
   }
 ]
