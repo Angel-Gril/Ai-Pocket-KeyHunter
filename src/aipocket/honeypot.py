@@ -117,35 +117,81 @@ def _dedup_cross_host(results: list[ValidationResult]) -> int:
 #    responses, same balance, etc.
 # ---------------------------------------------------------------------------
 
+# Minimum number of distinct hosts sharing the SAME fingerprint to trigger
+# rejection.  A threshold too low causes false positives when many legitimate
+# hosts proxy the same underlying model (e.g. OneAPI → gpt-4o-mini).
 _FINGERPRINT_CLUSTER_THRESHOLD = 5
+
+# Generic LLM greetings that most models produce for a "Hi" probe.  Matching
+# these ALONE is not enough to conclude honeypot — we require additional
+# signals (see below).
+_GENERIC_LLM_RESPONSES = re.compile(
+    r"(?i)^[\s\n]*(hello|hi|hey|greetings)[\s!.,]*"
+    r"(how can i|i'?m doing|i'?m here|how about|nice to|what can)",
+)
 
 
 def _detect_response_clusters(results: list[ValidationResult]) -> int:
     """Flag results where many unrelated hosts share the same canned response.
 
-    Honeypots return identical response_snippet + balance across all nodes.
+    Honeypot clusters typically share:
+    - Identical response_snippet AND balance AND gateway
+    - Often a non-empty balance that's suspicious (e.g. same exact balance on
+      many unrelated hosts).
+
+    We AVOID rejecting legitimate OneAPI/LiteLLM farms that proxy to the same
+    model and naturally return similar greetings with empty balance — unless
+    there are enough additional signals indicating coordination.
     """
-    # Build fingerprint: (response_snippet, balance)
-    fingerprint_indices: dict[tuple[str, str], list[int]] = defaultdict(list)
+    # Build fingerprint: (response_snippet[:100], balance, gateway)
+    # Include gateway to avoid lumping different gateway types together.
+    fingerprint_indices: dict[tuple[str, str, str], list[int]] = defaultdict(list)
     for i, r in enumerate(results):
         if not r.valid:
             continue
         snippet = (r.response_snippet or "").strip()[:100]
         balance = r.balance or ""
+        gateway = r.gateway or ""
         if snippet:  # Only cluster if there's a response to compare
-            fp = (snippet, balance)
+            fp = (snippet, balance, gateway)
             fingerprint_indices[fp].append(i)
 
     rejected = 0
     for fp, indices in fingerprint_indices.items():
         if len(indices) < _FINGERPRINT_CLUSTER_THRESHOLD:
             continue
+
+        snippet, balance, gateway = fp
+
         # Check if these are actually distinct hosts (not same host, diff keys)
         hosts = {results[i].credential.host for i in indices}
         if len(hosts) < _FINGERPRINT_CLUSTER_THRESHOLD:
             continue
+
+        # --- Heuristic: skip likely-legitimate clusters ---
+        # If balance is empty AND the response matches a generic LLM greeting,
+        # this is most likely real endpoints proxying the same model, not a
+        # honeypot.  Honeypots typically report a specific (fake) balance to
+        # lure attackers.
+        if not balance and _GENERIC_LLM_RESPONSES.match(snippet):
+            continue
+
+        # If balance is empty AND all hosts have distinct IPs across multiple
+        # /16 subnets, it's unlikely to be a coordinated honeypot cluster.
+        if not balance:
+            ips = set()
+            for idx in indices:
+                ip = results[idx].credential.ip or ""
+                if ip:
+                    parts = ip.split(".")
+                    if len(parts) >= 2:
+                        ips.add(f"{parts[0]}.{parts[1]}")
+            # Diverse subnets → probably not a single operator's honeypot
+            if len(ips) >= min(5, len(hosts) // 2):
+                continue
+
         # This is a cluster — reject all
-        snippet_preview = fp[0][:40]
+        snippet_preview = snippet[:40]
         for idx in indices:
             if results[idx].valid:  # May already be rejected by dedup
                 results[idx].valid = False

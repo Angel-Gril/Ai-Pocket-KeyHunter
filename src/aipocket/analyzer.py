@@ -359,8 +359,12 @@ async def _recheck_batch(
     batch: list[ValidationResult],
     batch_idx: int,
     total_batches: int,
-) -> list[ValidationResult]:
-    """Re-check a batch of valid results in one GPT call."""
+) -> tuple[list[ValidationResult], bool]:
+    """Re-check a batch of valid results in one GPT call.
+
+    Returns (batch, success) where success=False means the GPT call failed
+    entirely and the batch was NOT evaluated.
+    """
     payload_parts = []
     for i, r in enumerate(batch):
         payload_parts.append(_format_recheck_entry(i, r))
@@ -371,19 +375,19 @@ async def _recheck_batch(
             resp = await _chat(client, RECHECK_SYSTEM, payload, max_tokens=200 + 80 * len(batch))
         except httpx.TimeoutException as e:
             log.warning("GPT recheck batch %d/%d TIMEOUT (%s)", batch_idx, total_batches, type(e).__name__)
-            return batch
+            return batch, False
         except httpx.HTTPStatusError as e:
             log.warning(
                 "GPT recheck batch %d/%d HTTP %s: body[:300]=%r",
                 batch_idx, total_batches, e.response.status_code, e.response.text[:300],
             )
-            return batch
+            return batch, False
         except httpx.HTTPError as e:
             log.warning("GPT recheck batch %d/%d failed (%s): %s", batch_idx, total_batches, type(e).__name__, e)
-            return batch
+            return batch, False
         except (KeyError, ValueError) as e:
             log.warning("GPT recheck batch %d/%d malformed (%s): %s", batch_idx, total_batches, type(e).__name__, e)
-            return batch
+            return batch, False
 
     verdicts = _extract_json_array(resp)
     # Build index map from GPT response
@@ -409,7 +413,33 @@ async def _recheck_batch(
 
     if rejected:
         log.info("GPT recheck batch %d/%d: rejected %d/%d", batch_idx, total_batches, rejected, len(batch))
-    return batch
+    return batch, True
+
+
+async def _run_recheck_wave(
+    client: httpx.AsyncClient,
+    batches: list[list[ValidationResult]],
+    concurrency: int,
+    label: str,
+) -> list[list[ValidationResult]]:
+    """Run a wave of recheck batches; return list of FAILED batches."""
+    total = len(batches)
+    sem = asyncio.Semaphore(concurrency)
+    tasks = [
+        _recheck_batch(client, sem, b, idx + 1, total)
+        for idx, b in enumerate(batches)
+    ]
+    results = await asyncio.gather(*tasks)
+    failed = []
+    for (batch, success) in results:
+        if not success:
+            failed.append(batch)
+    if failed:
+        log.warning(
+            "GPT recheck %s: %d/%d batches failed, will retry",
+            label, len(failed), total,
+        )
+    return failed
 
 
 async def recheck_all_with_gpt(results: list[ValidationResult]) -> list[ValidationResult]:
@@ -434,10 +464,42 @@ async def recheck_all_with_gpt(results: list[ValidationResult]) -> list[Validati
         log.info("Cooling down %.1fs before GPT re-check to avoid rate-limit...", settings.gpt_recheck_cooldown)
         await asyncio.sleep(settings.gpt_recheck_cooldown)
 
-    sem = asyncio.Semaphore(concurrency)
+    # Wave 1: process all batches with configured concurrency
     async with _make_client(max_connections=concurrency * 2) as client:
-        tasks = [_recheck_batch(client, sem, b, idx + 1, total) for idx, b in enumerate(batches)]
-        await asyncio.gather(*tasks)
+        failed = await _run_recheck_wave(client, batches, concurrency, "wave-1")
+
+    # Wave 2: retry failed batches with reduced concurrency + delay
+    if failed:
+        retry_concurrency = max(1, concurrency // 3)
+        retry_delay = 8.0
+        log.info(
+            "Retrying %d failed batches after %.0fs delay (concurrency=%d)...",
+            len(failed), retry_delay, retry_concurrency,
+        )
+        await asyncio.sleep(retry_delay)
+        async with _make_client(max_connections=retry_concurrency * 2) as client:
+            still_failed = await _run_recheck_wave(client, failed, retry_concurrency, "wave-2")
+
+        # Wave 3: split remaining failed batches into single items for last resort
+        if still_failed:
+            singles = [item for batch in still_failed for item in batch if item.valid]
+            if singles:
+                single_batches = [[r] for r in singles]
+                single_concurrency = max(1, retry_concurrency // 2)
+                log.info(
+                    "Final retry: %d items individually (concurrency=%d) after 10s...",
+                    len(single_batches), single_concurrency,
+                )
+                await asyncio.sleep(10.0)
+                async with _make_client(max_connections=single_concurrency * 2) as client:
+                    final_failed = await _run_recheck_wave(
+                        client, single_batches, single_concurrency, "wave-3-singles"
+                    )
+                if final_failed:
+                    log.warning(
+                        "GPT recheck: %d items could not be rechecked after 3 waves (kept as-is)",
+                        len(final_failed),
+                    )
 
     return results
 
