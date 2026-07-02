@@ -49,6 +49,7 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
         ("litellm", _probe_litellm, base),
         ("oneapi", _probe_oneapi, base),
         ("newapi", _probe_newapi, base),
+        ("nexus", _probe_nexus_usage, base),
         ("deepseek", _probe_deepseek, base),
         ("moonshot", _probe_moonshot, base),
         ("glm", _probe_glm, base),
@@ -184,6 +185,27 @@ async def _probe_siliconflow(client: httpx.AsyncClient, base: str, key: str) -> 
         "raw": data,
     }
 
+
+async def _probe_nexus_usage(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    """Probe /v1/usage — used by Nexus AI and similar custom platforms.
+
+    Handles two known response formats:
+    - Nexus AI: {"object": "list", "daily_costs": [...], "total_usage": <float>}
+    - xyxhqy-style: {"balance": <float>, "remaining": <float>, "unit": "USD", ...}
+    """
+    data = await _safe_get(client, f"{base}/v1/usage", key)
+    if data is None:
+        return {}
+    # Nexus AI format
+    if data.get("object") == "list":
+        total = data.get("total_usage")
+        if total is not None:
+            return {"balance_usd": round(float(total), 4), "raw": data}
+    # xyxhqy / wallet-style format
+    if "balance" in data or "remaining" in data:
+        bal = float(data.get("balance") or data.get("remaining") or 0)
+        return {"balance_usd": round(bal, 4), "raw": data}
+    return {}
 
 async def enrich_results(results: list[ValidationResult]) -> list[ValidationResult]:
     sem = asyncio.Semaphore(settings.validate_concurrency)

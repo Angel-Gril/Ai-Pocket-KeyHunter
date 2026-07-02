@@ -71,11 +71,17 @@ NOISE_SUBSTRINGS: tuple[str, ...] = (
     "undefined",
     "window.",
     "xxx",
+    "your-api",
     "your-key",
     "your_api",
     "your_key",
+    "yourapi",
     "yourkey",
 )
+
+# Sequential alphabet patterns that appear in demo/placeholder keys
+# e.g. "aBcDeFgHiJkLmNoP" or "abcdefghijkl"
+_SEQUENTIAL_ALPHA = "abcdefghijklmnopqrstuvwxyz"
 
 
 def is_noise(val: str) -> bool:
@@ -83,4 +89,14 @@ def is_noise(val: str) -> bool:
     v = val.lower()
     if len(v) < 15:
         return True
-    return any(sub in v for sub in NOISE_SUBSTRINGS)
+    if any(sub in v for sub in NOISE_SUBSTRINGS):
+        return True
+    # Detect sequential alphabet runs in contiguous alpha segments (≥8 chars).
+    # Only fires on segments where letters are adjacent in the original key,
+    # avoiding false positives from keys like "abc123def456ghi..." where digits
+    # separate short fragments.
+    for seg in re.findall(r"[a-z]{8,}", v):
+        for i in range(len(seg) - 7):
+            if seg[i:i + 8] in _SEQUENTIAL_ALPHA:
+                return True
+    return False

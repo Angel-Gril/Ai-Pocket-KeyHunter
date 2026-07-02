@@ -46,7 +46,9 @@ def test_extract_anthropic_key_from_banner():
 
 
 def test_extract_generic_apikey_pattern():
-    text = 'api_key: "akabcdefghijklmnopqrstuvwxyz1234567890BB"'
+    # Use a realistic-looking key (non-sequential alpha, non-placeholder)
+    key = "sk-Rv8mXp3nKq7wLtYc2bFjHdZs9UgAoE4x6NiWlCkBP"
+    text = f'api_key: "{key}"'
     hits = [{
         "host": "https://x.com",
         "ip": "",
@@ -58,7 +60,7 @@ def test_extract_generic_apikey_pattern():
         "cert": "",
     }]
     creds = extract_credentials(hits)
-    assert any(c.apikey == "akabcdefghijklmnopqrstuvwxyz1234567890BB" for c in creds)
+    assert any(c.apikey == key for c in creds)
 
 
 def test_extract_apiurl_from_header():

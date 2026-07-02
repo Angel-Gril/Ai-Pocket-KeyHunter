@@ -81,7 +81,7 @@ class TestGenericPageProberProbe:
         sem = asyncio.Semaphore(5)
         page_content = (
             "<html><body>"
-            '<script>const config = {apiKey: "sk-proj-ABCDEFghijklmnop123456789012345678"};</script>'
+            '<script>const config = {apiKey: "sk-proj-Kx9mWq2vRtLp7nBcYfJh4sDgUoA8eN3iZl"};</script>'
             "</body></html>"
         )
         with respx.mock(assert_all_called=False) as router:

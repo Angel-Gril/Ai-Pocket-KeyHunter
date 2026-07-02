@@ -80,7 +80,7 @@ class TestExtractKeys:
         assert len(creds) == 0
 
     def test_generic_key_value_pairs(self):
-        text = '{"api_key": "sk-proj-ABCDEFGHIJKLMNOP1234567890"}'
+        text = '{"api_key": "sk-proj-Kx9mWq2vRtLp7nBcYfJh4sDgUoA8eN3iZl"}'
         creds = extract_keys_from_text(text, source_label="t")
         assert any("openai" in c.source for c in creds)
 
