@@ -66,6 +66,16 @@
     "date": "2026-02-11"
   },
   {
+    "id": "CVE-2025-65958",
+    "cvss": 0.0,
+    "product": "open webui",
+    "type": "SSRF",
+    "description": "## Open WebUI has a SSRF Bypass via HTTP Redirect Following in Web-Fetch and Image-Load Endpoints (not addressed by CVE-2025-65958). # Server-Side Request Forgery (SSRF) Bypass via HTTP Redirect Following in Web-Fetch, Image-Load, and Chat-Completion Endpoints. The `validate_url()` function in `back",
+    "huntable": "高",
+    "date": "2026-07-02",
+    "source_url": "https://github.com/advisories/GHSA-rh5x-h6pp-cjj6"
+  },
+  {
     "id": "CVE-2025-66405",
     "cvss": 9.8,
     "product": "Portkey AI Gateway",
@@ -278,6 +288,16 @@
     "description": "DELETE /console/api/installed-apps/{appId}/conversations/{conversationId} has poor authorization checking, allowing any authenticated user to delete another user's chat history.",
     "huntable": "中",
     "date": "2026-04-23"
+  },
+  {
+    "id": "CVE-2026-34222",
+    "cvss": 0.0,
+    "product": "open webui",
+    "type": "API key泄露",
+    "description": "# Broken Access Control in Open WebUI. **An incomplete authorization check in Open WebUI allowed low privileged attackers to access sensitive Tool data.**. Open WebUI is the platform for running AI on your own terms. ### 1) Broken Access Control in Tool Valves (CVE-2026-34222). This allows a low pri",
+    "huntable": "高",
+    "date": "2026-07-02",
+    "source_url": "https://sec-consult.com/vulnerability-lab/advisory/broken-access-control-in-open-webui"
   },
   {
     "id": "CVE-2026-34225",
@@ -584,6 +604,16 @@
     "date": "2026-05-19"
   },
   {
+    "id": "CVE-2026-45672",
+    "cvss": 0.0,
+    "product": "open webui",
+    "type": "RCE",
+    "description": "Machine-Speed Protection, Intelligence, and Response. Native and Open Protection, Detection, and Response. One-Click Integrations to Unlock the Power of SentinelOne. Security Tuned for Your Industry. Wayfinder Threat Detection and Response. One-Click Integrations for Unified Prevention, Detection, a",
+    "huntable": "中",
+    "date": "2026-07-02",
+    "source_url": "https://www.sentinelone.com/vulnerability-database/cve-2026-45672"
+  },
+  {
     "id": "CVE-2026-46441",
     "cvss": 9.6,
     "product": "Flowise",
@@ -618,6 +648,16 @@
     "description": "LiteLLM /user/update endpoint allows modifying own user_role to proxy_admin. Any authenticated user can gain full administrative access including all users, teams, keys, and models.",
     "huntable": "高",
     "date": "2026-06-11"
+  },
+  {
+    "id": "CVE-2026-47390",
+    "cvss": 0.0,
+    "product": "praisonai",
+    "type": "SSRF",
+    "description": "# Server-side Request Forgery (SSRF) Affecting praisonai package, versions **,4.6.40)**. CVSS assessment by Snyk's Security Team. Snyk has a proof-of-concept or detailed explanation of how to exploit this vulnerability. The probability is the direct output of the EPSS model, and conveys an overall s",
+    "huntable": "高",
+    "date": "2026-07-02",
+    "source_url": "https://security.snyk.io/vuln/SNYK-PYTHON-PRAISONAI-17139467"
   },
   {
     "id": "CVE-2026-4789",
