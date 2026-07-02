@@ -47,7 +47,7 @@ async def test_probe_success_200():
     assert r.valid is True
     assert r.status_code == 200
     assert r.tier == "tier5"
-    assert r.model_available == "gpt-4o-mini"
+    assert r.model_available == "gpt-5.5"
     assert "Hi there" in r.response_snippet
 
 

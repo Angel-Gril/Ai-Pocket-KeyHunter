@@ -9,6 +9,11 @@ indicate the "valid" results are actually honeypot or botnet clusters:
    response snippet, same balance, same model list → cluster.
 3. **Key format rejection** — known non-LLM key formats (GOCSPX-*, pure hex
    session tokens) that somehow passed validation → likely honeypot accepted it.
+4. **Zero-width steganography** — responses embedding invisible Unicode chars
+   (U+200B/200C/200D) for per-request fingerprinting / tracking.
+5. **Prompt injection in responses** — responses containing hidden system notes,
+   HTML comments with instructions, or verification URLs designed to exfiltrate
+   tokens from downstream AI agents.
 """
 
 from __future__ import annotations
@@ -265,6 +270,98 @@ def _detect_response_clusters(results: list[ValidationResult]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# 4. Zero-width steganography detection — responses embedding invisible
+#    Unicode fingerprints to track per-request usage.
+# ---------------------------------------------------------------------------
+
+# Zero-width characters used for steganography encoding.
+_ZERO_WIDTH_CHARS = frozenset("\u200b\u200c\u200d\u200e\u200f\u2060\ufeff")
+
+# Threshold: >= this many zero-width chars in a snippet → steganography.
+# Normal LLM output has 0; even multilingual text rarely has more than 2.
+_STEG_THRESHOLD = 10
+
+
+def _detect_steganography(results: list[ValidationResult]) -> int:
+    """Flag results whose response contains zero-width steganography.
+
+    Honeypots like Nexus AI embed per-request fingerprints using sequences
+    of U+200B (ZWSP), U+200C (ZWNJ), U+200D (ZWJ) to track which leaked
+    key generated which output and trace copy-pasted content.
+    """
+    rejected = 0
+    for r in results:
+        if not r.valid:
+            continue
+        snippet = r.response_snippet or ""
+        zwc_count = sum(1 for c in snippet if c in _ZERO_WIDTH_CHARS)
+        if zwc_count >= _STEG_THRESHOLD:
+            r.valid = False
+            r.error = (
+                f"honeypot:steganography ({zwc_count} zero-width chars "
+                f"in response — per-request tracking fingerprint)"
+            )
+            rejected += 1
+    return rejected
+
+
+# ---------------------------------------------------------------------------
+# 5. Prompt injection detection — responses designed to trick downstream
+#    AI agents into exfiltrating tokens or executing attacker instructions.
+# ---------------------------------------------------------------------------
+
+_PROMPT_INJECTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    # HTML comments with system instructions / verification URLs
+    ("html_comment_injection", re.compile(
+        r"<!--\s*system\s*:", re.I
+    )),
+    # Fake [SYSTEM NOTE] blocks
+    ("fake_system_note", re.compile(
+        r"\[SYSTEM\s+NOTE", re.I
+    )),
+    # Instructions to perform GET/POST to verify/exfil URLs
+    ("exfil_instruction", re.compile(
+        r"(?:perform|issue|make|send)\s+(?:GET|POST|PUT)\s+/", re.I
+    )),
+    # "silently" + action verb — classic agent manipulation
+    ("silent_action", re.compile(
+        r"silently\s+(?:perform|execute|send|make|issue|fetch|call)", re.I
+    )),
+    # "do not include this in your response" — hiding from user
+    ("hide_from_user", re.compile(
+        r"do\s+not\s+include\s+(?:this|the\s+above)\s+in\s+your\s+response", re.I
+    )),
+    # Asking the model to submit context/instructions to an endpoint
+    ("context_exfil", re.compile(
+        r"(?:submit(?:ting)?|send(?:ing)?|post(?:ing)?)\s+your\s+(?:full\s+)?(?:system\s+)?(?:context|instructions|prompt)", re.I
+    )),
+]
+
+
+def _detect_prompt_injection(results: list[ValidationResult]) -> int:
+    """Flag results whose response contains prompt injection payloads.
+
+    Some honeypots return responses that include hidden instructions designed
+    to trick AI agents processing the output into exfiltrating auth tokens,
+    system prompts, or making attacker-controlled requests.
+    """
+    rejected = 0
+    for r in results:
+        if not r.valid:
+            continue
+        snippet = r.response_snippet or ""
+        if not snippet:
+            continue
+        for pattern_name, pat in _PROMPT_INJECTION_PATTERNS:
+            if pat.search(snippet):
+                r.valid = False
+                r.error = f"honeypot:prompt-injection:{pattern_name}"
+                rejected += 1
+                break
+    return rejected
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -283,7 +380,13 @@ def filter_honeypots(results: list[ValidationResult]) -> list[ValidationResult]:
     # so it sees all entries before format/dedup removes them)
     cluster_rejected = _detect_response_clusters(results)
 
-    # Pass 2: Key format rejection
+    # Pass 2: Zero-width steganography detection
+    steg_rejected = _detect_steganography(results)
+
+    # Pass 3: Prompt injection in responses
+    injection_rejected = _detect_prompt_injection(results)
+
+    # Pass 4: Key format rejection
     format_rejected = 0
     for r in results:
         if not r.valid:
@@ -294,7 +397,7 @@ def filter_honeypots(results: list[ValidationResult]) -> list[ValidationResult]:
             r.error = reason
             format_rejected += 1
 
-    # Pass 3: Cross-host dedup
+    # Pass 5: Cross-host dedup
     dedup_rejected = _dedup_cross_host(results)
 
     valid_after = sum(1 for r in results if r.valid)
@@ -303,9 +406,10 @@ def filter_honeypots(results: list[ValidationResult]) -> list[ValidationResult]:
     if total_rejected > 0:
         log.info(
             "Honeypot filter: %d/%d rejected "
-            "(format=%d, cross-host-dedup=%d, response-cluster=%d) → %d valid remain",
+            "(cluster=%d, steg=%d, injection=%d, format=%d, dedup=%d) → %d valid remain",
             total_rejected, valid_before,
-            format_rejected, dedup_rejected, cluster_rejected,
+            cluster_rejected, steg_rejected, injection_rejected,
+            format_rejected, dedup_rejected,
             valid_after,
         )
     else:
