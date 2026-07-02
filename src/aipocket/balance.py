@@ -231,10 +231,9 @@ async def enrich_results(results: list[ValidationResult]) -> list[ValidationResu
 async def _query_latest_balances_async() -> list[dict[str, Any]]:
     from .writer import load_latest
 
-    latest = load_latest()
-    if not latest:
+    results_data = load_latest()
+    if not results_data:
         return []
-    results_data = latest.get("credentials") or latest.get("results") or []
     out: list[dict[str, Any]] = []
     timeout = httpx.Timeout(settings.validate_timeout)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:

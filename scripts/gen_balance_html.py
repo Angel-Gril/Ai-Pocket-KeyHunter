@@ -1,4 +1,4 @@
-"""Export latest balance JSON as preview/data.js for the dashboard HTML."""
+"""Export latest balance JSONL as preview/data.js for the dashboard HTML."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 OUTPUT_JS = RESULTS_DIR.parent / "preview" / "data.js"
 
 
-def find_latest_valid_json() -> Path | None:
-    """Find the most recent valid_*.json across all run directories."""
-    candidates = sorted(RESULTS_DIR.glob("run_*/valid_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+def find_latest_valid() -> Path | None:
+    """Find the most recent valid_*.jsonl across all run directories."""
+    candidates = sorted(RESULTS_DIR.glob("run_*/valid_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
 
 
@@ -21,15 +21,16 @@ def main():
     if len(sys.argv) > 1:
         json_path = Path(sys.argv[1])
     else:
-        json_path = find_latest_valid_json()
+        json_path = find_latest_valid()
 
     if not json_path or not json_path.exists():
-        print("No valid_*.json found in results/")
+        print("No valid_*.jsonl found in results/")
         sys.exit(1)
 
     print(f"Using: {json_path}")
 
-    data = json.loads(json_path.read_text(encoding="utf-8"))
+    entries = [json.loads(line) for line in json_path.read_text("utf-8").splitlines() if line.strip()]
+    data = {"total_valid": len(entries), "credentials": entries}
     data["_source_file"] = json_path.name
 
     OUTPUT_JS.parent.mkdir(parents=True, exist_ok=True)

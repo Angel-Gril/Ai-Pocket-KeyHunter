@@ -215,14 +215,21 @@ def _blob_to_credential(item: dict[str, Any], fallback_host: str) -> Credential 
 
 
 def _dump_failed_batch(batch: list[dict[str, Any]], batch_idx: int) -> None:
+    _UNSAFE_LINE_TERMINATORS = re.compile("[\u2028\u2029]")
     try:
         out_dir = _CURRENT_RUN_DIR or settings.results_path
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        path = out_dir / f"gpt_failed_batch_{ts}_{batch_idx}.json"
-        path.write_text(
-            json.dumps({"batch_idx": batch_idx, "hits": batch}, indent=2, ensure_ascii=False, default=str),
-            encoding="utf-8",
-        )
+        path = out_dir / f"gpt_failed_batch_{ts}_{batch_idx}.jsonl"
+        with path.open("w", encoding="utf-8") as f:
+            meta = json.dumps(
+                {"batch_idx": batch_idx, "total_hits": len(batch), "dumped_at": ts},
+                ensure_ascii=False,
+                default=str,
+            )
+            f.write(_UNSAFE_LINE_TERMINATORS.sub(" ", meta) + "\n")
+            for hit in batch:
+                line = json.dumps(hit, ensure_ascii=False, default=str)
+                f.write(_UNSAFE_LINE_TERMINATORS.sub(" ", line) + "\n")
         log.info("Failed batch %d dumped to %s for later re-run", batch_idx, path)
     except OSError as e:
         log.warning("Could not dump failed batch %d: %s", batch_idx, e)

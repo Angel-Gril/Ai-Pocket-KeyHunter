@@ -6,7 +6,7 @@ import pytest
 
 from aipocket.config import Settings
 from aipocket.models import Credential, ScanRunResult, ValidationResult
-from aipocket.writer import write_raw_hits, write_result
+from aipocket.writer import write_raw_hits, write_result, load_latest, new_run_dir
 
 
 @pytest.fixture
@@ -33,11 +33,17 @@ async def test_write_result_creates_files(tmp_path, sample_result, monkeypatch):
     full_path = write_result(sample_result)
 
     assert full_path.exists()
-    assert full_path.suffix == ".json"
-    data = json.loads(full_path.read_text())
-    assert data["total_valid"] == 1
-    assert data["total_credentials"] == 2
-    assert len(data["results"]) == 2
+    assert full_path.suffix == ".jsonl"
+    lines = [ln for ln in full_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    # First line = metadata, then one line per result
+    assert len(lines) == 3  # 1 metadata + 2 results
+    metadata = json.loads(lines[0])
+    assert metadata["total_valid"] == 1
+    assert metadata["total_credentials"] == 2
+    # Second line = first result
+    r1 = json.loads(lines[1])
+    assert r1["credential"]["apikey"] == "sk-proj-valid123"
+    assert r1["valid"] is True
 
 
 async def test_write_result_creates_valid_file(tmp_path, sample_result, monkeypatch):
@@ -45,19 +51,15 @@ async def test_write_result_creates_valid_file(tmp_path, sample_result, monkeypa
 
     write_result(sample_result)
 
-    valid_files = list(tmp_path.glob("valid_*.json"))
+    valid_files = list(tmp_path.glob("valid_*.jsonl"))
     assert len(valid_files) == 1
-    valid_data = json.loads(valid_files[0].read_text())
-    assert valid_data["total_valid"] == 1
-    assert len(valid_data["credentials"]) == 1
-    assert valid_data["credentials"][0]["credential"]["apikey"] == "sk-proj-valid123"
+    lines = [ln for ln in valid_files[0].read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 1  # only 1 valid result
+    entry = json.loads(lines[0])
+    assert entry["credential"]["apikey"] == "sk-proj-valid123"
 
 
 async def test_write_result_writes_into_run_dir(tmp_path, sample_result, monkeypatch):
-    # Per-run folders: scan_*.json + valid_*.json live inside run_*/, no root-level
-    # latest_*.json anymore.
-    from aipocket.writer import new_run_dir
-
     monkeypatch.setattr("aipocket.writer.settings", Settings(results_dir=str(tmp_path)))
 
     run_dir = new_run_dir(tmp_path)
@@ -84,12 +86,15 @@ async def test_write_result_empty_results(tmp_path, monkeypatch):
         results=[],
     )
     p = write_result(empty)
-    data = json.loads(p.read_text())
+    lines = [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    # Only metadata line, no results
+    assert len(lines) == 1
+    data = json.loads(lines[0])
     assert data["total_valid"] == 0
 
 
 async def test_write_result_strips_unicode_line_separators(tmp_path, monkeypatch):
-    # U+2028 (LINE SEPARATOR) 会让 VSCode 的 JSON 语言服务报 unusual line terminators
+    # U+2028 (LINE SEPARATOR) must be sanitized in JSONL output
     monkeypatch.setattr("aipocket.writer.settings", Settings(results_dir=str(tmp_path)))
     c = Credential(
         apikey="sk-x",
@@ -112,8 +117,10 @@ async def test_write_result_strips_unicode_line_separators(tmp_path, monkeypatch
     assert "\u2028".encode("utf-8") not in raw
     assert "\u2029".encode("utf-8") not in raw
 
-    data = json.loads(p.read_text())
-    ctx = data["results"][0]["credential"]["raw_context"]
+    # Parse the result line (second line)
+    lines = p.read_text(encoding="utf-8").splitlines()
+    result_line = json.loads(lines[1])
+    ctx = result_line["credential"]["raw_context"]
     assert "\u2028" not in ctx
     assert "中文标题" in ctx
 
@@ -132,6 +139,30 @@ def test_write_raw_hits_strips_unicode_line_separators(tmp_path, monkeypatch):
     assert "\u2028".encode("utf-8") not in raw
     assert "\u2029".encode("utf-8") not in raw
 
-    data = json.loads(p.read_text())
-    assert "中文" in data["hits"][0]["title"]
-    assert data["hits"][0]["title"].count(" ") >= 1
+    # Each line is one hit
+    lines = [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 1
+    data = json.loads(lines[0])
+    assert "中文" in data["title"]
+    assert data["title"].count(" ") >= 1
+
+
+async def test_load_latest_returns_valid_entries(tmp_path, monkeypatch):
+    monkeypatch.setattr("aipocket.writer.settings", Settings(results_dir=str(tmp_path)))
+
+    # Create a run dir with valid_*.jsonl
+    run_dir = tmp_path / "run_2026_01_01_00-00-00"
+    run_dir.mkdir()
+    valid_path = run_dir / "valid_20260101T000000Z.jsonl"
+    entry = {"credential": {"apikey": "sk-proj-test123", "apiurl": "https://api.openai.com"}, "valid": True}
+    valid_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+    result = load_latest()
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["credential"]["apikey"] == "sk-proj-test123"
+
+
+async def test_load_latest_returns_none_when_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr("aipocket.writer.settings", Settings(results_dir=str(tmp_path)))
+    assert load_latest() is None

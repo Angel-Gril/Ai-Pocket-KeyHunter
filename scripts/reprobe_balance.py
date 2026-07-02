@@ -19,15 +19,14 @@ async def main():
         print(f"File not found: {valid_path}")
         sys.exit(1)
 
-    data = json.loads(valid_path.read_text(encoding="utf-8"))
-    credentials = data.get("credentials", [])
+    entries = [json.loads(line) for line in valid_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     
     # Find unsupported entries
     unsupported_indices = [
-        i for i, c in enumerate(credentials)
+        i for i, c in enumerate(entries)
         if c.get("gateway") == "unsupported"
     ]
-    print(f"Total credentials: {len(credentials)}")
+    print(f"Total credentials: {len(entries)}")
     print(f"Unsupported (to re-probe): {len(unsupported_indices)}")
     
     if not unsupported_indices:
@@ -41,7 +40,7 @@ async def main():
     async with httpx.AsyncClient(timeout=10, verify=False, follow_redirects=True) as client:
         async def probe_one(idx):
             nonlocal updated
-            entry = credentials[idx]
+            entry = entries[idx]
             cred_data = entry["credential"]
             cred = Credential(
                 apikey=cred_data["apikey"],
@@ -69,11 +68,12 @@ async def main():
     print(f"Updated: {updated} / {len(unsupported_indices)}")
     
     if updated > 0:
-        # Update total and write
-        data["credentials"] = credentials
+        # Rewrite as JSONL
         _UNSAFE = str.maketrans({"\u2028": " ", "\u2029": " "})
-        output = json.dumps(data, indent=2, ensure_ascii=False, default=str).translate(_UNSAFE)
-        valid_path.write_text(output, encoding="utf-8")
+        output_lines = []
+        for entry in entries:
+            output_lines.append(json.dumps(entry, ensure_ascii=False, default=str).translate(_UNSAFE) + "\n")
+        valid_path.write_text("".join(output_lines), encoding="utf-8")
         print(f"Written to {valid_path}")
     else:
         print("No updates needed.")

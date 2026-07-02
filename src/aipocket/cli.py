@@ -52,7 +52,7 @@ def scan(
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
-    """Run a single scan across all configured sources (FOFA + Shodan) and write JSON results."""
+    """Run a single scan across all configured sources (FOFA + Shodan) and write JSONL results."""
     if fast:
         settings.gpt_fast = True
 
@@ -82,7 +82,7 @@ def scan(
             log.info("Realtest mode: defaulting to -n 3 (override with --max-queries)")
 
     # Create the run folder first so the log file lands inside it.
-    from .writer import new_run_dir, write_result
+    from .writer import new_run_dir
     from .scanner import run_scan
 
     run_dir = new_run_dir()
@@ -92,7 +92,6 @@ def scan(
 
     n = max_queries or None
     result = asyncio.run(run_scan(max_queries=n, run_dir=run_dir, skip_direct=skip_direct))
-    write_result(result, run_dir=run_dir)
     _print_summary(result)
     log.info("Run folder: %s", run_dir)
 

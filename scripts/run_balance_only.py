@@ -1,4 +1,4 @@
-"""Run balance enrichment on a saved partial_validated.json — no re-scan needed."""
+"""Run balance enrichment on a saved partial_validated.jsonl — no re-scan needed."""
 
 from __future__ import annotations
 
@@ -19,14 +19,15 @@ log = logging.getLogger(__name__)
 
 
 async def main():
-    partial_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/partial_validated.json")
+    partial_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/partial_validated.jsonl")
     if not partial_path.exists():
         print(f"File not found: {partial_path}")
         sys.exit(1)
 
     log.info("Loading partial results from %s ...", partial_path)
-    data = json.loads(partial_path.read_text(encoding="utf-8"))
-    results = [ValidationResult.model_validate(r) for r in data["results"]]
+    lines = partial_path.read_text(encoding="utf-8").splitlines()
+    meta = json.loads(lines[0])
+    results = [ValidationResult.model_validate(json.loads(l)) for l in lines[1:] if l.strip()]
     valid = [r for r in results if r.valid]
     log.info("Loaded %d results (%d valid)", len(results), len(valid))
 
@@ -37,14 +38,14 @@ async def main():
         log.info("Balance enrichment done. %d still valid after recheck.", len(valid))
 
     result = ScanRunResult(
-        started_at=data.get("started_at", ""),
+        started_at=meta.get("started_at", ""),
         finished_at=datetime.now(UTC).isoformat(),
-        sources=data.get("sources", []),
-        hits_by_source=data.get("hits_by_source", {}),
-        total_hosts=data.get("total_hosts", 0),
-        total_credentials=data.get("total_credentials", len(results)),
+        sources=meta.get("sources", []),
+        hits_by_source=meta.get("hits_by_source", {}),
+        total_hosts=meta.get("total_hosts", 0),
+        total_credentials=meta.get("total_credentials", len(results)),
         total_valid=len(valid),
-        queries_used=data.get("queries_used", []),
+        queries_used=meta.get("queries_used", []),
         results=results,
         raw_hits=[],
     )

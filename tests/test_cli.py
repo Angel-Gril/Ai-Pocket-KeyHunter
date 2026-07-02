@@ -51,8 +51,17 @@ def test_cli_scan_help():
 def test_cli_scan_persists_results(tmp_path, monkeypatch):
     from aipocket.config import Settings
     from aipocket.models import ScanRunResult
+    from aipocket.writer import write_scan_metadata, write_valid_results
 
     async def fake_run_scan(max_queries=None, run_dir=None, *, skip_direct=False):
+        # Mimic real run_scan which writes JSONL internally
+        if run_dir:
+            write_scan_metadata(
+                {"started_at": "t0", "finished_at": "t1", "total_hosts": 0,
+                 "total_credentials": 0, "total_valid": 0, "queries_used": []},
+                run_dir,
+            )
+            write_valid_results([], run_dir)
         return ScanRunResult(
             started_at="t0",
             finished_at="t1",
@@ -68,5 +77,5 @@ def test_cli_scan_persists_results(tmp_path, monkeypatch):
 
     result = runner.invoke(app, ["scan"])
     assert result.exit_code == 0
-    assert list(tmp_path.glob("run_*/scan_*.json"))
-    assert list(tmp_path.glob("run_*/valid_*.json"))
+    assert list(tmp_path.glob("run_*/scan_*.jsonl"))
+    assert list(tmp_path.glob("run_*/valid_*.jsonl"))

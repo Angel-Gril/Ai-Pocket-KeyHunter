@@ -1,7 +1,7 @@
 """Retry failed GPT batches from a run directory.
 
-Reads all gpt_failed_batch_*.json files, re-runs GPT extraction,
-validates new credentials, and appends valid results to the existing valid_*.json.
+Reads all gpt_failed_batch_*.jsonl files, re-runs GPT extraction,
+validates new credentials, and appends valid results to the existing valid_*.jsonl.
 
 Usage:
     uv run python scripts/retry_failed_batches.py <run_dir>
@@ -42,9 +42,9 @@ async def main():
         sys.exit(1)
 
     # --- 1. Find all failed batch files ---
-    failed_files = sorted(run_dir.glob("gpt_failed_batch_*.json"))
+    failed_files = sorted(run_dir.glob("gpt_failed_batch_*.jsonl"))
     if not failed_files:
-        print("No gpt_failed_batch_*.json files found — nothing to retry.")
+        print("No gpt_failed_batch_*.jsonl files found — nothing to retry.")
         sys.exit(0)
 
     log.info("Found %d failed batch files", len(failed_files))
@@ -52,35 +52,39 @@ async def main():
     # --- 2. Extract all hits from failed batches into one list ---
     all_failed_hits: list[dict] = []
     for f in failed_files:
-        data = json.loads(f.read_text(encoding="utf-8"))
-        hits = data.get("hits", [])
+        lines = f.read_text(encoding="utf-8").splitlines()
+        if not lines:
+            continue
+        meta = json.loads(lines[0])
+        hits = [json.loads(l) for l in lines[1:] if l.strip()]
         all_failed_hits.extend(hits)
-        log.info("  %s: %d hits (batch_idx=%s)", f.name, len(hits), data.get("batch_idx"))
+        log.info("  %s: %d hits (batch_idx=%s)", f.name, len(hits), meta.get("batch_idx"))
 
     log.info("Total failed hits to retry: %d", len(all_failed_hits))
 
     # --- 3. Save consolidated failed hits file for reference ---
-    consolidated_path = run_dir / "retry_failed_hits_consolidated.json"
-    consolidated_path.write_text(
-        json.dumps(
+    consolidated_path = run_dir / "retry_failed_hits_consolidated.jsonl"
+    _UNSAFE = str.maketrans({"\u2028": " ", "\u2029": " "})
+    with consolidated_path.open("w", encoding="utf-8") as cf:
+        meta_line = json.dumps(
             {"saved_at": datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
              "total": len(all_failed_hits),
-             "source_files": [f.name for f in failed_files],
-             "hits": all_failed_hits},
-            indent=2, ensure_ascii=False, default=str,
-        ),
-        encoding="utf-8",
-    )
+             "source_files": [f.name for f in failed_files]},
+            ensure_ascii=False, default=str,
+        ).translate(_UNSAFE) + "\n"
+        cf.write(meta_line)
+        for hit in all_failed_hits:
+            cf.write(json.dumps(hit, ensure_ascii=False, default=str).translate(_UNSAFE) + "\n")
     log.info("Consolidated failed hits saved to %s", consolidated_path)
 
-    # --- 4. Find and backup existing valid JSON ---
-    valid_files = sorted(run_dir.glob("valid_*.json"))
+    # --- 4. Find and backup existing valid JSONL ---
+    valid_files = sorted(run_dir.glob("valid_*.jsonl"))
     if not valid_files:
-        print("No valid_*.json found in run dir — cannot append results.")
+        print("No valid_*.jsonl found in run dir — cannot append results.")
         sys.exit(1)
 
     valid_path = valid_files[-1]  # Use the latest one
-    backup_path = valid_path.with_suffix(".json.bak")
+    backup_path = valid_path.with_suffix(".jsonl.bak")
     shutil.copy2(valid_path, backup_path)
     log.info("Backed up %s → %s", valid_path.name, backup_path.name)
 
@@ -120,12 +124,11 @@ async def main():
         log.info("No valid credentials from retry — valid file unchanged.")
         return
 
-    # --- 7. Append to existing valid JSON ---
-    existing_data = json.loads(valid_path.read_text(encoding="utf-8"))
-    existing_creds = existing_data.get("credentials", [])
+    # --- 7. Append to existing valid JSONL ---
+    existing_entries = [json.loads(line) for line in valid_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     existing_keys = {
         (c["credential"]["apikey"], c["credential"]["apiurl"])
-        for c in existing_creds
+        for c in existing_entries
     }
 
     new_entries = []
@@ -142,18 +145,17 @@ async def main():
         log.info("All valid results already exist — no changes.")
         return
 
-    existing_creds.extend(new_entries)
-    existing_data["credentials"] = existing_creds
-    existing_data["total_valid"] = len(existing_creds)
+    existing_entries.extend(new_entries)
 
-    # Sanitize unicode line terminators (same as writer.py)
+    # Rewrite as JSONL (one result per line)
     _UNSAFE = str.maketrans({"\u2028": " ", "\u2029": " "})
-    output_text = json.dumps(existing_data, indent=2, ensure_ascii=False, default=str)
-    output_text = output_text.translate(_UNSAFE)
-    valid_path.write_text(output_text, encoding="utf-8")
+    output_lines = []
+    for entry in existing_entries:
+        output_lines.append(json.dumps(entry, ensure_ascii=False, default=str).translate(_UNSAFE) + "\n")
+    valid_path.write_text("".join(output_lines), encoding="utf-8")
 
     log.info("Appended %d new valid credentials to %s (total now: %d)",
-             len(new_entries), valid_path.name, existing_data["total_valid"])
+             len(new_entries), valid_path.name, len(existing_entries))
 
     # --- 8. Summary ---
     log.info("=== RETRY SUMMARY ===")

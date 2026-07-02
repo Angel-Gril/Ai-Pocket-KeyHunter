@@ -9,6 +9,7 @@ from .config import settings
 from .extractor import extract_credentials
 from .fofa_client import FofaClient
 from .models import Credential, ScanRunResult, ValidationResult
+from .writer import append_scan_result, write_scan_metadata, write_valid_results
 from .queries import build_queries
 from .validator import validate_all
 
@@ -122,8 +123,6 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
 
     from .writer import write_raw_hits
 
-    write_raw_hits(all_hits, run_dir=run_dir)
-
     # Active probing — probe all hosts. Signal-based ordering ensures high-value
     # targets (those with key patterns in banner/header) are probed first, but
     # ALL hosts are probed (no cap — precision queries already limit the set).
@@ -165,6 +164,17 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
         log.info("After GPT enrichment: %d candidate credentials", len(creds))
 
     if not creds:
+        log.info("No credentials found — writing empty scan results")
+        if run_dir:
+            scan_path = write_scan_metadata({
+                "started_at": started,
+                "sources": sources_used,
+                "hits_by_source": hits_by_source,
+                "total_hosts": len(all_hits),
+                "total_credentials": 0,
+                "queries_used": queries_used,
+            }, run_dir)
+            write_valid_results([], run_dir)
         return ScanRunResult(
             started_at=started,
             finished_at=datetime.now(UTC).isoformat(),
@@ -180,6 +190,20 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
 
     log.info("Validating %d credentials (concurrency=%d)...", len(creds), settings.validate_concurrency)
     results: list[ValidationResult] = await validate_all(creds)
+
+    # Write scan metadata + per-result JSONL lines
+    scan_path: Path | None = None
+    if run_dir:
+        scan_path = write_scan_metadata({
+            "started_at": started,
+            "sources": sources_used,
+            "hits_by_source": hits_by_source,
+            "total_hosts": len(all_hits),
+            "total_credentials": len(creds),
+            "queries_used": queries_used,
+        }, run_dir)
+        for r in results:
+            append_scan_result(r, scan_path)
 
     # GPT recheck — disabled by default since honeypot filter catches the same
     # cases faster. Enable with GPT_RECHECK=true for extra verification.
@@ -203,6 +227,10 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
         results = await enrich_results(results)
         valid = [r for r in results if r.valid]
         log.info("Balance enrichment done.")
+
+    # Write valid_*.jsonl after honeypot + balance enrichment
+    if run_dir:
+        write_valid_results(valid, run_dir)
 
     return ScanRunResult(
         started_at=started,

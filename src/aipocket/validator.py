@@ -139,7 +139,13 @@ async def _probe_one(
     cred: Credential,
 ) -> ValidationResult:
     async with sem:
-        return await _probe(client, cred)
+        result = await _probe(client, cred)
+
+    # Real-time persistence: save high-value official keys immediately.
+    from .high_value_writer import try_save
+    try_save(result)
+
+    return result
 
 
 def _route_provider(apiurl: str) -> tuple[str, str, list[str]]:
