@@ -21,7 +21,7 @@ def _make_mock_client(hits):
 
 
 @pytest.mark.asyncio
-async def test_run_scan_fofa_and_shodan_both_run(monkeypatch):
+async def test_run_scan_fofa_and_shodan_both_run(tmp_path, monkeypatch):
     """One scan walks BOTH sources and merges their hits."""
     monkeypatch.setattr(
         "aipocket.scanner.build_queries",
@@ -34,8 +34,8 @@ async def test_run_scan_fofa_and_shodan_both_run(monkeypatch):
     # Enable both sources
     monkeypatch.setattr("aipocket.config.settings.fofa_keys", "k")
     monkeypatch.setattr("aipocket.config.settings.shodan_keys", "sk")
-    monkeypatch.setattr("aipocket.config.settings.gpt_key", "")
     monkeypatch.setattr("aipocket.config.settings.gpt_base_url", "")
+    monkeypatch.setattr("aipocket.config.settings.results_dir", str(tmp_path))
 
     fofa_hits = [
         {"host": "https://a.com", "ip": "1.1.1.1", "port": "443",
@@ -68,7 +68,7 @@ async def test_run_scan_fofa_and_shodan_both_run(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_scan_same_key_from_both_sources_merges_backend(monkeypatch):
+async def test_run_scan_same_key_from_both_sources_merges_backend(tmp_path, monkeypatch):
     """When both sources find the same apikey+url, the credential keeps both backends."""
     monkeypatch.setattr("aipocket.scanner.build_queries", lambda **kw: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}])
     monkeypatch.setattr("aipocket.shodan_queries.build_shodan_queries", lambda **kw: [{"query": "sq", "cve_id": "sc", "product": "sp", "type": "t"}])
@@ -76,6 +76,7 @@ async def test_run_scan_same_key_from_both_sources_merges_backend(monkeypatch):
     monkeypatch.setattr("aipocket.config.settings.shodan_keys", "sk")
     monkeypatch.setattr("aipocket.config.settings.gpt_key", "")
     monkeypatch.setattr("aipocket.config.settings.gpt_base_url", "")
+    monkeypatch.setattr("aipocket.config.settings.results_dir", str(tmp_path))
 
     same_hits = [
         {"host": "https://a.com", "ip": "1.1.1.1", "port": "443",
@@ -98,11 +99,12 @@ async def test_run_scan_same_key_from_both_sources_merges_backend(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_scan_fofa_only_when_shodan_unconfigured(monkeypatch):
+async def test_run_scan_fofa_only_when_shodan_unconfigured(tmp_path, monkeypatch):
     monkeypatch.setattr("aipocket.scanner.build_queries", lambda **kw: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}])
     monkeypatch.setattr("aipocket.config.settings.fofa_keys", "k")
     monkeypatch.setattr("aipocket.config.settings.shodan_keys", "")
     monkeypatch.setattr("aipocket.config.settings.gpt_key", "")
+    monkeypatch.setattr("aipocket.config.settings.results_dir", str(tmp_path))
 
     monkeypatch.setattr("aipocket.scanner.FofaClient", lambda: _make_mock_client([]))
 
@@ -112,9 +114,10 @@ async def test_run_scan_fofa_only_when_shodan_unconfigured(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_scan_no_source_configured_raises(monkeypatch):
+async def test_run_scan_no_source_configured_raises(tmp_path, monkeypatch):
     monkeypatch.setattr("aipocket.config.settings.fofa_keys", "")
     monkeypatch.setattr("aipocket.config.settings.shodan_keys", "")
+    monkeypatch.setattr("aipocket.config.settings.results_dir", str(tmp_path))
     with pytest.raises(RuntimeError):
         await run_scan(max_queries=1)
 

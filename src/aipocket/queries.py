@@ -16,101 +16,93 @@ CVE_PATH = Path(os.environ.get("AIPOCKET_CVE_PATH", _DEFAULT_CVE_PATH))
 
 PRODUCT_QUERIES: dict[str, list[str]] = {
     "LiteLLM": [
-        'body="LiteLLM" && (header="sk-" || banner="sk-")',
+        'body="litellm" && body="sk-"',
         'body="litellm_proxy" && body="api_key"',
         'body="LiteLLM Proxy" && body="master_key"',
-        'header="x-litellm" && header="sk-"',
     ],
     "Flowise": [
-        'body="Flowise" && (header="sk-" || banner="sk-")',
+        'body="Flowise" && body="sk-"',
         'body="flowise" && body="apiKey"',
-        'icon_hash="-1720536238" && (header="sk-" || banner="sk-")',
     ],
     "Dify": [
-        'body="dify" && body="api_key" && (header="sk-" || banner="sk-")',
-        'body="console/api" && body="dify" && body="secret_key"',
+        'body="dify" && body="sk-"',
         'body="dify" && body="OPENAI_API_KEY"',
-        'title="Dify" && (header="authorization" || banner="authorization")',
+        'body="dify" && body="ANTHROPIC_API_KEY"',
     ],
     "LibreChat": [
-        'body="LibreChat" && (header="sk-" || banner="sk-")',
+        'body="librechat" && body="sk-"',
         'body="librechat" && body="OPENAI_API_KEY"',
         'body="librechat" && body="ANTHROPIC_API_KEY"',
     ],
     "OpenWebUI": [
-        'body="Open WebUI" && (header="sk-" || banner="sk-")',
+        'body="Open WebUI" && body="sk-"',
         'body="open-webui" && body="api_key"',
     ],
     "Langflow": [
-        'body="langflow" && (header="sk-" || banner="sk-")',
+        'body="langflow" && body="sk-"',
         'body="langflow" && body="OPENAI_API_KEY"',
-        'body="langflow" && body="api_key"',
     ],
     "MLflow": [
-        'body="mlflow" && (header="sk-" || banner="sk-")',
-        'header="MLflow" && header="authorization"',
+        'body="mlflow" && body="sk-"',
+        'body="mlflow" && body="api_key"',
     ],
     "Portkey AI Gateway": [
-        'header="x-portkey" && (header="sk-" || banner="sk-")',
+        'body="portkey" && body="sk-"',
         'body="portkey" && body="api_key"',
     ],
     "LangChain": [
         'body="langchain" && body="OPENAI_API_KEY"',
-        'body="langchain" && body="api_key" && (header="sk-" || banner="sk-")',
+        'body="langchain" && body="sk-"',
     ],
     "PraisonAI": [
-        'body="praisonai" && (header="sk-" || banner="sk-")',
-        'body="praison" && body="api_key"',
+        'body="praisonai" && body="sk-"',
     ],
     "GitLab AI Gateway": [
-        'header="X-Gitlab-Duo" && (header="sk-" || banner="sk-")',
+        'body="ai-gateway" && body="sk-"',
     ],
     "FastGPT": [
-        'body="fastgpt" && (header="sk-" || banner="sk-")',
+        'body="fastgpt" && body="sk-"',
         'body="fastgpt" && body="OPENAI_API_KEY"',
     ],
     "New-API": [
-        'body="new-api" && (header="sk-" || banner="sk-")',
+        'body="new-api" && body="sk-"',
         'body="new-api" && body="token"',
-        'body="/api/status" && body="new-api" && header="authorization"',
     ],
     "AnythingLLM": [
-        'body="anythingllm" && (header="sk-" || banner="sk-")',
+        'body="anythingllm" && body="sk-"',
         'body="anythingllm" && body="OPENAI_API_KEY"',
     ],
     "ChatGPT-Next-Web": [
-        'body="nextchat" && (header="sk-" || banner="sk-")',
+        'body="nextchat" && body="sk-"',
         'body="chatgpt-next-web" && body="OPENAI_API_KEY"',
-        'body="ChatGPT Next Web" && header="api"',
     ],
     "vLLM": [
-        'body="vllm" && (header="sk-" || banner="sk-")',
+        'body="vllm" && body="sk-"',
         'body="vllm" && body="api_key"',
     ],
     "Ollama": [
-        'body="ollama" && (header="sk-" || banner="sk-")',
+        'body="ollama" && body="sk-"',
     ],
     "LocalAI": [
-        'body="localai" && (header="sk-" || banner="sk-")',
+        'body="localai" && body="sk-"',
     ],
     "Text-Generation-WebUI": [
-        'body="text-generation-webui" && (header="sk-" || banner="sk-")',
+        'body="text-generation-webui" && body="sk-"',
     ],
     "LobeChat": [
-        'body="lobe-chat" && (header="sk-" || banner="sk-")',
+        'body="lobe-chat" && body="sk-"',
         'body="lobechat" && body="OPENAI_API_KEY"',
     ],
     "Jan": [
-        'body="jan.ai" && (header="sk-" || banner="sk-")',
+        'body="jan.ai" && body="sk-"',
     ],
     "Claude": [
-        'body="claude" && body="api_key" && (header="sk-ant" || banner="sk-ant")',
+        'body="claude" && body="sk-ant-"',
         'body="ANTHROPIC_API_KEY" && body="sk-ant-"',
-        'body="anthropic" && body="api_key" && (header="sk-" || banner="sk-")',
+        'body="anthropic" && body="api_key" && body="sk-"',
     ],
     "Codex CLI": [
         'body="codex" && body="OPENAI_API_KEY"',
-        'body=".codex" && body="api_key"',
     ],
 }
 
@@ -134,41 +126,36 @@ VULN_TYPE_PRIORITIES = {
 # Strategy: lead with header=/banner= queries (highest ROI — we get that content back),
 # keep a smaller set of body= queries as net to catch hosts that also leak in header/banner.
 CREDENTIAL_QUERIES: list[str] = [
-    # --- Header/banner queries: we GET this content back, so these are highest-ROI ---
+    # --- Header queries that ACTUALLY work (full header string match) ---
+    # These return few results but keys are directly extractable from header field.
     'header="authorization: bearer sk-"',
     'header="authorization: bearer sk-proj"',
+    'header="authorization: bearer sk-ant-"',
     'header="x-api-key: sk-"',
     'header="x-api-key: sk-ant-"',
-    'header="authorization: bearer sk-ant-"',
     'header="api-key: sk-"',
     'header="apikey: sk-"',
     'banner="authorization: bearer sk-"',
     'banner="authorization: bearer sk-proj"',
     'banner="authorization: bearer sk-ant-"',
-    'banner="x-api-key: sk-"',
-    'banner="api_key=sk-"',
-    'banner="apikey=sk-"',
     'banner="OPENAI_API_KEY=sk-"',
     'banner="ANTHROPIC_API_KEY=sk-ant-"',
-    # --- body-filtered (host has key in body; we catch if also in header/banner) ---
-    'body="OPENAI_API_KEY=sk-" && (header="sk-" || banner="sk-")',
-    'body="api_key=sk-proj" && (header="sk-" || banner="sk-")',
-    'body="apiKey=sk-proj" && (header="sk-" || banner="sk-")',
-    'body="sk-ant-" && (header="sk-ant-" || banner="sk-ant-")',
-    'body="OPENAI_API_KEY" && body="sk-" && (header="sk-" || banner="sk-")',
-    'body="authorization=Bearer%20sk-" && (header="sk-" || banner="sk-")',
-    'body=".env" && body="OPENAI_API_KEY" && (header="sk-" || banner="sk-")',
-    'body="DANGEROUSLY_DISABLE_AUTH" && body="sk-" && (header="sk-" || banner="sk-")',
-    # --- Deepseek / Kimi / domestic providers (often missed) ---
-    'header="authorization: bearer sk-" && body="deepseek"',
-    'header="authorization: bearer sk-" && body="moonshot"',
-    # --- Config file leaks (exposed .env files) ---
+    # --- Body queries: find hosts with keys in page → GenericPageProber extracts ---
+    # These are HIGH VOLUME but GenericPageProber fetches the actual key.
+    'body="sk-proj-"',
+    'body="sk-ant-api"',
+    'body="OPENAI_API_KEY" && body="sk-"',
     'body="ANTHROPIC_API_KEY" && body="sk-ant-"',
-    'body="OPENAI_API_KEY" && body="sk-proj-"',
     'body="DEEPSEEK_API_KEY" && body="sk-"',
-    # --- Gateway admin panels with exposed tokens ---
-    'body="/api/token" && (header="sk-" || banner="sk-")',
-    'body="master_key" && (header="sk-" || banner="sk-")',
+    'body=".env" && body="sk-"',
+    'body="docker-compose" && body="sk-"',
+    'body="api_key" && body="sk-proj-"',
+    # --- Domestic providers ---
+    'body="moonshot" && body="sk-"',
+    'body="deepseek" && body="sk-"',
+    # --- Exposed config / gateway leaks ---
+    'body="master_key" && body="sk-"',
+    'body="DANGEROUSLY_DISABLE_AUTH" && body="sk-"',
 ]
 
 
