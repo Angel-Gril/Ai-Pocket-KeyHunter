@@ -34,93 +34,76 @@ from .queries import (
 log = logging.getLogger(__name__)
 
 # Per-product Shodan fingerprints. Mirrors PRODUCT_QUERIES intent, Shodan syntax.
+#
+# DESIGN (validated via /shodan/host/count, Jul 2026):
+#   - Shodan's http.html index is SHALLOW — it only holds a summary of the
+#     crawled homepage, not endpoint responses. Stacking http.html constraints
+#     like http.html:"dify" http.html:"api_key" collapses recall to ~2.
+#     Single http.html:"dify" has 10k+, but most are blog/doc noise.
+#   - The high-precision fingerprint is http.title + the product's DEFAULT PORT
+#     (or one http.html marker that genuinely appears in the homepage bundle).
+#     This mirrors the 7WaySecurity AI_SHODAN_DORKS methodology: identify the
+#     service by title/port, then let the prober fetch live endpoints.
+#   - Do NOT search for bare "sk-"/"api_key" here — Shodan http.html can't see
+#     them. Credential discovery is the prober's job (active fetch of /.env,
+#     /console/api/*, /v1/models, etc.).
+#
 # Each entry is a list of full Shodan queries (filters already applied).
+# Recall numbers are count-endpoint estimates at rewrite time.
 SHODAN_PRODUCT_QUERIES: dict[str, list[str]] = {
-    "LiteLLM": [
-        'http.html:"LiteLLM" http.html:"api_key"',
-        'http.html:"litellm" "sk-"',
-        '"x-litellm" "sk-"',
-    ],
-    "Flowise": [
-        'http.html:"Flowise" http.html:"api_key"',
-        'http.html:"Flowise" "sk-"',
-    ],
+    # Dify: title + "console" (the /console path is baked into the SPA bundle,
+    # so real deployments match; blogs/docs don't). ~1.4k, low noise.
     "Dify": [
-        'http.html:"dify" http.html:"api_key"',
-        'http.html:"dify" "sk-"',
-        'http.html:"dify" http.html:"secret_key"',
+        'http.title:"Dify" http.html:"console"',
+    ],
+    # LiteLLM: default proxy port 4000 is the strongest signal. ~1.7k.
+    "LiteLLM": [
+        'http.title:"LiteLLM" port:4000',
+    ],
+    # Open WebUI: default port 3000 + title. ~5.8k, the largest clean pool.
+    "OpenWebUI": [
+        'http.title:"Open WebUI" port:3000',
+    ],
+    # New-API / One-API: title is unreliable (admins rename it to "我的中转站"
+    # etc.), so fingerprint on hardcoded <meta> tags in the homepage HTML instead.
+    #   - New-API ships <meta name="generator" content="new-api"> → ~20k, and
+    #     identify() sees "new-api" in the banner (=http.html), so it routes
+    #     correctly even when the title was changed.
+    #   - One-API (the upstream) lacks the generator tag but shares the Chinese
+    #     description "二次分发管理 key"; subtracting generator isolates One-API
+    #     from New-API → ~5k.
+    # `/api/status` was rejected: 13k hits but ~all are Uptime-Kuma/status pages
+    # matching the `/api/status-page/...` substring, not New-API.
+    "New-API": [
+        'http.html:"generator" http.html:"new-api"',
+    ],
+    "One-API": [
+        'http.html:"二次分发管理 key" -http.html:"generator"',
+    ],
+    # Smaller, distinctive titles — bare title is already precise.
+    "LobeChat": [
+        'http.title:"LobeChat"',
     ],
     "LibreChat": [
-        'http.html:"LibreChat" http.html:"OPENAI_API_KEY"',
-        'http.html:"LibreChat" "sk-"',
-    ],
-    "OpenWebUI": [
-        'http.html:"Open WebUI" "sk-"',
-        'http.html:"open-webui" http.html:"api_key"',
-    ],
-    "Langflow": [
-        'http.html:"langflow" http.html:"api_key"',
-        'http.html:"langflow" "sk-"',
-    ],
-    "MLflow": [
-        'http.html:"mlflow" "sk-"',
-        '"MLflow" "authorization"',
-    ],
-    "Portkey AI Gateway": [
-        'http.html:"portkey" "sk-"',
-        '"x-portkey" "sk-"',
-    ],
-    "LangChain": [
-        'http.html:"langchain" http.html:"OPENAI_API_KEY"',
-    ],
-    "PraisonAI": [
-        'http.html:"praisonai" "sk-"',
-    ],
-    "GitLab AI Gateway": [
-        '"X-Gitlab-Duo" "sk-"',
+        'http.title:"LibreChat"',
     ],
     "FastGPT": [
-        'http.html:"fastgpt" "sk-"',
-        'http.html:"fastgpt" http.html:"OPENAI_API_KEY"',
+        'http.title:"FastGPT"',
     ],
-    "New-API": [
-        'http.html:"new-api" "sk-"',
-        'http.html:"new-api" http.html:"token"',
+    # Flowise: default port 3000 filters the 22k title noise down to ~680 real
+    # deployments. port:8080 is a secondary Flowise port (~11) — not worth a
+    # second query for the credit cost.
+    "Flowise": [
+        'http.title:"Flowise" port:3000',
     ],
-    "AnythingLLM": [
-        'http.html:"anythingllm" "sk-"',
-        'http.html:"anythingllm" http.html:"OPENAI_API_KEY"',
-    ],
-    "ChatGPT-Next-Web": [
-        'http.html:"nextchat" "sk-"',
-        'http.html:"chatgpt-next-web" http.html:"OPENAI_API_KEY"',
-    ],
-    "vLLM": [
-        'http.html:"vllm" "sk-"',
-    ],
-    "Ollama": [
-        'http.html:"ollama" "sk-"',
-    ],
-    "LocalAI": [
-        'http.html:"localai" "sk-"',
-    ],
-    "Text-Generation-WebUI": [
-        'http.html:"text-generation-webui" "sk-"',
-    ],
-    "LobeChat": [
-        'http.html:"lobe-chat" "sk-"',
-        'http.html:"lobechat" http.html:"OPENAI_API_KEY"',
-    ],
-    "Jan": [
-        'http.html:"jan.ai" "sk-"',
-    ],
-    "Claude": [
-        'http.html:"anthropic" http.html:"api_key"',
-        'http.html:"ANTHROPIC_API_KEY"',
-        '"sk-ant-" http.status:200',
-    ],
-    "Codex CLI": [
-        'http.html:"codex" http.html:"OPENAI_API_KEY"',
+    # Langflow: bare title is 22k but ~99% tutorial/blog noise. Langflow has no
+    # hardcoded product-name <meta> (unlike New-API's generator tag), so HTML
+    # markers can't tighten it cleanly. Title + a comma-separated port list
+    # (Shodan's multi-value port syntax, OR without the parens that break the
+    # parser) is the best precision/recall trade: ~316 hits, all title-matched
+    # Langflow on common ports — 99% noise rejected vs bare title.
+    "Langflow": [
+        'http.title:"Langflow" port:80,443,3000,8080,7860',
     ],
 }
 
