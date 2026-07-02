@@ -37,86 +37,90 @@ log = logging.getLogger(__name__)
 # Each entry is a list of full Shodan queries (filters already applied).
 SHODAN_PRODUCT_QUERIES: dict[str, list[str]] = {
     "LiteLLM": [
-        'http.html:"LiteLLM"',
-        'http.title:"LiteLLM"',
-        '"x-litellm"',
+        'http.html:"LiteLLM" http.html:"api_key"',
+        'http.html:"litellm" "sk-"',
+        '"x-litellm" "sk-"',
     ],
     "Flowise": [
-        'http.html:"Flowise"',
-        'http.title:"Flowise"',
+        'http.html:"Flowise" http.html:"api_key"',
+        'http.html:"Flowise" "sk-"',
     ],
     "Dify": [
-        'http.html:"dify"',
-        'http.title:"Dify"',
+        'http.html:"dify" http.html:"api_key"',
+        'http.html:"dify" "sk-"',
+        'http.html:"dify" http.html:"secret_key"',
     ],
     "LibreChat": [
-        'http.html:"LibreChat"',
-        'http.title:"LibreChat"',
+        'http.html:"LibreChat" http.html:"OPENAI_API_KEY"',
+        'http.html:"LibreChat" "sk-"',
     ],
     "OpenWebUI": [
-        'http.html:"Open WebUI"',
-        'http.title:"Open WebUI"',
+        'http.html:"Open WebUI" "sk-"',
+        'http.html:"open-webui" http.html:"api_key"',
     ],
     "Langflow": [
-        'http.html:"langflow"',
-        'http.title:"langflow"',
+        'http.html:"langflow" http.html:"api_key"',
+        'http.html:"langflow" "sk-"',
     ],
     "MLflow": [
-        'http.html:"mlflow"',
-        'http.title:"MLflow"',
+        'http.html:"mlflow" "sk-"',
+        '"MLflow" "authorization"',
     ],
     "Portkey AI Gateway": [
-        'http.html:"portkey"',
-        '"x-portkey"',
+        'http.html:"portkey" "sk-"',
+        '"x-portkey" "sk-"',
     ],
     "LangChain": [
-        'http.html:"langchain"',
+        'http.html:"langchain" http.html:"OPENAI_API_KEY"',
     ],
     "PraisonAI": [
-        'http.html:"praisonai"',
+        'http.html:"praisonai" "sk-"',
     ],
     "GitLab AI Gateway": [
-        '"X-Gitlab-Duo"',
-        'http.html:"ai-gateway"',
+        '"X-Gitlab-Duo" "sk-"',
     ],
     "FastGPT": [
-        'http.html:"fastgpt"',
-        'http.title:"FastGPT"',
+        'http.html:"fastgpt" "sk-"',
+        'http.html:"fastgpt" http.html:"OPENAI_API_KEY"',
     ],
     "New-API": [
-        'http.html:"new-api"',
-        'http.title:"new-api"',
+        'http.html:"new-api" "sk-"',
+        'http.html:"new-api" http.html:"token"',
     ],
     "AnythingLLM": [
-        'http.html:"anythingllm"',
-        'http.title:"AnythingLLM"',
+        'http.html:"anythingllm" "sk-"',
+        'http.html:"anythingllm" http.html:"OPENAI_API_KEY"',
     ],
     "ChatGPT-Next-Web": [
-        'http.html:"nextchat"',
-        'http.html:"chatgpt-next-web"',
-        'http.title:"ChatGPT Next Web"',
+        'http.html:"nextchat" "sk-"',
+        'http.html:"chatgpt-next-web" http.html:"OPENAI_API_KEY"',
     ],
     "vLLM": [
-        'http.title:"vLLM"',
-        'http.html:"vllm"',
+        'http.html:"vllm" "sk-"',
     ],
     "Ollama": [
-        'http.html:"ollama"',
-        'http.title:"Ollama"',
+        'http.html:"ollama" "sk-"',
     ],
     "LocalAI": [
-        'http.html:"localai"',
+        'http.html:"localai" "sk-"',
     ],
     "Text-Generation-WebUI": [
-        'http.html:"oobabooga"',
-        'http.html:"text-generation-webui"',
+        'http.html:"text-generation-webui" "sk-"',
     ],
     "LobeChat": [
-        'http.html:"lobe-chat"',
-        'http.title:"LobeChat"',
+        'http.html:"lobe-chat" "sk-"',
+        'http.html:"lobechat" http.html:"OPENAI_API_KEY"',
     ],
     "Jan": [
-        'http.html:"jan.ai"',
+        'http.html:"jan.ai" "sk-"',
+    ],
+    "Claude": [
+        'http.html:"anthropic" http.html:"api_key"',
+        'http.html:"ANTHROPIC_API_KEY"',
+        '"sk-ant-" http.status:200',
+    ],
+    "Codex CLI": [
+        'http.html:"codex" http.html:"OPENAI_API_KEY"',
     ],
 }
 
@@ -131,6 +135,19 @@ SHODAN_CREDENTIAL_QUERIES: list[str] = [
     '"x-api-key: sk-" http.status:200',
     '"x-api-key: sk-proj" http.status:200',
     '"authorization: bearer sk-ant-" http.status:200',
+    # --- Anthropic / Claude key leaks ---
+    'http.html:"ANTHROPIC_API_KEY" "sk-ant-"',
+    '"x-api-key: sk-ant-" http.status:200',
+    'http.html:"anthropic" "api_key"',
+    # --- Domestic provider keys in exposed configs ---
+    'http.html:"DEEPSEEK_API_KEY"',
+    'http.html:"MOONSHOT_API_KEY"',
+    # --- .env file exposure ---
+    'http.html:"OPENAI_API_KEY" http.html:"sk-proj-"',
+    'http.html:".env" http.html:"API_KEY"',
+    # --- Gateway admin credential exposure ---
+    'http.html:"master_key" http.html:"sk-"',
+    'http.html:"token" "new-api" http.html:"sk-"',
     # --- page body leaks (.env / config snippets indexed by Shodan) ---
     'http.html:"OPENAI_API_KEY=sk-"',
     'http.html:"OPENAI_API_KEY=sk-proj"',

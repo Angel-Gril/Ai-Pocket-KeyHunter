@@ -7,6 +7,7 @@ how to fingerprint a product and which endpoints to read for credentials.
 from __future__ import annotations
 
 from .dify import DifyProber
+from .generic import GenericPageProber
 from .fastgpt import FastGPTProber
 from .flowise import FlowiseProber
 from .langflow import LangflowProber
@@ -20,6 +21,7 @@ __all__ = [
     "DifyProber",
     "FastGPTProber",
     "FlowiseProber",
+    "GenericPageProber",
     "LangflowProber",
     "LobeChatProber",
     "LibreChatProber",

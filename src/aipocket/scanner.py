@@ -48,32 +48,44 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
     hits_by_source: dict[str, int] = {}
 
     # ------------------------------------------------------------------
-    # Source 1: FOFA (skipped silently if no FOFA keys configured)
+    # Source fetching — run FOFA and Shodan in PARALLEL via threads
+    # (both use synchronous httpx clients internally)
     # ------------------------------------------------------------------
-    if settings.keys:
-        sources_used.append("fofa")
-        fofa_hits = _fetch_fofa(max_queries, skip_direct=skip_direct)
-        for h in fofa_hits:
-            if isinstance(h, dict):
-                h.setdefault("_source", "fofa")
-        all_hits.extend(fofa_hits)
-        hits_by_source["fofa"] = len(fofa_hits)
-    else:
-        log.info("FOFA keys not configured — skipping FOFA source")
+    import concurrent.futures
 
-    # ------------------------------------------------------------------
-    # Source 2: Shodan (skipped silently if no SHODAN keys configured)
-    # ------------------------------------------------------------------
-    if settings.shodan_key_list:
-        sources_used.append("shodan")
-        shodan_hits = _fetch_shodan(max_queries, skip_direct=skip_direct)
-        for h in shodan_hits:
-            if isinstance(h, dict):
-                h.setdefault("_source", "shodan")
-        all_hits.extend(shodan_hits)
-        hits_by_source["shodan"] = len(shodan_hits)
-    else:
-        log.info("Shodan keys not configured — skipping Shodan source")
+    fofa_hits: list[dict] = []
+    shodan_hits: list[dict] = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {}
+        if settings.keys:
+            sources_used.append("fofa")
+            futures["fofa"] = pool.submit(_fetch_fofa, max_queries, skip_direct=skip_direct)
+        else:
+            log.info("FOFA keys not configured — skipping FOFA source")
+
+        if settings.shodan_key_list:
+            sources_used.append("shodan")
+            futures["shodan"] = pool.submit(_fetch_shodan, max_queries, skip_direct=skip_direct)
+        else:
+            log.info("Shodan keys not configured — skipping Shodan source")
+
+        for name, future in futures.items():
+            try:
+                hits = future.result()
+                for h in hits:
+                    if isinstance(h, dict):
+                        h.setdefault("_source", name)
+                if name == "fofa":
+                    fofa_hits = hits
+                else:
+                    shodan_hits = hits
+            except Exception as e:
+                log.error("Source %s failed: %s", name, e)
+
+    all_hits = fofa_hits + shodan_hits
+    hits_by_source["fofa"] = len(fofa_hits)
+    hits_by_source["shodan"] = len(shodan_hits)
 
     if not sources_used:
         raise RuntimeError(
@@ -92,18 +104,49 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
     seen = {(c.apikey, c.apiurl) for c in creds}
     log.info("Extracted %d candidate credentials (regex)", len(creds))
 
+    # ------------------------------------------------------------------
+    # Early credential filtering — reject known bad formats BEFORE
+    # wasting HTTP calls on validation. This catches:
+    # - Non-LLM key formats (Google OAuth, AWS, hex32 tokens)
+    # - Too-short keys
+    # - Obvious noise patterns
+    # ------------------------------------------------------------------
+    from .honeypot import pre_filter_credentials
+
+    pre_filtered_count = len(creds)
+    creds = pre_filter_credentials(creds)
+    log.info(
+        "Pre-filter: %d → %d credentials (rejected %d bad formats)",
+        pre_filtered_count, len(creds), pre_filtered_count - len(creds),
+    )
+
     from .writer import write_raw_hits
 
     write_raw_hits(all_hits, run_dir=run_dir)
 
-    # Active probing — read exposed config/credential endpoints on fingerprinted
-    # gateways. Catches live keys that passive banner extraction misses.
+    # Active probing — probe all hosts. Signal-based ordering ensures high-value
+    # targets (those with key patterns in banner/header) are probed first, but
+    # ALL hosts are probed (no cap — precision queries already limit the set).
     from .prober import probe_hosts
 
     probed_creds: list[Credential] = []
     if settings.scan_prober:
-        log.info("Probing %d hosts for exposed credentials...", len(all_hits))
-        probed_creds = await probe_hosts(all_hits)
+        # Sort: high-signal hosts first (have sk- / api_key / OPENAI / ANTHROPIC in banner/header)
+        _SIGNAL_RE = re.compile(r"sk-[A-Za-z0-9_\-]{6,}|api[_-]?key|OPENAI|ANTHROPIC|authorization", re.I)
+
+        def _has_signal(h: dict) -> bool:
+            blob = (h.get("header", "") or "") + " " + (h.get("banner", "") or "")
+            return bool(_SIGNAL_RE.search(blob))
+
+        # Stable sort: high-signal first, rest after
+        probe_targets = sorted(all_hits, key=lambda h: (0 if _has_signal(h) else 1))
+        high_count = sum(1 for h in probe_targets if _has_signal(h))
+
+        log.info(
+            "Probing %d hosts (high-signal=%d, low-signal=%d)",
+            len(probe_targets), high_count, len(probe_targets) - high_count,
+        )
+        probed_creds = await probe_hosts(probe_targets)
         seen = _merge_credentials(creds, probed_creds, seen)
         log.info("After active probing: %d candidate credentials", len(creds))
 
@@ -138,7 +181,9 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
     log.info("Validating %d credentials (concurrency=%d)...", len(creds), settings.validate_concurrency)
     results: list[ValidationResult] = await validate_all(creds)
 
-    if settings.gpt_key:
+    # GPT recheck — disabled by default since honeypot filter catches the same
+    # cases faster. Enable with GPT_RECHECK=true for extra verification.
+    if settings.gpt_recheck:
         from .analyzer import recheck_all_with_gpt
 
         results = list(await recheck_all_with_gpt(results))

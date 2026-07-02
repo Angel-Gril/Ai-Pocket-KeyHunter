@@ -31,6 +31,7 @@ class Settings(BaseSettings):
 
     scan_fast: bool = False
     scan_prober: bool = True
+    prober_concurrency: int = 50
 
     validate_concurrency: int = 20
     validate_timeout: float = 15.0
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
     # When True, dump each GPT batch payload to <run>/gpt_debug/ for debugging
     # prompt/extract issues. Off by default (writes a lot of files).
     gpt_debug: bool = False
+    gpt_recheck: bool = False
 
     results_dir: str = "results"
 

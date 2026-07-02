@@ -13,13 +13,15 @@ from typing import Any
 
 import httpx
 
+from ..config import settings
 from ..models import Credential
 from .base import PROBE_TIMEOUT, Prober
 
 log = logging.getLogger(__name__)
 
-# Prober concurrency — separate from the validator's pool.
-_PROBER_CONCURRENCY = 15
+
+def _prober_concurrency() -> int:
+    return settings.prober_concurrency
 
 
 def _all_probers() -> list[type[Prober]]:
@@ -28,6 +30,7 @@ def _all_probers() -> list[type[Prober]]:
         DifyProber,
         FastGPTProber,
         FlowiseProber,
+        GenericPageProber,
         LangflowProber,
         LibreChatProber,
         LiteLLMProber,
@@ -65,7 +68,7 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
 
     # Pre-group hits by detected product to avoid scanning every hit N times.
     assignments: list[tuple[type[Prober], dict[str, Any]]] = []
-    unmatched = 0
+    unmatched_hits: list[dict[str, Any]] = []
     for hit in hits:
         matched = False
         for cls in prober_classes:
@@ -77,18 +80,27 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
             except Exception:  # noqa: BLE001 — identify must never crash the run
                 continue
         if not matched:
-            unmatched += 1
+            unmatched_hits.append(hit)
+
+    # Route unmatched hosts to GenericPageProber — fetches index + .env + common
+    # config paths to catch keys (especially Claude/Anthropic) in page bodies.
+    from .probers import GenericPageProber
+
+    for hit in unmatched_hits:
+        assignments.append((GenericPageProber, hit))
 
     log.info(
-        "Prober: %d hits → %d probe tasks (%d unmatched)",
-        len(hits), len(assignments), unmatched,
+        "Prober: %d hits → %d probe tasks (product=%d, generic=%d)",
+        len(hits), len(assignments), len(assignments) - len(unmatched_hits), len(unmatched_hits),
     )
 
     if not assignments:
         return []
 
-    sem = asyncio.Semaphore(_PROBER_CONCURRENCY)
-    limits = httpx.Limits(max_connections=_PROBER_CONCURRENCY * 2)
+    concurrency = _prober_concurrency()
+    log.info("Prober concurrency: %d", concurrency)
+    sem = asyncio.Semaphore(concurrency)
+    limits = httpx.Limits(max_connections=concurrency * 2)
 
     all_creds: list[Credential] = []
     async with httpx.AsyncClient(timeout=PROBE_TIMEOUT, limits=limits, follow_redirects=True) as client:

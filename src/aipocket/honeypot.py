@@ -69,6 +69,66 @@ def _is_blocked_key_format(apikey: str) -> str | None:
     return None
 
 
+def pre_filter_credentials(creds: list) -> list:
+    """Lightweight pre-validation filter — reject obviously invalid credentials.
+
+    Runs the key-format blocklist and cross-host dedup on raw Credential objects
+    BEFORE expensive HTTP validation. This catches:
+    - Non-LLM key formats (Google OAuth, AWS, hex32 tokens)
+    - Keys shorter than 15 chars
+    - Known noise patterns
+    - Same key appearing with > N different apiurls (broadcast honeypot)
+
+    Returns filtered list (valid credentials only).
+    """
+    from .key_patterns import is_noise
+
+    valid: list = []
+    seen_keys: dict[str, int] = {}  # apikey → count of distinct apiurls
+    key_urls: dict[str, set[str]] = {}  # apikey → set of apiurls
+
+    # First pass: count key occurrences across different URLs
+    for cred in creds:
+        k = cred.apikey
+        url = cred.apiurl
+        if k not in key_urls:
+            key_urls[k] = set()
+        key_urls[k].add(url)
+
+    rejected_format = 0
+    rejected_noise = 0
+    rejected_dedup = 0
+
+    for cred in creds:
+        k = cred.apikey
+
+        # 1. Format blocklist
+        reason = _is_blocked_key_format(k)
+        if reason:
+            rejected_format += 1
+            continue
+
+        # 2. Noise check
+        if is_noise(k):
+            rejected_noise += 1
+            continue
+
+        # 3. Same key on too many different URLs → likely honeypot/broadcast
+        if len(key_urls.get(k, set())) > 5:
+            rejected_dedup += 1
+            continue
+
+        valid.append(cred)
+
+    total_rejected = rejected_format + rejected_noise + rejected_dedup
+    if total_rejected > 0:
+        log.info(
+            "Pre-filter rejected %d credentials (format=%d, noise=%d, broadcast=%d)",
+            total_rejected, rejected_format, rejected_noise, rejected_dedup,
+        )
+
+    return valid
+
 # ---------------------------------------------------------------------------
 # 2. Cross-host dedup — same key on N hosts → keep only first, reject rest.
 # ---------------------------------------------------------------------------

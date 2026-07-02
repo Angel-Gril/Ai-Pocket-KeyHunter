@@ -16,87 +16,101 @@ CVE_PATH = Path(os.environ.get("AIPOCKET_CVE_PATH", _DEFAULT_CVE_PATH))
 
 PRODUCT_QUERIES: dict[str, list[str]] = {
     "LiteLLM": [
-        'body="LiteLLM" || header="LiteLLM"',
-        'body="litellm_proxy" || body="litellm-dashboard"',
-        'body="LiteLLM Proxy" && body="api_key"',
-        'header="x-litellm"',
+        'body="LiteLLM" && (header="sk-" || banner="sk-")',
+        'body="litellm_proxy" && body="api_key"',
+        'body="LiteLLM Proxy" && body="master_key"',
+        'header="x-litellm" && header="sk-"',
     ],
     "Flowise": [
-        'body="Flowise" || header="Flowise"',
-        'body="/api/v1/chat-messages" && body="flowise"',
-        'icon_hash="-1720536238"',
+        'body="Flowise" && (header="sk-" || banner="sk-")',
+        'body="flowise" && body="apiKey"',
+        'icon_hash="-1720536238" && (header="sk-" || banner="sk-")',
     ],
     "Dify": [
-        'body="dify" || header="dify"',
-        'body="console/api" && body="dify"',
-        'body="Next.js" && body="/console/api/setup"',
+        'body="dify" && body="api_key" && (header="sk-" || banner="sk-")',
+        'body="console/api" && body="dify" && body="secret_key"',
+        'body="dify" && body="OPENAI_API_KEY"',
+        'title="Dify" && (header="authorization" || banner="authorization")',
     ],
     "LibreChat": [
-        'body="LibreChat" || header="LibreChat"',
-        'body="librechat" && body="/api/auth"',
-        'body="/api/keys" && body="librechat"',
+        'body="LibreChat" && (header="sk-" || banner="sk-")',
+        'body="librechat" && body="OPENAI_API_KEY"',
+        'body="librechat" && body="ANTHROPIC_API_KEY"',
     ],
     "OpenWebUI": [
-        'body="Open WebUI" || header="open-webui"',
-        'body="open-webui" && body="/api/v1"',
+        'body="Open WebUI" && (header="sk-" || banner="sk-")',
+        'body="open-webui" && body="api_key"',
     ],
     "Langflow": [
-        'body="langflow" || header="langflow"',
-        'body="/api/v1/flows" && body="langflow"',
+        'body="langflow" && (header="sk-" || banner="sk-")',
+        'body="langflow" && body="OPENAI_API_KEY"',
+        'body="langflow" && body="api_key"',
     ],
     "MLflow": [
-        'header="MLflow" || body="mlflow"',
-        'body="ajax-api" && body="mlflow"',
+        'body="mlflow" && (header="sk-" || banner="sk-")',
+        'header="MLflow" && header="authorization"',
     ],
     "Portkey AI Gateway": [
-        'header="x-portkey" || body="portkey"',
+        'header="x-portkey" && (header="sk-" || banner="sk-")',
+        'body="portkey" && body="api_key"',
     ],
     "LangChain": [
-        'body="langchain" && (body="api_key" || body="openai_api_key")',
+        'body="langchain" && body="OPENAI_API_KEY"',
+        'body="langchain" && body="api_key" && (header="sk-" || banner="sk-")',
     ],
     "PraisonAI": [
-        'body="praisonai" || header="praison"',
+        'body="praisonai" && (header="sk-" || banner="sk-")',
+        'body="praison" && body="api_key"',
     ],
     "GitLab AI Gateway": [
-        'header="X-Gitlab-Duo" || body="ai-gateway"',
+        'header="X-Gitlab-Duo" && (header="sk-" || banner="sk-")',
     ],
     "FastGPT": [
-        'body="fastgpt" || header="fastgpt"',
-        'body="/api/v1" && body="fastgpt"',
+        'body="fastgpt" && (header="sk-" || banner="sk-")',
+        'body="fastgpt" && body="OPENAI_API_KEY"',
     ],
     "New-API": [
-        'body="new-api" || body="new api"',
-        'body="/api/status" && body="new-api"',
+        'body="new-api" && (header="sk-" || banner="sk-")',
+        'body="new-api" && body="token"',
+        'body="/api/status" && body="new-api" && header="authorization"',
     ],
     "AnythingLLM": [
-        'body="anythingllm" || header="anythingllm"',
-        'body="/api/v1/workspaces" && body="anythingllm"',
+        'body="anythingllm" && (header="sk-" || banner="sk-")',
+        'body="anythingllm" && body="OPENAI_API_KEY"',
     ],
     "ChatGPT-Next-Web": [
-        'body="nextchat" || body="chatgpt-next-web"',
-        'body="ChatGPT Next Web" && body="api"',
+        'body="nextchat" && (header="sk-" || banner="sk-")',
+        'body="chatgpt-next-web" && body="OPENAI_API_KEY"',
+        'body="ChatGPT Next Web" && header="api"',
     ],
     "vLLM": [
-        'header="vllm" || body="vllm"',
-        'body="/v1/models" && body="vllm"',
+        'body="vllm" && (header="sk-" || banner="sk-")',
+        'body="vllm" && body="api_key"',
     ],
     "Ollama": [
-        'header="ollama" || body="ollama"',
-        'body="/api/tags" && body="ollama"',
+        'body="ollama" && (header="sk-" || banner="sk-")',
     ],
     "LocalAI": [
-        'body="localai" || header="localai"',
-        'body="/v1/models" && body="localai"',
+        'body="localai" && (header="sk-" || banner="sk-")',
     ],
     "Text-Generation-WebUI": [
-        'body="text-generation-webui" || body="oobabooga"',
+        'body="text-generation-webui" && (header="sk-" || banner="sk-")',
     ],
     "LobeChat": [
-        'body="lobe-chat" || body="lobechat"',
-        'body="LobeChat" && body="/api"',
+        'body="lobe-chat" && (header="sk-" || banner="sk-")',
+        'body="lobechat" && body="OPENAI_API_KEY"',
     ],
     "Jan": [
-        'body="jan.ai" || body="Jan AI"',
+        'body="jan.ai" && (header="sk-" || banner="sk-")',
+    ],
+    "Claude": [
+        'body="claude" && body="api_key" && (header="sk-ant" || banner="sk-ant")',
+        'body="ANTHROPIC_API_KEY" && body="sk-ant-"',
+        'body="anthropic" && body="api_key" && (header="sk-" || banner="sk-")',
+    ],
+    "Codex CLI": [
+        'body="codex" && body="OPENAI_API_KEY"',
+        'body=".codex" && body="api_key"',
     ],
 }
 
@@ -145,6 +159,16 @@ CREDENTIAL_QUERIES: list[str] = [
     'body="authorization=Bearer%20sk-" && (header="sk-" || banner="sk-")',
     'body=".env" && body="OPENAI_API_KEY" && (header="sk-" || banner="sk-")',
     'body="DANGEROUSLY_DISABLE_AUTH" && body="sk-" && (header="sk-" || banner="sk-")',
+    # --- Deepseek / Kimi / domestic providers (often missed) ---
+    'header="authorization: bearer sk-" && body="deepseek"',
+    'header="authorization: bearer sk-" && body="moonshot"',
+    # --- Config file leaks (exposed .env files) ---
+    'body="ANTHROPIC_API_KEY" && body="sk-ant-"',
+    'body="OPENAI_API_KEY" && body="sk-proj-"',
+    'body="DEEPSEEK_API_KEY" && body="sk-"',
+    # --- Gateway admin panels with exposed tokens ---
+    'body="/api/token" && (header="sk-" || banner="sk-")',
+    'body="master_key" && (header="sk-" || banner="sk-")',
 ]
 
 
@@ -158,7 +182,7 @@ def load_cves(path: Path | None = None) -> list[dict[str, Any]]:
 
 
 SKIP_PRODUCTS = frozenset({
-    "claude code", "claude desktop", "langgraph", "langsmith",
+    "langgraph", "langsmith",
 })
 
 
@@ -193,7 +217,7 @@ def build_queries(cves: list[dict[str, Any]] | None = None, *, skip_direct: bool
         product = cve.get("product", "")
         cve_type = cve.get("type", "")
         priority = VULN_TYPE_PRIORITIES.get(cve_type, 9)
-        if priority > 3:
+        if priority > 4:
             continue
 
         if _should_skip(product):
