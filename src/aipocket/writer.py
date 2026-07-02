@@ -78,6 +78,7 @@ def write_raw_hits(hits: list[dict[str, Any]], run_dir: Path | None = None) -> P
     """Write raw_hits_<ts>.jsonl — each line is one hit."""
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_dir = run_dir or settings.results_path
+    out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"raw_hits_{ts}.jsonl"
     with path.open("w", encoding="utf-8") as f:
         for hit in hits:

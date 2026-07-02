@@ -89,7 +89,6 @@ def pre_filter_credentials(creds: list) -> list:
     from .key_patterns import is_noise
 
     valid: list = []
-    seen_keys: dict[str, int] = {}  # apikey → count of distinct apiurls
     key_urls: dict[str, set[str]] = {}  # apikey → set of apiurls
 
     # First pass: count key occurrences across different URLs

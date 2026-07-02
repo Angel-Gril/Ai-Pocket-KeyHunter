@@ -17,12 +17,12 @@ def test_empty_keys_stripped(monkeypatch):
     assert s.keys == []
 
 
-def test_results_path_creates_dir(tmp_path, monkeypatch):
+def test_results_path_returns_path(tmp_path, monkeypatch):
     target = tmp_path / "out"
     monkeypatch.setenv("RESULTS_DIR", str(target))
     s = Settings()
     assert s.results_path == target
-    assert target.exists()
+    assert not target.exists()
 
 
 def test_defaults(monkeypatch):

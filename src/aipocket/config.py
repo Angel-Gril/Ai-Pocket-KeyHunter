@@ -72,9 +72,7 @@ class Settings(BaseSettings):
 
     @property
     def results_path(self) -> Path:
-        p = Path(self.results_dir)
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+        return Path(self.results_dir)
 
 
 settings = Settings()  # type: ignore[call-arg]

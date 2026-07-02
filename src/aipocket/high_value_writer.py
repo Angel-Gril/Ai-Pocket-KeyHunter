@@ -81,12 +81,12 @@ def save_high_value_key(result: ValidationResult) -> bool:
             return False
         _seen_keys.add(key)
 
-    entry = _build_entry(result)
-    line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
+        entry = _build_entry(result)
+        line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
 
-    path = _output_path()
-    with _write_lock, path.open("a", encoding="utf-8") as f:
-        f.write(line)
+        path = _output_path()
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
 
     log.info("high_value_key saved: %s…  status=%s", key[:16], result.status_code)
     return True

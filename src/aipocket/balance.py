@@ -214,8 +214,12 @@ async def enrich_results(results: list[ValidationResult]) -> list[ValidationResu
         async def _one(r: ValidationResult) -> ValidationResult:
             if not r.valid:
                 return r
-            async with sem:
-                bal = await query_balance(client, r.credential)
+            try:
+                async with sem:
+                    bal = await query_balance(client, r.credential)
+            except Exception as e:
+                log.warning("Balance query failed for %s…: %s", r.credential.apikey[:12], e)
+                return r
             if bal:
                 r.balance = str(bal.get("balance_usd", ""))
                 r.gateway = bal.get("gateway", "")

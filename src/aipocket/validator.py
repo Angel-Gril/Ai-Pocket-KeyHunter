@@ -116,6 +116,8 @@ ANTHROPIC_PROVIDERS = {"anthropic"}
 # we override the apiurl with the official endpoint so the key is actually testable.
 KEY_PREFIX_ROUTING: list[tuple[str, str, str]] = [
     ("sk-proj", "https://api.openai.com/v1", "openai"),
+    ("sk-admin", "https://api.openai.com/v1", "openai"),
+    ("sk-svcacct", "https://api.openai.com/v1", "openai"),
     ("sk-ant-api", "https://api.anthropic.com/v1", "anthropic"),
     ("sk-ant-oat", "https://api.anthropic.com/v1", "anthropic"),
     ("sk-ant-sid", "https://api.anthropic.com/v1", "anthropic"),
@@ -439,7 +441,7 @@ def _normalize_apiurl(url: str) -> str:
     if url.endswith("/v1"):
         return url + "/chat/completions"
     if "/v1/" in url:
-        base = url.split("/v1/")[0]
+        base = url.rsplit("/v1/", 1)[0]
         return base + "/v1/chat/completions"
     return url.rstrip("/") + "/v1/chat/completions"
 

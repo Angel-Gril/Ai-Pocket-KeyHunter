@@ -73,7 +73,7 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
 
         for name, future in futures.items():
             try:
-                hits = future.result()
+                hits, used_queries = future.result()
                 for h in hits:
                     if isinstance(h, dict):
                         h.setdefault("_source", name)
@@ -81,6 +81,7 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
                     fofa_hits = hits
                 else:
                     shodan_hits = hits
+                queries_used.extend(used_queries)
             except Exception as e:
                 log.error("Source %s failed: %s", name, e)
 
@@ -246,7 +247,7 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
     )
 
 
-def _fetch_fofa(max_queries: int | None, *, skip_direct: bool = False) -> list[dict]:
+def _fetch_fofa(max_queries: int | None, *, skip_direct: bool = False) -> tuple[list[dict], list[str]]:
     """Run the FOFA backend: build queries, paginate each, tag hits with _cve/_product."""
     queries = build_queries(skip_direct=skip_direct)
     if max_queries:
@@ -268,10 +269,10 @@ def _fetch_fofa(max_queries: int | None, *, skip_direct: bool = False) -> list[d
                 queries_used.append(q["query"])
             log.info("  FOFA accumulated %d hits", len(all_hits))
     log.info("FOFA total hits: %d", len(all_hits))
-    return all_hits
+    return all_hits, queries_used
 
 
-def _fetch_shodan(max_queries: int | None, *, skip_direct: bool = False) -> list[dict]:
+def _fetch_shodan(max_queries: int | None, *, skip_direct: bool = False) -> tuple[list[dict], list[str]]:
     """Run the Shodan backend: build Shodan-syntax queries, paginate each."""
     from .shodan_client import ShodanClient
     from .shodan_queries import build_shodan_queries
@@ -283,6 +284,7 @@ def _fetch_shodan(max_queries: int | None, *, skip_direct: bool = False) -> list
 
     # Report remaining credit budget so the 200k/month plan isn't blown silently.
     all_hits: list[dict] = []
+    queries_used: list[str] = []
     with ShodanClient() as shodan:
         try:
             info = shodan.info()
@@ -304,9 +306,10 @@ def _fetch_shodan(max_queries: int | None, *, skip_direct: bool = False) -> list
                         h.setdefault("_cve", q["cve_id"])
                         h.setdefault("_product", q["product"])
                 all_hits.extend(hits)
+                queries_used.append(q["query"])
             log.info("  Shodan accumulated %d hits", len(all_hits))
     log.info("Shodan total hits: %d", len(all_hits))
-    return all_hits
+    return all_hits, queries_used
 
 
 def _sample_hits_for_gpt(hits: list[dict], limit: int = 5000) -> list[dict]:
