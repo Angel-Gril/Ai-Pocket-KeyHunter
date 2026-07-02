@@ -192,6 +192,22 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
     log.info("Validating %d credentials (concurrency=%d)...", len(creds), settings.validate_concurrency)
     results: list[ValidationResult] = await validate_all(creds)
 
+    # No-auth honeypot probe: for each host that has a valid result, send a
+    # FORGED key. If it also validates, the endpoint ignores Authorization and
+    # every key on it is fake. Runs once per host (not per key) to bound volume.
+    from . import honeypot as _honeypot
+    from .validator import verify_no_auth
+
+    valid_after_probe = [r for r in results if r.valid]
+    if valid_after_probe:
+        distinct_hosts = len({r.credential.host or r.credential.apiurl for r in valid_after_probe})
+        log.info(
+            "Probing %d host(s) with a forged key to detect no-auth honeypots...",
+            distinct_hosts,
+        )
+        no_auth_urls = await verify_no_auth(results)
+        _honeypot.no_auth_hosts = no_auth_urls
+
     # Write scan metadata + per-result JSONL lines
     scan_path: Path | None = None
     if run_dir:

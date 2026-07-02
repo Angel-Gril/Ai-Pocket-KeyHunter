@@ -47,9 +47,20 @@ def test_credential_queries_use_shodan_syntax():
         assert "header=" not in q
 
 
-def test_product_queries_cover_all_catalogue_products():
-    """Every product in the shared catalogue has a Shodan fingerprint."""
-    from aipocket.queries import PRODUCT_QUERIES
+def test_product_queries_cover_all_prober_products():
+    """Every product the prober can identify must have a (non-empty) Shodan query.
 
-    missing = set(PRODUCT_QUERIES) - set(SHODAN_PRODUCT_QUERIES)
-    assert not missing, f"products without Shodan queries: {missing}"
+    Design principle: building a Shodan query for a product the prober can't
+    recognize is wasted credits — recall that the prober.identify() can't route.
+    So coverage is keyed on PROBER products, not the larger FOFA catalogue
+    (which lists products we may scan for via FOFA but can't actively probe).
+    """
+    # Prober-supported products → the SHODAN_PRODUCT_QUERIES key naming used in
+    # queries._normalize_product. These are the products the prober can route.
+    prober_products = {
+        "Dify", "LiteLLM", "OpenWebUI", "New-API", "One-API",
+        "LobeChat", "LibreChat", "FastGPT", "Flowise", "Langflow",
+    }
+    # Every prober-supported product must have at least one query (non-empty list).
+    missing = {p for p in prober_products if not SHODAN_PRODUCT_QUERIES.get(p)}
+    assert not missing, f"prober products without Shodan queries: {missing}"

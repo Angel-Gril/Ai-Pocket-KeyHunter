@@ -14,6 +14,13 @@ indicate the "valid" results are actually honeypot or botnet clusters:
 5. **Prompt injection in responses** — responses containing hidden system notes,
    HTML comments with instructions, or verification URLs designed to exfiltrate
    tokens from downstream AI agents.
+6. **No-auth host rejection** — hosts confirmed to accept a FORGED key. A real
+   gateway rejects every key but its own (even if several real keys leaked on
+   one host); a no-auth endpoint accepts any string. The validator sends a
+   random bogus key to each host with a valid result; if it also succeeds, the
+   host is flagged and every "valid" key on it is rejected. This is NOT keyed
+   on "multiple keys per host" — that would false-positive on legitimate
+   gateways that leaked several real keys.
 """
 
 from __future__ import annotations
@@ -173,6 +180,47 @@ def _dedup_cross_host(results: list[ValidationResult]) -> int:
                 results[idx].error = "honeypot:duplicate-key-cross-host"
                 rejected += 1
 
+    return rejected
+
+
+# ---------------------------------------------------------------------------
+# 2b. No-auth host rejection — hosts confirmed (by validator's fake-key probe)
+#     to accept ANY token. See validator.verify_no_auth: it sends a random
+#     bogus key to each host that has a valid result; if the bogus key also
+#     returns a valid completion, the endpoint ignores Authorization and every
+#     "valid" key on it is worthless. This pass just applies that verdict.
+#
+#     NOTE: we deliberately do NOT use "multiple distinct keys on one host" as
+#     the signal here — a legitimate gateway can leak several real keys at once
+#     (multiple users / projects sharing one .env). Only a FORGED key succeeding
+#     proves no-auth.
+# ---------------------------------------------------------------------------
+
+# Hosts (apiurl) flagged as no-auth by verify_no_auth. Populated by the scanner
+# between validate_all and filter_honeypots. Module-level so the scanner can set
+# it without threading it through every call.
+no_auth_hosts: set[str] = set()
+
+
+def _reject_no_auth_hosts(results: list[ValidationResult]) -> int:
+    """Reject all valid results on hosts confirmed to accept forged keys.
+
+    ``no_auth_hosts`` holds HOST values (matched against ``credential.host``),
+    as returned by :func:`validator.verify_no_auth`.
+    """
+    if not no_auth_hosts:
+        return 0
+    rejected = 0
+    for r in results:
+        if not r.valid:
+            continue
+        if r.credential.host in no_auth_hosts:
+            r.valid = False
+            r.error = (
+                "honeypot:no-auth-host (forged key also validated — endpoint "
+                "ignores Authorization, all keys here are fake)"
+            )
+            rejected += 1
     return rejected
 
 
@@ -399,16 +447,19 @@ def filter_honeypots(results: list[ValidationResult]) -> list[ValidationResult]:
     # Pass 5: Cross-host dedup
     dedup_rejected = _dedup_cross_host(results)
 
+    # Pass 6: No-auth host rejection (forged-key probe verdict from validator)
+    noauth_rejected = _reject_no_auth_hosts(results)
+
     valid_after = sum(1 for r in results if r.valid)
     total_rejected = valid_before - valid_after
 
     if total_rejected > 0:
         log.info(
             "Honeypot filter: %d/%d rejected "
-            "(cluster=%d, steg=%d, injection=%d, format=%d, dedup=%d) → %d valid remain",
+            "(cluster=%d, steg=%d, injection=%d, format=%d, dedup=%d, no-auth=%d) → %d valid remain",
             total_rejected, valid_before,
             cluster_rejected, steg_rejected, injection_rejected,
-            format_rejected, dedup_rejected,
+            format_rejected, dedup_rejected, noauth_rejected,
             valid_after,
         )
     else:

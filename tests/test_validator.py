@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 import respx
 
-from aipocket.models import Credential
+from aipocket.models import Credential, ValidationResult
 from aipocket.validator import (
     _extract_rate_headers,
     _infer_tier,
+    _is_severe_model_mismatch,
+    _model_family_and_gen,
     _normalize_apiurl,
     _probe,
     validate_all,
+    verify_no_auth,
 )
 
 BASE = "https://api.openai.com"
@@ -255,3 +259,136 @@ async def test_probe_follows_redirect():
     async with httpx.AsyncClient(follow_redirects=True) as client:
         r = await _probe(client, cred)
     assert r.valid is True
+
+
+# ---------------------------------------------------------------------------
+# Model-mismatch severity — distinguishes a legitimate within-family downgrade
+# (gpt-5.5 → gpt-5.4) from a honeypot cross-generation/family swap
+# (gpt-5.5 → gpt-4o-mini / claude).
+# ---------------------------------------------------------------------------
+
+
+class TestModelFamilyAndGen:
+    def test_gpt_with_version(self):
+        assert _model_family_and_gen("gpt-5.5") == ("gpt", "5")
+        assert _model_family_and_gen("gpt-5.4-pro") == ("gpt", "5")
+
+    def test_gpt_4o_extracts_gen_4(self):
+        # gpt-4o-mini → family gpt, generation 4 (the 'o' is skipped, '4' is gen)
+        fam, gen = _model_family_and_gen("gpt-4o-mini")
+        assert fam == "gpt"
+        assert gen == "4"
+
+    def test_gpt_35_extracts_gen_3(self):
+        fam, gen = _model_family_and_gen("gpt-3.5-turbo")
+        assert fam == "gpt"
+        assert gen == "3"
+
+    def test_claude_family(self):
+        assert _model_family_and_gen("claude-sonnet-4-6") == ("claude", "4")
+        assert _model_family_and_gen("claude-opus-4-8") == ("claude", "4")
+
+    def test_deepseek_family(self):
+        assert _model_family_and_gen("deepseek-v4-flash") == ("deepseek", "4")
+
+    def test_glm_family(self):
+        assert _model_family_and_gen("glm-5.1") == ("glm", "5")
+
+
+class TestIsSevereModelMismatch:
+    @pytest.mark.parametrize("requested,actual", [
+        ("gpt-5.5", "gpt-5.4"),            # same gen, mild downgrade
+        ("claude-opus-4-8", "claude-sonnet-4-6"),  # same claude gen
+        ("deepseek-v4-pro", "deepseek-v4-flash"),  # same ds gen
+        ("glm-5.1", "glm-5.2"),            # same glm gen
+    ])
+    def test_mild_within_family_is_not_severe(self, requested, actual):
+        assert _is_severe_model_mismatch(requested, actual) is False
+
+    @pytest.mark.parametrize("requested,actual", [
+        ("gpt-5.5", "gpt-4o-mini"),        # cross-generation gpt5→gpt4
+        ("gpt-5.5", "gpt-3.5-turbo"),      # cross-generation gpt5→gpt3
+        ("gpt-5.5", "claude-sonnet-4-6"),  # cross-family gpt→claude
+        ("gpt-5.5", "deepseek-v4-flash"),  # cross-family gpt→deepseek
+        ("claude-opus-4-8", "gpt-4o-mini"),  # cross-family+gen
+        ("glm-5.1", "gpt-4o-mini"),        # cross-family glm→gpt
+    ])
+    def test_cross_gen_or_family_is_severe(self, requested, actual):
+        assert _is_severe_model_mismatch(requested, actual) is True
+
+    def test_identical_model_not_severe(self):
+        assert _is_severe_model_mismatch("gpt-5.5", "gpt-5.5") is False
+
+
+# ---------------------------------------------------------------------------
+# verify_no_auth — forged-key probe. Mocked so no real network.
+# ---------------------------------------------------------------------------
+
+
+def _vr(host: str, apiurl: str, valid: bool = True) -> ValidationResult:
+    return ValidationResult(
+        credential=Credential(
+            apikey="sk-realkey1234567890abcdef", apiurl=apiurl, host=host,
+            source="test", source_type="fingerprint",
+        ),
+        valid=valid,
+        status_code=200,
+        model_available="gpt-5.5",
+    )
+
+
+@respx.mock
+async def test_verify_no_auth_detects_noauth_host():
+    """A host where the FORGED key also returns a chat completion is flagged."""
+    url = "http://honeypot.example:8139/v1/chat/completions"
+    # Forged key gets 200 + completion → no-auth
+    respx.post(url).mock(
+        return_value=httpx.Response(
+            200, json={"choices": [{"message": {"content": "hi"}}], "model": "gpt-5.5"}
+        )
+    )
+    results = [_vr("honeypot.example:8139", "http://honeypot.example:8139")]
+    no_auth = await verify_no_auth(results)
+    assert "honeypot.example:8139" in no_auth
+
+
+@respx.mock
+async def test_verify_no_auth_passes_real_gateway():
+    """A real gateway rejects the forged key (401) → not flagged."""
+    url = "http://real.example.com/v1/chat/completions"
+    respx.post(url).mock(return_value=httpx.Response(401, json={"error": "invalid key"}))
+    results = [_vr("real.example.com", "http://real.example.com")]
+    no_auth = await verify_no_auth(results)
+    assert no_auth == set()
+
+
+@respx.mock
+async def test_verify_no_auth_200_but_not_completion_not_flagged():
+    """200 returning non-completion JSON (router admin API) is not 'validated'."""
+    url = "http://weird.example/v1/chat/completions"
+    respx.post(url).mock(
+        return_value=httpx.Response(200, json={"stok": "abc", "saved": True})
+    )
+    results = [_vr("weird.example", "http://weird.example")]
+    no_auth = await verify_no_auth(results)
+    assert no_auth == set()
+
+
+@respx.mock
+async def test_verify_no_auth_one_host_probed_once():
+    """Multiple keys on the SAME host → only ONE forged probe (per-host, not per-key)."""
+    url = "http://multi.example/v1/chat/completions"
+    route = respx.post(url).mock(return_value=httpx.Response(401))
+    host = "multi.example"
+    results = [
+        _vr(host, "http://multi.example", valid=True),
+        _vr(host, "http://multi.example", valid=True),
+        _vr(host, "http://multi.example", valid=True),
+    ]
+    await verify_no_auth(results)
+    assert route.call_count == 1  # dedup by host
+
+
+async def test_verify_no_auth_empty_results():
+    """No valid results → no probes, empty set."""
+    assert await verify_no_auth([]) == set()

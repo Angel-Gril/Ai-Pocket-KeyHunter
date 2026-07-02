@@ -70,9 +70,21 @@ DOMAIN_ROUTING: list[tuple[str, str, str, list[str]]] = [
     ]),
 ]
 
-# Fallback model list used when the provider is unknown (e.g. a bare IP gateway).
-# High-value first — if a random proxy serves gpt-5.5, we want to know.
-FALLBACK_MODELS = ["gpt-5.5", "gpt-5.4", "deepseek-v4-flash", "gpt-4o-mini", "gpt-3.5-turbo"]
+# Fallback model list used when the provider is unknown (e.g. a bare IP gateway)
+# or when /v1/models is unreachable. HIGH-VALUE ONLY — no cheap models.
+# Reason: cheap IDs (gpt-4o-mini, gpt-3.5-turbo) are exactly what honeypots
+# hardcode, so probing with them validates nothing and inflates false positives.
+# If a random gateway actually serves one of these, that's the finding we want.
+FALLBACK_MODELS = [
+    # OpenAI frontier
+    "gpt-5.5", "gpt-5.4",
+    # Anthropic Claude 4 family
+    "claude-sonnet-4-6", "claude-opus-4-8", "claude-opus-4-7",
+    # DeepSeek
+    "deepseek-v4-pro", "deepseek-v4-flash",
+    # Zhipu GLM (glm-5.1 per target spec)
+    "glm-5.1",
+]
 
 # High-value models — the core targets. When any of these appear in /v1/models,
 # we probe with them FIRST (not as a secondary pass). This avoids honeypot false
@@ -110,6 +122,55 @@ HIGH_VALUE_MODELS = [
 # Providers whose native API is NOT /v1/chat/completions.
 ANTHROPIC_PROVIDERS = {"anthropic"}
 
+
+# "Generation" major version per model family — used to distinguish a plausible
+# within-family downgrade (gpt-5.5 → gpt-5.4) from a honeypot cross-generation
+# swap (gpt-5.5 → gpt-4o-mini / gpt-3.5-turbo). Maps a model family prefix to
+# the generation number embedded in its ID.
+def _model_family_and_gen(model: str) -> tuple[str, str]:
+    """Return (family, generation) for a model id.
+
+    Examples:
+        'gpt-5.5'           → ('gpt', '5')
+        'gpt-4o-mini'       → ('gpt', '4')
+        'claude-sonnet-4-6' → ('claude', '4')
+        'deepseek-v4-flash' → ('deepseek', '4')
+        'glm-5.1'           → ('glm', '5')
+
+    Generation is the FIRST integer anywhere in the id (the major version).
+    """
+    import re
+
+    m = model.lower()
+    families = (
+        "deepseek", "claude", "gemini", "glm", "qwen", "kimi", "gpt",
+    )
+    family = next((f for f in families if m.startswith(f)), m.split("-")[0])
+    # First integer run in the id = generation (5.5→5, 4o→4, 3.5→3, v4→4).
+    num_match = re.search(r"\d+", m)
+    gen = num_match.group() if num_match else ""
+    return (family, gen)
+
+
+def _is_severe_model_mismatch(requested: str, actual: str) -> bool:
+    """True if requested→actual is a cross-family or cross-generation swap.
+
+    A real proxy downgrades within a family AND within one generation tier to
+    save cost (gpt-5.5 → gpt-5.4). It does NOT swap gpt-5.5 for gpt-4o-mini
+    (two generations back) or for claude (different vendor). Those are honeypots.
+    """
+    fam_req, gen_req = _model_family_and_gen(requested)
+    fam_act, gen_act = _model_family_and_gen(actual)
+    # Different vendor entirely (gpt → claude, deepseek → gpt, …)
+    if fam_req != fam_act:
+        return True
+    # Same family, different generation: gpt-5.x → gpt-4.x or gpt-3.x is severe.
+    # gpt-5.5 → gpt-5.4 (same gen "5") is mild.
+    if gen_req and gen_act and gen_req != gen_act:
+        return True
+    return False
+
+
 # Key-prefix → (official_api_url, provider_name).
 # When a credential's key matches one of these prefixes but its apiurl points to an
 # unrelated leaked host (e.g. a PHP blog that exposed the key in response headers),
@@ -133,6 +194,112 @@ async def validate_all(credentials: list[Credential]) -> list[ValidationResult]:
     async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True) as client:
         tasks = [_probe_one(client, sem, c) for c in credentials]
         return await asyncio.gather(*tasks)
+
+
+# A forged key that no real gateway would ever accept. Realistic-looking
+# structure (sk- prefix, plausible length) so it isn't rejected by trivial
+# format checks before reaching the auth layer.
+_FORGED_KEY = "sk-aipocket-fake-probe-0000000000000000000000000000-deadbeef"
+
+# Number of forged-key probes per host. Some honeypots are unstable — they
+# return a canned chat completion on most requests but occasionally emit
+# unrelated JSON (router admin APIs, etc.). A single probe can land on the
+# "unrelated" response and miss the honeypot. Re-probing and treating ANY
+# success as confirmation closes that gap at a 2x request cost per host.
+_FORGED_PROBE_RETRIES = 2
+
+
+async def verify_no_auth(results: list[ValidationResult]) -> set[str]:
+    """Probe each host that has a valid result with a FORGED key.
+
+    A legitimate gateway rejects every key but the ones issued to it — even if
+    several real keys leaked onto one host. A no-auth endpoint (open proxy or
+    honeypot) accepts any string. So if our forged key also produces a valid
+    chat completion, the endpoint is not checking Authorization and every
+    "valid" key found there is fake.
+
+    Runs once per distinct host (not per key) to bound request volume. Returns
+    the set of HOSTS confirmed no-auth (matched against credential.host, which
+    is stable unlike apiurl normalization); the caller publishes them to
+    ``honeypot.no_auth_hosts`` so :func:`honeypot.filter_honeypots` can void
+    the matching results.
+    """
+    # Collect one representative (apiurl, probe_model) per host that validated.
+    # We re-use the host's own validated model + api_url from its first valid
+    # result — that endpoint/model already returned a completion, so a forged
+    # key returning 200 there is unambiguous.
+    seen_hosts: dict[str, tuple[str, str]] = {}  # host -> (api_url, model)
+    for r in results:
+        if not r.valid:
+            continue
+        host = r.credential.host or r.credential.apiurl
+        if host in seen_hosts:
+            continue
+        api_url = _normalize_apiurl(r.credential.apiurl)
+        model = r.model_available or "gpt-4o-mini"
+        if api_url:
+            seen_hosts[host] = (api_url, model)
+
+    if not seen_hosts:
+        return set()
+
+    sem = asyncio.Semaphore(settings.validate_concurrency)
+    timeout = httpx.Timeout(settings.validate_timeout)
+
+    async def _probe_forged(host: str, api_url: str, model: str) -> str | None:
+        """Return host if the forged key ALSO validates, else None.
+
+        Some honeypots are unstable — they return a canned chat completion on
+        most requests but occasionally emit unrelated JSON (router admin APIs).
+        So a 200 that ISN'T a completion is retried (up to _FORGED_PROBE_RETRIES)
+        in case the next hit reveals the honeypot. Other verdicts (401/403 = real
+        gateway rejected us; 200-completion = confirmed no-auth) are final on the
+        first response — no point retrying a real 401.
+        """
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 5,
+            "stream": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {_FORGED_KEY}",
+            "Content-Type": "application/json",
+        }
+        async with sem:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                for attempt in range(_FORGED_PROBE_RETRIES):
+                    try:
+                        r = await client.post(api_url, headers=headers, json=payload)
+                    except httpx.HTTPError:
+                        return None
+                    if r.status_code != 200:
+                        # 401/403/429 → real gateway rejecting forged key. Done.
+                        return None
+                    body = _parse_json_body(r)
+                    if body and _looks_like_chat_completion(body):
+                        # Forged key got a real completion → no-auth confirmed.
+                        log.warning(
+                            "no-auth host confirmed: forged key validated on "
+                            "%s (%s) — voiding all keys on this host",
+                            host, api_url,
+                        )
+                        return host
+                    # 200 but not a completion — ambiguous. Retry if budget left
+                    # (unstable honeypot may return completion next time).
+                    if attempt == _FORGED_PROBE_RETRIES - 1:
+                        return None
+        return None
+
+    tasks = [_probe_forged(h, u, m) for h, (u, m) in seen_hosts.items()]
+    confirmed = await asyncio.gather(*tasks)
+    no_auth = {h for h in confirmed if h}
+    if no_auth:
+        log.info(
+            "verify_no_auth: %d/%d valid hosts accept a forged key (no-auth honeypots)",
+            len(no_auth), len(seen_hosts),
+        )
+    return no_auth
 
 
 async def _probe_one(
@@ -205,21 +372,13 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             # Put high-value models at the front of probe list
             probe_models = hv_available + probe_models
         else:
-            # No high-value models → fall back to cheap probing
-            _CHEAP_PROBE_MODELS = [
-                "gpt-4o-mini", "gpt-3.5-turbo", "gpt-4.1-nano", "deepseek-chat",
-                "qwen-turbo", "moonshot-v1-8k", "glm-4-flash",
-            ]
-            cheap_available = [m for m in _CHEAP_PROBE_MODELS if m in available_models]
-            if cheap_available:
-                probe_models = cheap_available[:2] + probe_models
-            else:
-                for m in probe_models:
-                    if m in available_models:
-                        probe_models = [m] + [x for x in probe_models if x != m]
-                        break
-                else:
-                    probe_models = available_models[:5] + probe_models
+            # No high-value models in the gateway's list. Do NOT fall back to
+            # cheap models (gpt-4o-mini / gpt-3.5-turbo) — honeypots hardcode
+            # exactly those IDs, so probing with them validates nothing and
+            # feeds false positives. Instead probe with the gateway's OWN
+            # advertised models (its first few), which at least tests what it
+            # claims to serve.
+            probe_models = available_models[:5] + probe_models
 
     if provider in ANTHROPIC_PROVIDERS:
         result = await _probe_anthropic(client, cred, api_url, result, probe_models)
@@ -370,27 +529,42 @@ async def _probe_chat_completions(
                 result.error = f"status 200 but not chat completion (body: {r.text[:120]})"
                 return result
 
-            # Model-mismatch detection: if we asked for gpt-5.5 but the response
-            # says model=gpt-3.5-turbo, this is a proxy/honeypot that accepts any
-            # model name but routes to a cheaper backend.
+            # Model-mismatch detection: a legitimate proxy may downgrade within
+            # a family to save cost (gpt-5.5 → gpt-5.4 is plausible). But a
+            # CROSS-GENERATION drop (gpt-5.5 → gpt-4o-mini / gpt-3.5-turbo) or a
+            # CROSS-FAMILY swap (gpt → claude) is not a real proxy behavior —
+            # it's a honeypot that accepts any model name and serves canned junk.
+            # Treat severe mismatch as INVALID (honeypot), mild mismatch as valid.
             actual_model = body.get("model", "")
-            if actual_model and model in HIGH_VALUE_MODELS:
-                # Check if the response model is significantly different from requested
-                requested_family = model.split("-")[0:2]  # e.g. ["gpt", "5.5"]
-                actual_family = actual_model.split("-")[0:2]
-                if requested_family != actual_family and actual_model != model:
+            if actual_model and actual_model != model and model in HIGH_VALUE_MODELS:
+                if _is_severe_model_mismatch(model, actual_model):
+                    # Honeypot: requested a frontier model, got a totally
+                    # different/cheap one. Reject — this "key" is worthless.
                     log.warning(
-                        "Model mismatch: requested %s but got %s for key %s…",
+                        "Severe model mismatch (honeypot): requested %s but got "
+                        "%s for key %s… — rejecting",
                         model, actual_model, cred.apikey[:12],
                     )
-                    # Still mark valid but record the mismatch — don't add to models_verified
-                    result.valid = True
-                    result.tier = _infer_tier(result.rate_limit_headers, r.headers)
+                    result.valid = False
                     result.model_available = actual_model
-                    result.response_snippet = _snippet(body)
-                    result.error = f"model-mismatch: requested {model}, got {actual_model}"
-                    result.provider_info.models_verified.append(actual_model)
+                    result.error = (
+                        f"honeypot:model-mismatch (requested {model}, got "
+                        f"{actual_model} — cross-generation/family swap)"
+                    )
                     return result
+                # Mild within-family downgrade (gpt-5.5 → gpt-5.4): plausible
+                # proxy cost-saving. Keep valid but record the mismatch.
+                log.info(
+                    "Mild model mismatch: requested %s but got %s — treating as valid",
+                    model, actual_model,
+                )
+                result.valid = True
+                result.tier = _infer_tier(result.rate_limit_headers, r.headers)
+                result.model_available = actual_model
+                result.response_snippet = _snippet(body)
+                result.error = f"model-mismatch: requested {model}, got {actual_model}"
+                result.provider_info.models_verified.append(actual_model)
+                return result
 
             result.valid = True
             result.tier = _infer_tier(result.rate_limit_headers, r.headers)
