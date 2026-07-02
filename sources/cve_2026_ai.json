@@ -133,6 +133,26 @@
     "source_url": "https://www.ionix.io/threat-center/cve-2026-10564"
   },
   {
+    "id": "CVE-2026-1239",
+    "cvss": 0.0,
+    "product": "langflow",
+    "type": "认证绕过",
+    "description": "[**CVE-2026-1239 – Unauthenticated Form Submission Disclosure – Ninja Forms WordPress Plugin (≤ 3.14.1)**](https://www.ionix.io/threat-center/cve-2026-1239/). [**CVE-2026-6070 – Unauthenticated Arbitrary File Deletion – WP-BusinessDirectory WordPress Plugin (…**](https://www.ionix.io/threat-center/c",
+    "huntable": "高",
+    "date": "2026-07-02",
+    "source_url": "https://www.ionix.io/threat-center"
+  },
+  {
+    "id": "CVE-2026-1670",
+    "cvss": 0.0,
+    "product": "dify",
+    "type": "认证绕过",
+    "description": "# CVE-2026-1670: Authentication Bypass Vulnerability. CVE-2026-1670 is an authentication bypass flaw exposing an unauthenticated API endpoint that allows attackers to modify password recovery email addresses. CVE-2026-1670 is a critical authentication bypass vulnerability affecting Honeywell industr",
+    "huntable": "高",
+    "date": "2026-07-02",
+    "source_url": "https://www.sentinelone.com/vulnerability-database/cve-2026-1670"
+  },
+  {
     "id": "CVE-2026-1868",
     "cvss": 9.9,
     "product": "GitLab AI Gateway",
@@ -725,6 +745,16 @@
     "description": "vLLM ≥0.8.0 vulnerable to OOM DoS via unbounded frame count in VideoMediaIO.load_base64(). Unauthenticated attacker can crash server with crafted video/jpeg data URL containing thousands of JPEG frames.",
     "huntable": "中",
     "date": "2026-06-15"
+  },
+  {
+    "id": "CVE-2026-56278",
+    "cvss": 0.0,
+    "product": "flowise",
+    "type": "API key泄露",
+    "description": "Live Exposure Defense: From CVE to Confirmed Exposure in 12 Hours – See more. # CVE-2026-56278 – Authentication Bypass via Hardcoded Session Secret – Flowise ≤ 3.0.13. **CVE-2026-56278** is a critical authentication bypass vulnerability in Flowise, the open-source AI workflow and LLM-agent builder. ",
+    "huntable": "高",
+    "date": "2026-07-02",
+    "source_url": "https://www.ionix.io/threat-center/cve-2026-56278"
   },
   {
     "id": "CVE-2026-56399",
