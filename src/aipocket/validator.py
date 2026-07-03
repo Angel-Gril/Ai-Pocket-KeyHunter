@@ -209,6 +209,81 @@ _FORGED_KEY = "sk-aipocket-fake-probe-0000000000000000000000000000-deadbeef"
 _FORGED_PROBE_RETRIES = 2
 
 
+async def _forged_key_probe(
+    client: httpx.AsyncClient,
+    api_url: str,
+    model: str,
+    *,
+    provider: str = "",
+    timeout: httpx.Timeout | None = None,
+) -> str:
+    """Send a FORGED key to ``api_url`` and return a verdict tag.
+
+    Used both by :func:`verify_no_auth` (post-validation, per-host batch) and
+    inline by :func:`_probe_chat_completions` / :func:`_probe_anthropic` when
+    the REAL key returns 429 — to tell a genuine rate limit apart from a
+    scam/open-proxy host that returns 429 to every key regardless of auth.
+
+    Tags:
+    * ``""``                         — clean (401/403 = real gateway rejected the forged key)
+    * ``"noauth"``                   — forged key got a real completion (endpoint ignores auth)
+    * ``"suspicious_429"``           — forged key also rate-limited (host rate-limits without auth)
+    * ``"suspicious_noncompletion"`` — 200 non-completion after all retries (not a real gateway)
+    * ``"error"``                    — network error / unable to compare (caller treats as inconclusive)
+
+    ``provider="anthropic"`` switches the request to Anthropic's ``/v1/messages``
+    convention (``x-api-key`` header); otherwise OpenAI's ``Authorization:
+    Bearer`` + ``/v1/chat/completions`` is used. The forged probe tests HOST
+    behavior (does it check auth?), so it must speak the host's own protocol.
+    """
+    if provider == "anthropic":
+        endpoint = api_url.replace("/chat/completions", "/messages")
+        headers = {
+            "x-api-key": _FORGED_KEY,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 5,
+        }
+    else:
+        endpoint = api_url
+        headers = {
+            "Authorization": f"Bearer {_FORGED_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 5,
+            "stream": False,
+        }
+
+    for attempt in range(_FORGED_PROBE_RETRIES):
+        try:
+            r = await client.post(endpoint, headers=headers, json=payload, timeout=timeout)
+        except httpx.HTTPError:
+            return "error"
+        if r.status_code == 429:
+            # A real gateway returns 401 to a forged key — NEVER 429. A 429 to
+            # a random forged key means the host rate-limits every request
+            # regardless of auth: open proxy / resale gateway.
+            return "suspicious_429"
+        if r.status_code != 200:
+            # 401/403 → real gateway rejected the forged key. Clean.
+            return ""
+        body = _parse_json_body(r)
+        if body and _looks_like_chat_completion(body):
+            # Forged key got a real completion → no-auth confirmed.
+            return "noauth"
+        # 200 but not a completion — ambiguous. Retry if budget left.
+        if attempt == _FORGED_PROBE_RETRIES - 1:
+            return "suspicious_noncompletion"
+    return ""
+
+
 async def verify_no_auth(
     results: list[ValidationResult],
 ) -> tuple[set[str], set[str]]:
@@ -264,69 +339,33 @@ async def verify_no_auth(
     timeout = httpx.Timeout(settings.validate_timeout)
 
     async def _probe_forged(host: str, api_url: str, model: str) -> str:
-        """Return a verdict tag for one forged-key probe.
+        """Probe one host with a forged key; return a verdict tag.
 
-        Tags:
-        * ``""``                         — clean (401/403 = real gateway, or network error)
-        * ``"noauth"``                   — forged key got a real completion
-        * ``"suspicious_429"``           — forged key rate-limited (open-proxy signal)
-        * ``"suspicious_noncompletion"`` — 200 non-completion after all retries
+        Thin wrapper over :func:`_forged_key_probe` that carries the per-host
+        ``log.warning`` calls (those need ``host``/``api_url`` for triage).
         """
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": "hello"}],
-            "max_tokens": 5,
-            "stream": False,
-        }
-        headers = {
-            "Authorization": f"Bearer {_FORGED_KEY}",
-            "Content-Type": "application/json",
-        }
         async with sem:
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                for attempt in range(_FORGED_PROBE_RETRIES):
-                    try:
-                        r = await client.post(api_url, headers=headers, json=payload)
-                    except httpx.HTTPError:
-                        return ""
-                    if r.status_code == 429:
-                        # A real gateway (api.openai.com, api.moonshot.cn, …)
-                        # returns 401 to a forged key — NEVER 429. A 429 to a
-                        # random forged key means the host rate-limits every
-                        # request regardless of auth: open proxy / resale
-                        # gateway. Mark suspicious, don't hard-reject.
-                        log.warning(
-                            "suspicious host (forged-key 429): %s (%s) — host "
-                            "rate-limits without checking auth (open proxy?)",
-                            host, api_url,
-                        )
-                        return "suspicious_429"
-                    if r.status_code != 200:
-                        # 401/403 → real gateway rejected the forged key. Clean.
-                        return ""
-                    body = _parse_json_body(r)
-                    if body and _looks_like_chat_completion(body):
-                        # Forged key got a real completion → no-auth confirmed.
-                        log.warning(
-                            "no-auth host confirmed: forged key validated on "
-                            "%s (%s) — voiding all keys on this host",
-                            host, api_url,
-                        )
-                        return "noauth"
-                    # 200 but not a completion — ambiguous. Retry if budget left
-                    # (unstable honeypot may return a completion next time).
-                    if attempt == _FORGED_PROBE_RETRIES - 1:
-                        # Every attempt returned 200 non-completion. A host that
-                        # answers the chat-completions endpoint with HTML / admin
-                        # JSON / a blog page on every try is not a real LLM
-                        # gateway — the "valid" result on it is suspect.
-                        log.warning(
-                            "suspicious host (200 non-completion): %s (%s) — "
-                            "host is not a real LLM gateway",
-                            host, api_url,
-                        )
-                        return "suspicious_noncompletion"
-        return ""
+                verdict = await _forged_key_probe(client, api_url, model, timeout=timeout)
+        if verdict == "suspicious_429":
+            log.warning(
+                "suspicious host (forged-key 429): %s (%s) — host "
+                "rate-limits without checking auth (open proxy?)",
+                host, api_url,
+            )
+        elif verdict == "noauth":
+            log.warning(
+                "no-auth host confirmed: forged key validated on "
+                "%s (%s) — voiding all keys on this host",
+                host, api_url,
+            )
+        elif verdict == "suspicious_noncompletion":
+            log.warning(
+                "suspicious host (200 non-completion): %s (%s) — "
+                "host is not a real LLM gateway",
+                host, api_url,
+            )
+        return verdict
 
     tasks = [_probe_forged(h, u, m) for h, (u, m) in seen_hosts.items()]
     verdicts = await asyncio.gather(*tasks)
@@ -524,14 +563,48 @@ async def _probe_anthropic(
 
         if r.status_code == 429:
             body = _parse_json_body(r)
-            if body and _looks_like_api_error(body):
-                result.valid = True
-                result.tier = _infer_tier(result.rate_limit_headers, r.headers)
-                result.model_available = model
-                result.error = "rate-limited but key is valid"
-                # 429 = key is valid but no actual completion — do NOT add to models_verified.
-                # models_verified should only contain models that returned a real response.
+            if not (body and _looks_like_api_error(body)):
+                # Not an API error body → fall through to "unexpected" handling
+                # (which continues to the next model).
+                result.error = f"unexpected {r.status_code}: {r.text[:120]}"
+                continue
+
+            # 429 disambiguation — same rationale as _probe_chat_completions.
+            # Re-probe with a forged key (Anthropic convention: x-api-key +
+            # /v1/messages) and compare host behavior.
+            result.tier = _infer_tier(result.rate_limit_headers, r.headers)
+            result.model_available = model
+            forged = await _forged_key_probe(client, chat_url, model, provider="anthropic")
+            if forged == "suspicious_429":
+                result.valid = False
+                result.error = (
+                    "honeypot:429-indiscriminate (real + forged key both 429 — "
+                    "host rate-limits without checking auth; key not proven valid)"
+                )
                 return result
+            if forged == "noauth":
+                result.valid = False
+                result.error = (
+                    "honeypot:no-auth-host (forged key returned a message under "
+                    "429 retry — endpoint ignores auth, key is fake)"
+                )
+                return result
+            if forged == "":
+                result.valid = True
+                result.suspicious = True
+                result.error = "rate-limited but key is valid (forged key rejected)"
+                result.suspicious_reason = (
+                    "429 with forged-key rejected: real rate limit likely but "
+                    "unverified — manual review"
+                )
+                return result
+            result.valid = True
+            result.suspicious = True
+            result.error = f"rate-limited but key is valid (forged probe inconclusive: {forged})"
+            result.suspicious_reason = (
+                f"429 with inconclusive forged-key probe ({forged}) — manual review"
+            )
+            return result
 
         result.error = f"unexpected {r.status_code}: {r.text[:120]}"
 
@@ -639,12 +712,56 @@ async def _probe_chat_completions(
             if not _looks_like_api_error(body):
                 result.error = f"status 429 but body not api error (body: {r.text[:120]})"
                 return result
-            result.valid = True
+
+            # 429 no longer means "valid" unconditionally. Scam / open-proxy
+            # gateways return 429 to EVERY key (real or fake) — so a lone 429
+            # proves nothing. Disambiguate by re-probing the same endpoint with
+            # a FORGED key and comparing the host's behavior. See the verdict
+            # matrix in the plan / _forged_key_probe docstring.
             result.tier = _infer_tier(result.rate_limit_headers, r.headers)
             result.model_available = model
-            result.error = "rate-limited but key is valid"
-            # 429 = key recognized but no actual completion — do NOT add to models_verified.
-            # models_verified should only contain models that returned a real 200 response.
+            forged = await _forged_key_probe(client, api_url, model)
+            if forged == "suspicious_429":
+                # Real AND forged key both 429 → host does not check auth at
+                # all. This is the apillm.cn pattern: the 429 was never a real
+                # rate limit. Reject.
+                result.valid = False
+                result.error = (
+                    "honeypot:429-indiscriminate (real + forged key both 429 — "
+                    "host rate-limits without checking auth; key not proven valid)"
+                )
+                return result
+            if forged == "noauth":
+                # Forged key got a completion → endpoint ignores auth entirely.
+                result.valid = False
+                result.error = (
+                    "honeypot:no-auth-host (forged key returned a completion under "
+                    "429 retry — endpoint ignores Authorization, key is fake)"
+                )
+                return result
+            if forged == "":
+                # Forged key was REJECTED (401/403) → host DOES distinguish
+                # keys. The real key's 429 is plausibly a genuine rate limit,
+                # but we never saw a completion, so keep it as suspicious for
+                # manual review rather than trusting it outright.
+                result.valid = True
+                result.suspicious = True
+                result.error = "rate-limited but key is valid (forged key rejected)"
+                result.suspicious_reason = (
+                    "429 with forged-key rejected: real rate limit likely but "
+                    "unverified — manual review"
+                )
+                return result
+            # "suspicious_noncompletion" / "error" / anything else → host
+            # behaved oddly under the forged probe (non-completion 200, network
+            # error). Could not confirm the key is real. Keep valid but
+            # suspicious.
+            result.valid = True
+            result.suspicious = True
+            result.error = f"rate-limited but key is valid (forged probe inconclusive: {forged})"
+            result.suspicious_reason = (
+                f"429 with inconclusive forged-key probe ({forged}) — manual review"
+            )
             return result
 
         # 400 with "model not found" / "model not exist" → try next model, don't fail the key.

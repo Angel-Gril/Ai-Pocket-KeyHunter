@@ -57,16 +57,83 @@ async def test_probe_success_200():
 
 @respx.mock
 async def test_probe_rate_limited_429_counts_valid():
+    """Real key 429 + forged key rejected (401) → valid but suspicious.
+
+    A 429 alone no longer proves the key works; the forged-key recheck confirms
+    the host actually checks auth (so the 429 is plausibly a real rate limit),
+    but since no completion was ever seen the result stays suspicious.
+    """
     _mock_models_empty()
-    respx.post(CHAT_URL).mock(
-        return_value=httpx.Response(429, json={"error": "rate limited"}, headers=_make_headers(rate_limit=5000))
-    )
+    route = respx.post(CHAT_URL)
+    route.side_effect = [
+        httpx.Response(429, json={"error": "rate limited"}, headers=_make_headers(rate_limit=5000)),
+        httpx.Response(401, json={"error": "invalid key"}),
+    ]
     cred = Credential(apikey=VALID_KEY, apiurl=BASE)
     async with httpx.AsyncClient() as client:
         r = await _probe(client, cred)
     assert r.valid is True
+    assert r.suspicious is True
     assert r.tier == "tier4"
     assert "rate-limited" in r.error
+
+
+@respx.mock
+async def test_probe_429_both_429_invalid():
+    """Real key 429 + forged key also 429 → host ignores auth → invalid.
+
+    This is the apillm.cn pattern: the scam gateway returns 429 to every key
+    regardless of validity, so the original "429 = valid" assumption was a
+    false positive. Now it is rejected outright.
+    """
+    _mock_models_empty()
+    route = respx.post(CHAT_URL)
+    route.side_effect = [
+        httpx.Response(429, json={"error": "rate limited"}, headers=_make_headers(rate_limit=5000)),
+        httpx.Response(429, json={"error": "rate limited"}),
+    ]
+    cred = Credential(apikey=VALID_KEY, apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is False
+    assert "429-indiscriminate" in r.error
+
+
+@respx.mock
+async def test_probe_429_real_429_forged_200_noauth_invalid():
+    """Real key 429 + forged key gets a completion → no-auth host → invalid."""
+    _mock_models_empty()
+    route = respx.post(CHAT_URL)
+    route.side_effect = [
+        httpx.Response(429, json={"error": "rate limited"}, headers=_make_headers(rate_limit=5000)),
+        httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}], "model": "gpt-5.5"}),
+    ]
+    cred = Credential(apikey=VALID_KEY, apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is False
+    assert "no-auth" in r.error
+
+
+@respx.mock
+async def test_probe_429_real_429_forged_connect_error_suspicious():
+    """Real key 429 + forged probe network error → inconclusive → suspicious.
+
+    Cannot compare host behavior, so keep valid but flag for manual review
+    rather than trusting the 429 outright.
+    """
+    _mock_models_empty()
+    route = respx.post(CHAT_URL)
+    route.side_effect = [
+        httpx.Response(429, json={"error": "rate limited"}, headers=_make_headers(rate_limit=5000)),
+        httpx.ConnectError("refused"),
+    ]
+    cred = Credential(apikey=VALID_KEY, apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is True
+    assert r.suspicious is True
+    assert "inconclusive" in r.error
 
 
 @respx.mock
