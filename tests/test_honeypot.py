@@ -4,6 +4,8 @@ import aipocket.honeypot as honeypot_mod
 from aipocket.honeypot import (
     _detect_prompt_injection,
     _detect_steganography,
+    _is_blocked_key_format,
+    _quarantine_suspicious_hosts,
     _reject_no_auth_hosts,
     filter_honeypots,
 )
@@ -249,3 +251,98 @@ class TestRejectNoAuthHosts:
         filter_honeypots(results)
         assert results[0].valid is False  # on no-auth host
         assert results[1].valid is True   # real host untouched
+
+
+# ---------------------------------------------------------------------------
+# Suspicious-host quarantine — hosts flagged by verify_no_auth with a forged
+# 429 (open-proxy signal) or 200-non-completion (not-a-real-gateway signal).
+# Marked suspicious but NOT voided (valid stays True); scanner splits them out.
+# ---------------------------------------------------------------------------
+
+
+class TestQuarantineSuspiciousHosts:
+    def setup_method(self):
+        honeypot_mod.suspicious_hosts = set()
+
+    def teardown_method(self):
+        honeypot_mod.suspicious_hosts = set()
+
+    def test_suspicious_host_marked_not_voided(self):
+        honeypot_mod.suspicious_hosts = {"shady.example"}
+        r = _make_result("hi", host="shady.example")
+        marked = _quarantine_suspicious_hosts([r])
+        assert marked == 1
+        assert r.valid is True          # NOT voided
+        assert r.suspicious is True
+        assert "suspicious-host" in r.suspicious_reason
+
+    def test_clean_host_not_marked(self):
+        honeypot_mod.suspicious_hosts = {"shady.example"}
+        r = _make_result("hi", host="real.example.com")
+        assert _quarantine_suspicious_hosts([r]) == 0
+        assert r.suspicious is False
+        assert r.valid is True
+
+    def test_empty_suspicious_set_noop(self):
+        honeypot_mod.suspicious_hosts = set()
+        r = _make_result("hi", host="any.example.com")
+        assert _quarantine_suspicious_hosts([r]) == 0
+        assert r.suspicious is False
+
+    def test_already_invalid_skipped(self):
+        honeypot_mod.suspicious_hosts = {"shady.example"}
+        r = _make_result("hi", host="shady.example", valid=False)
+        assert _quarantine_suspicious_hosts([r]) == 0
+
+    def test_filter_honeypots_applies_suspicious_verdict(self):
+        """End-to-end: suspicious host → valid stays True but suspicious set."""
+        honeypot_mod.suspicious_hosts = {"shady.example"}
+        r_sus = _make_result("Clean response", host="shady.example")
+        r_sus.credential = Credential(
+            apikey="sk-suskey-aaaaaaaaaaa", apiurl="http://shady.example",
+            host="shady.example",
+        )
+        r_real = _make_result("Clean response", host="real.example.com")
+        r_real.credential = Credential(
+            apikey="sk-realkey-bbbbbbb", apiurl="http://real.example.com",
+            host="real.example.com",
+        )
+        results = [r_sus, r_real]
+        filter_honeypots(results)
+        assert results[0].valid is True       # not voided
+        assert results[0].suspicious is True  # but flagged
+        assert results[1].valid is True
+        assert results[1].suspicious is False
+
+
+# ---------------------------------------------------------------------------
+# Hex-token blocklist — broadened from exactly-32-hex to 32-128 hex so that
+# longer .env session tokens / opaque secrets are caught too. Vendor-prefixed
+# keys (sk-, AIza) must NOT be caught by the hex filter.
+# ---------------------------------------------------------------------------
+
+
+class TestHexTokenBlocklist:
+    def test_32_hex_still_rejected(self):
+        key = "a" * 32
+        assert _is_blocked_key_format(key) == "blocked-key-format:hex-token-32-128"
+
+    def test_64_hex_rejected(self):
+        key = "f" * 64
+        assert _is_blocked_key_format(key) == "blocked-key-format:hex-token-32-128"
+
+    def test_128_hex_rejected(self):
+        key = "0123456789abcdef" * 8  # 128 hex chars
+        assert _is_blocked_key_format(key) == "blocked-key-format:hex-token-32-128"
+
+    def test_sk_key_not_caught_by_hex_filter(self):
+        # sk-proj- key has prefix + base64-ish alphabet, never pure hex.
+        key = "sk-proj-abcdef1234567890abcdef1234567890"
+        reason = _is_blocked_key_format(key)
+        assert reason is None
+
+    def test_short_hex_not_rejected(self):
+        # 16 hex chars — too short to be a confident session token; not blocked
+        # by the hex rule (the <15-char noise filter in pre_filter handles junk).
+        key = "a" * 16
+        assert _is_blocked_key_format(key) is None

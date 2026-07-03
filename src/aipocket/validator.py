@@ -209,7 +209,9 @@ _FORGED_KEY = "sk-aipocket-fake-probe-0000000000000000000000000000-deadbeef"
 _FORGED_PROBE_RETRIES = 2
 
 
-async def verify_no_auth(results: list[ValidationResult]) -> set[str]:
+async def verify_no_auth(
+    results: list[ValidationResult],
+) -> tuple[set[str], set[str]]:
     """Probe each host that has a valid result with a FORGED key.
 
     A legitimate gateway rejects every key but the ones issued to it — even if
@@ -218,11 +220,26 @@ async def verify_no_auth(results: list[ValidationResult]) -> set[str]:
     chat completion, the endpoint is not checking Authorization and every
     "valid" key found there is fake.
 
-    Runs once per distinct host (not per key) to bound request volume. Returns
-    the set of HOSTS confirmed no-auth (matched against credential.host, which
-    is stable unlike apiurl normalization); the caller publishes them to
-    ``honeypot.no_auth_hosts`` so :func:`honeypot.filter_honeypots` can void
-    the matching results.
+    Runs once per distinct host (not per key) to bound request volume.
+
+    Returns ``(no_auth_hosts, suspicious_hosts)`` — sets of HOSTS matched
+    against ``credential.host`` (stable, unlike apiurl normalization):
+
+    * **no_auth_hosts** — forged key got a real chat completion. The endpoint
+      ignores Authorization; every "valid" key on it is fake. Hard-rejected by
+      :func:`honeypot._reject_no_auth_hosts`.
+    * **suspicious_hosts** — forged key got a **429** (a real gateway returns
+      401 to a forged key, never 429 — so 429 means the host rate-limits
+      regardless of auth: open proxy / resale gateway), OR a 200 that is not a
+      chat completion after all retries (host is not a real LLM gateway). These
+      are NOT auto-rejected; the caller quarantines them to
+      ``suspicious_*.jsonl`` for manual review.
+
+    The probe targets ``credential.apiurl`` — which, after the routing-override
+    persistence in :func:`_probe`, is the endpoint the key was ACTUALLY
+    validated against (the official gateway for prefix-routed keys, the bare
+    host otherwise). This ensures the forged probe hits the same place the real
+    key proved out.
     """
     # Collect one representative (apiurl, probe_model) per host that validated.
     # We re-use the host's own validated model + api_url from its first valid
@@ -241,20 +258,19 @@ async def verify_no_auth(results: list[ValidationResult]) -> set[str]:
             seen_hosts[host] = (api_url, model)
 
     if not seen_hosts:
-        return set()
+        return set(), set()
 
     sem = asyncio.Semaphore(settings.validate_concurrency)
     timeout = httpx.Timeout(settings.validate_timeout)
 
-    async def _probe_forged(host: str, api_url: str, model: str) -> str | None:
-        """Return host if the forged key ALSO validates, else None.
+    async def _probe_forged(host: str, api_url: str, model: str) -> str:
+        """Return a verdict tag for one forged-key probe.
 
-        Some honeypots are unstable — they return a canned chat completion on
-        most requests but occasionally emit unrelated JSON (router admin APIs).
-        So a 200 that ISN'T a completion is retried (up to _FORGED_PROBE_RETRIES)
-        in case the next hit reveals the honeypot. Other verdicts (401/403 = real
-        gateway rejected us; 200-completion = confirmed no-auth) are final on the
-        first response — no point retrying a real 401.
+        Tags:
+        * ``""``                         — clean (401/403 = real gateway, or network error)
+        * ``"noauth"``                   — forged key got a real completion
+        * ``"suspicious_429"``           — forged key rate-limited (open-proxy signal)
+        * ``"suspicious_noncompletion"`` — 200 non-completion after all retries
         """
         payload = {
             "model": model,
@@ -272,10 +288,22 @@ async def verify_no_auth(results: list[ValidationResult]) -> set[str]:
                     try:
                         r = await client.post(api_url, headers=headers, json=payload)
                     except httpx.HTTPError:
-                        return None
+                        return ""
+                    if r.status_code == 429:
+                        # A real gateway (api.openai.com, api.moonshot.cn, …)
+                        # returns 401 to a forged key — NEVER 429. A 429 to a
+                        # random forged key means the host rate-limits every
+                        # request regardless of auth: open proxy / resale
+                        # gateway. Mark suspicious, don't hard-reject.
+                        log.warning(
+                            "suspicious host (forged-key 429): %s (%s) — host "
+                            "rate-limits without checking auth (open proxy?)",
+                            host, api_url,
+                        )
+                        return "suspicious_429"
                     if r.status_code != 200:
-                        # 401/403/429 → real gateway rejecting forged key. Done.
-                        return None
+                        # 401/403 → real gateway rejected the forged key. Clean.
+                        return ""
                     body = _parse_json_body(r)
                     if body and _looks_like_chat_completion(body):
                         # Forged key got a real completion → no-auth confirmed.
@@ -284,22 +312,38 @@ async def verify_no_auth(results: list[ValidationResult]) -> set[str]:
                             "%s (%s) — voiding all keys on this host",
                             host, api_url,
                         )
-                        return host
+                        return "noauth"
                     # 200 but not a completion — ambiguous. Retry if budget left
-                    # (unstable honeypot may return completion next time).
+                    # (unstable honeypot may return a completion next time).
                     if attempt == _FORGED_PROBE_RETRIES - 1:
-                        return None
-        return None
+                        # Every attempt returned 200 non-completion. A host that
+                        # answers the chat-completions endpoint with HTML / admin
+                        # JSON / a blog page on every try is not a real LLM
+                        # gateway — the "valid" result on it is suspect.
+                        log.warning(
+                            "suspicious host (200 non-completion): %s (%s) — "
+                            "host is not a real LLM gateway",
+                            host, api_url,
+                        )
+                        return "suspicious_noncompletion"
+        return ""
 
     tasks = [_probe_forged(h, u, m) for h, (u, m) in seen_hosts.items()]
-    confirmed = await asyncio.gather(*tasks)
-    no_auth = {h for h in confirmed if h}
+    verdicts = await asyncio.gather(*tasks)
+    no_auth = {h for h, v in zip(seen_hosts, verdicts) if v == "noauth"}
+    suspicious = {h for h, v in zip(seen_hosts, verdicts) if v.startswith("suspicious")}
     if no_auth:
         log.info(
-            "verify_no_auth: %d/%d valid hosts accept a forged key (no-auth honeypots)",
+            "verify_no_auth: %d/%d hosts accept a forged key (no-auth honeypots)",
             len(no_auth), len(seen_hosts),
         )
-    return no_auth
+    if suspicious:
+        log.info(
+            "verify_no_auth: %d/%d hosts suspicious (forged-429 / non-completion) "
+            "→ quarantined to suspicious_*.jsonl",
+            len(suspicious), len(seen_hosts),
+        )
+    return no_auth, suspicious
 
 
 async def _probe_one(
@@ -339,11 +383,25 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
                 fingerprint in host for fingerprint, _, _, _ in DOMAIN_ROUTING
             )
             if not is_known_gateway:
+                # Persist the override so downstream stages (balance, verify_no_auth,
+                # output) see the endpoint the key is ACTUALLY validated against,
+                # not the leaking blog/banner host the key was scraped from. The
+                # original leak site is preserved in cred.leak_host.
+                cred.leak_host = cred.apiurl
+                cred.apiurl = official_url
+                cred.routed_to_official = True
+                parsed = urlparse(official_url)
+                cred.host = parsed.hostname or cred.host
+                # ip/port described the leak host, not the official gateway — clear
+                # them so clustering/no-auth logic keys on the validation endpoint.
+                cred.ip = ""
+                cred.port = str(parsed.port) if parsed.port else ""
                 effective_url = official_url
                 log.debug(
                     "Key %s… matches prefix '%s' but apiurl '%s' is not a known "
-                    "provider gateway → overriding to %s",
-                    cred.apikey[:12], prefix, cred.apiurl, official_url,
+                    "provider gateway → overriding to %s (leak_host=%s)",
+                    cred.apikey[:12], prefix, cred.leak_host, official_url,
+                    cred.leak_host,
                 )
             break
 

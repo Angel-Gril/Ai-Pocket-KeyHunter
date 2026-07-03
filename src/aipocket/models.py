@@ -39,6 +39,13 @@ class Credential(BaseModel):
     port: str = ""
     product: str = ""
     raw_context: str = ""
+    # Original URL the key was scraped from (leak/discovery site). Populated when
+    # KEY_PREFIX_ROUTING overrides apiurl to the official endpoint — preserves the
+    # true provenance so the leak site isn't lost when validation is redirected.
+    leak_host: str = ""
+    # True when apiurl was overridden by KEY_PREFIX_ROUTING to an official gateway
+    # (the key was found on an unrelated host but belongs to a known provider).
+    routed_to_official: bool = False
 
 
 class ValidationResult(BaseModel):
@@ -54,6 +61,13 @@ class ValidationResult(BaseModel):
     response_snippet: str = ""
     provider_info: ProviderInfo = Field(default_factory=ProviderInfo)
     validated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    # Suspicious-host quarantine flag. Set by honeypot._quarantine_suspicious_hosts
+    # when verify_no_auth sees a forged-key 429 (open-proxy signal) or a
+    # 200-non-completion (not-a-real-gateway signal). Suspicious results keep
+    # valid=True but are split out of valid_*.jsonl into suspicious_*.jsonl for
+    # manual review — they are NOT auto-rejected.
+    suspicious: bool = False
+    suspicious_reason: str = ""
 
 
 class ScanRunResult(BaseModel):

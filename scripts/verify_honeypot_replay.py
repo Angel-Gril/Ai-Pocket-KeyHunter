@@ -17,7 +17,13 @@ def load_results(path: str) -> list[ValidationResult]:
     results = []
     with open(path) as f:
         for line in f:
+            line = line.strip()
+            if not line:
+                continue
             r = json.loads(line)
+            # Skip non-record lines (e.g. stray scan-metadata integers).
+            if not isinstance(r, dict) or "credential" not in r:
+                continue
             c = r["credential"]
             cred = Credential(
                 apikey=c["apikey"], apiurl=c.get("apiurl", ""),
@@ -41,16 +47,25 @@ async def main() -> None:
     print(f"Loaded {len(results)} valid result(s) across {len(hosts)} host(s).")
     print(f"Probing each with a forged key...\n")
 
-    no_auth = await verify_no_auth(results)
+    no_auth, suspicious = await verify_no_auth(results)
 
     print(f"\n{'='*60}")
     if no_auth:
         print(f"❌ {len(no_auth)} host(s) confirmed NO-AUTH (accept forged key):")
-        for h in no_auth:
+        for h in sorted(no_auth):
             print(f"   {h}")
-        print(f"\n→ The new logic would void all {len(results)} key(s) on these hosts.")
+        print(f"\n→ filter_honeypots would VOID all key(s) on these hosts.")
     else:
-        print("✅ No no-auth hosts found — all keys appear to be on real gateways.")
+        print("✅ No no-auth hosts found.")
+
+    print(f"\n{'='*60}")
+    if suspicious:
+        print(f"⚠️  {len(suspicious)} host(s) SUSPICIOUS (forged-429 / 200-non-completion):")
+        for h in sorted(suspicious):
+            print(f"   {h}")
+        print("\n→ These would be quarantined to suspicious_*.jsonl for manual review.")
+    else:
+        print("✅ No suspicious hosts found — remaining keys sit on real gateways.")
 
 
 if __name__ == "__main__":

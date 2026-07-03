@@ -48,9 +48,13 @@ _KEY_BLOCKLIST: list[tuple[str, re.Pattern[str]]] = [
     ("aws_secret", re.compile(r"^(?:AKIA|ASIA)[A-Z0-9]{16}$")),
 ]
 
-# Pure hex of exactly 32 chars is very likely a session token / hash, not an
-# LLM key. We flag these with lower severity (warning) but still reject.
-_HEX32_PATTERN = re.compile(r"^[0-9a-f]{32}$", re.I)
+# Pure hex of 32-128 chars is very likely a session token / hash / opaque
+# .env secret, not an LLM API key. We flag these with lower severity (warning)
+# but still reject. Range covers 32-char hashes up through 64-byte (128-hex)
+# session tokens seen leaked in .env files. Real vendor keys (sk-…, AIza…) have
+# non-hex structure (prefix, dashes, base64 alphabet) and are matched by their
+# own prefix path, so they never reach this check.
+_HEX_TOKEN_PATTERN = re.compile(r"^[0-9a-fA-F]{32,128}$")
 
 # Base64 of hex — decode to check
 _BASE64_HEX_PATTERN = re.compile(
@@ -64,9 +68,12 @@ def _is_blocked_key_format(apikey: str) -> str | None:
         if pat.match(apikey):
             return f"blocked-key-format:{name}"
 
-    # Pure 32-char hex → likely session token
-    if _HEX32_PATTERN.match(apikey):
-        return "blocked-key-format:hex32-session-token"
+    # Vendor-prefixed keys have real structure (sk-…, AIza…) and are validated
+    # by their own routing/probing path — never let the bare-hex filter touch them.
+    if not apikey.startswith(("sk-", "AIza")):
+        # Pure 32-128 hex → likely session token / opaque .env secret.
+        if _HEX_TOKEN_PATTERN.match(apikey):
+            return "blocked-key-format:hex-token-32-128"
 
     # Base64-encoded hex string detection
     if _BASE64_HEX_PATTERN.match(apikey):
@@ -222,6 +229,42 @@ def _reject_no_auth_hosts(results: list[ValidationResult]) -> int:
             )
             rejected += 1
     return rejected
+
+
+# ---------------------------------------------------------------------------
+# 6b. Suspicious-host quarantine — hosts flagged by verify_no_auth with a
+#     forged-key 429 (open-proxy signal) or a 200-non-completion
+#     (not-a-real-gateway signal). Unlike no_auth_hosts, these are NOT voided:
+#     the evidence is suggestive, not conclusive. Results keep valid=True but
+#     gain suspicious=True so the scanner can split them out of valid_*.jsonl
+#     into suspicious_*.jsonl for manual review.
+# ---------------------------------------------------------------------------
+
+# Hosts (apiurl) flagged suspicious by verify_no_auth. Populated by the scanner
+# between validate_all and filter_honeypots. Module-level mirror of no_auth_hosts.
+suspicious_hosts: set[str] = set()
+
+
+def _quarantine_suspicious_hosts(results: list[ValidationResult]) -> int:
+    """Mark (don't void) valid results on suspicious hosts.
+
+    Sets ``r.suspicious=True`` and a reason, leaving ``valid=True``. The scanner
+    is responsible for moving suspicious results out of valid_*.jsonl.
+    """
+    if not suspicious_hosts:
+        return 0
+    marked = 0
+    for r in results:
+        if not r.valid:
+            continue
+        if r.credential.host in suspicious_hosts:
+            r.suspicious = True
+            r.suspicious_reason = (
+                "honeypot:suspicious-host (forged key got 429 or non-completion "
+                "— open-proxy / not-a-real-gateway; manual review)"
+            )
+            marked += 1
+    return marked
 
 
 # ---------------------------------------------------------------------------
@@ -450,16 +493,22 @@ def filter_honeypots(results: list[ValidationResult]) -> list[ValidationResult]:
     # Pass 6: No-auth host rejection (forged-key probe verdict from validator)
     noauth_rejected = _reject_no_auth_hosts(results)
 
+    # Pass 7: Suspicious-host quarantine (forged-429 / non-completion verdict).
+    # Marks suspicious=True but leaves valid=True; the scanner splits these out.
+    suspicious_marked = _quarantine_suspicious_hosts(results)
+
     valid_after = sum(1 for r in results if r.valid)
     total_rejected = valid_before - valid_after
 
-    if total_rejected > 0:
+    if total_rejected > 0 or suspicious_marked > 0:
         log.info(
-            "Honeypot filter: %d/%d rejected "
-            "(cluster=%d, steg=%d, injection=%d, format=%d, dedup=%d, no-auth=%d) → %d valid remain",
+            "Honeypot filter: %d/%d rejected, %d suspicious "
+            "(cluster=%d, steg=%d, injection=%d, format=%d, dedup=%d, no-auth=%d, "
+            "suspicious=%d) → %d valid remain",
             total_rejected, valid_before,
+            suspicious_marked,
             cluster_rejected, steg_rejected, injection_rejected,
-            format_rejected, dedup_rejected, noauth_rejected,
+            format_rejected, dedup_rejected, noauth_rejected, suspicious_marked,
             valid_after,
         )
     else:

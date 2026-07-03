@@ -348,8 +348,9 @@ async def test_verify_no_auth_detects_noauth_host():
         )
     )
     results = [_vr("honeypot.example:8139", "http://honeypot.example:8139")]
-    no_auth = await verify_no_auth(results)
+    no_auth, suspicious = await verify_no_auth(results)
     assert "honeypot.example:8139" in no_auth
+    assert suspicious == set()
 
 
 @respx.mock
@@ -358,20 +359,33 @@ async def test_verify_no_auth_passes_real_gateway():
     url = "http://real.example.com/v1/chat/completions"
     respx.post(url).mock(return_value=httpx.Response(401, json={"error": "invalid key"}))
     results = [_vr("real.example.com", "http://real.example.com")]
-    no_auth = await verify_no_auth(results)
+    no_auth, suspicious = await verify_no_auth(results)
     assert no_auth == set()
+    assert suspicious == set()
 
 
 @respx.mock
-async def test_verify_no_auth_200_but_not_completion_not_flagged():
-    """200 returning non-completion JSON (router admin API) is not 'validated'."""
+async def test_verify_no_auth_429_marks_suspicious():
+    """Forged key getting 429 = open-proxy signal (real gateways return 401, never 429)."""
+    url = "http://openproxy.example/v1/chat/completions"
+    respx.post(url).mock(return_value=httpx.Response(429, json={"error": "rate limited"}))
+    results = [_vr("openproxy.example", "http://openproxy.example")]
+    no_auth, suspicious = await verify_no_auth(results)
+    assert no_auth == set()
+    assert "openproxy.example" in suspicious
+
+
+@respx.mock
+async def test_verify_no_auth_200_but_not_completion_marks_suspicious():
+    """200 returning non-completion on every retry → host is not a real gateway."""
     url = "http://weird.example/v1/chat/completions"
     respx.post(url).mock(
         return_value=httpx.Response(200, json={"stok": "abc", "saved": True})
     )
     results = [_vr("weird.example", "http://weird.example")]
-    no_auth = await verify_no_auth(results)
+    no_auth, suspicious = await verify_no_auth(results)
     assert no_auth == set()
+    assert "weird.example" in suspicious
 
 
 @respx.mock
@@ -390,5 +404,76 @@ async def test_verify_no_auth_one_host_probed_once():
 
 
 async def test_verify_no_auth_empty_results():
-    """No valid results → no probes, empty set."""
-    assert await verify_no_auth([]) == set()
+    """No valid results → no probes, empty sets."""
+    assert await verify_no_auth([]) == (set(), set())
+
+
+# ---------------------------------------------------------------------------
+# Routing override persistence — a key scraped from a non-gateway host (leak
+# blog / Shodan banner) is validated against the official provider endpoint;
+# the override is written back to cred.apiurl/host and leak_host preserves the
+# original source.
+# ---------------------------------------------------------------------------
+
+LEAK_URL = "http://161.97.182.228:8788"  # a leaking blog, not an OpenAI gateway
+
+
+@respx.mock
+async def test_probe_persists_routing_override_to_official():
+    """sk-proj- key scraped from a blog → validated against api.openai.com;
+    cred.apiurl/host updated, leak_host preserves the blog URL."""
+    _mock_models_empty()
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(429, json={"error": "rate limited"})
+    )
+    cred = Credential(apikey=VALID_KEY, apiurl=LEAK_URL, host="161.97.182.228:8788")
+    async with httpx.AsyncClient() as client:
+        await _probe(client, cred)
+    assert cred.routed_to_official is True
+    assert cred.apiurl == "https://api.openai.com/v1"
+    assert cred.host == "api.openai.com"
+    assert cred.leak_host == LEAK_URL
+    # ip/port described the leak host, not the official gateway → cleared
+    assert cred.ip == ""
+    assert cred.port == ""
+
+
+@respx.mock
+async def test_probe_no_override_when_apiurl_is_already_gateway():
+    """If apiurl is already a known provider gateway, no override happens."""
+    _mock_models_empty()
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(429, json={"error": "rate limited"})
+    )
+    cred = Credential(apikey=VALID_KEY, apiurl=BASE, host="api.openai.com")
+    async with httpx.AsyncClient() as client:
+        await _probe(client, cred)
+    assert cred.routed_to_official is False
+    assert cred.leak_host == ""
+    assert cred.apiurl == BASE
+
+
+@respx.mock
+async def test_verify_no_auth_probes_post_routing_apiurl():
+    """For a routed key, the forged probe targets the OFFICIAL endpoint
+    (api.openai.com), not the leak blog. The blog URL is never hit."""
+    _mock_models_empty()
+    official_url = "https://api.openai.com/v1/chat/completions"
+    # Only the official endpoint is mocked; the leak blog URL is left
+    # unregistered so any request to it would raise AllMockedAssertionError.
+    official_route = respx.post(official_url).mock(
+        return_value=httpx.Response(401, json={"error": "invalid key"})
+    )
+    cred = Credential(
+        apikey=VALID_KEY, apiurl=LEAK_URL, host="161.97.182.228:8788",
+    )
+    # Simulate the post-_probe state: routing already persisted.
+    cred.leak_host = LEAK_URL
+    cred.apiurl = "https://api.openai.com/v1"
+    cred.host = "api.openai.com"
+    cred.routed_to_official = True
+    result = ValidationResult(credential=cred, valid=True, model_available="gpt-5.5")
+    no_auth, suspicious = await verify_no_auth([result])
+    assert official_route.call_count == 1   # probed the official endpoint
+    assert no_auth == set()                  # 401 → real gateway
+    assert suspicious == set()

@@ -9,7 +9,7 @@ from .config import settings
 from .extractor import extract_credentials
 from .fofa_client import FofaClient
 from .models import Credential, ScanRunResult, ValidationResult
-from .writer import append_scan_result, write_scan_metadata, write_valid_results
+from .writer import append_scan_result, write_scan_metadata, write_suspicious_results, write_valid_results
 from .queries import build_queries
 from .validator import validate_all
 
@@ -205,8 +205,9 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
             "Probing %d host(s) with a forged key to detect no-auth honeypots...",
             distinct_hosts,
         )
-        no_auth_urls = await verify_no_auth(results)
+        no_auth_urls, suspicious_urls = await verify_no_auth(results)
         _honeypot.no_auth_hosts = no_auth_urls
+        _honeypot.suspicious_hosts = suspicious_urls
 
     # Write scan metadata + per-result JSONL lines
     scan_path: Path | None = None
@@ -235,19 +236,33 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
     results = filter_honeypots(results)
 
     valid = [r for r in results if r.valid]
-    log.info("Validation done: %d valid / %d total", len(valid), len(results))
+    # Split suspicious results out BEFORE balance enrichment: they passed
+    # validation but sit on a host flagged by verify_no_auth (forged-429 /
+    # non-completion). They are quarantined to suspicious_*.jsonl and do NOT
+    # consume balance-query budget.
+    suspicious = [r for r in valid if r.suspicious]
+    valid = [r for r in valid if not r.suspicious]
+    log.info(
+        "Validation done: %d valid / %d total (%d suspicious quarantined)",
+        len(valid), len(results), len(suspicious),
+    )
 
     if valid:
         from .balance import enrich_results
 
         log.info("Querying balance for %d valid credentials...", len(valid))
-        results = await enrich_results(results)
-        valid = [r for r in results if r.valid]
+        # Enrich only non-suspicious valid results. enrich_results mutates each
+        # ValidationResult in place and returns the same objects, so the changes
+        # are visible in `results` (and therefore `valid`/`suspicious`) directly.
+        enrichable = [r for r in results if r.valid and not r.suspicious]
+        await enrich_results(enrichable)
         log.info("Balance enrichment done.")
 
-    # Write valid_*.jsonl after honeypot + balance enrichment
+    # Write valid_*.jsonl + suspicious_*.jsonl after honeypot + balance enrichment
     if run_dir:
         write_valid_results(valid, run_dir)
+        if suspicious:
+            write_suspicious_results(suspicious, run_dir)
 
     return ScanRunResult(
         started_at=started,
