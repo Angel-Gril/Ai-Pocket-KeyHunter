@@ -115,8 +115,48 @@ def test_info_returns_plan_and_credits():
     )
     with ShodanClient(keys=["k1"], base_url=BASE) as c:
         info = c.info()
-    assert info["plan"] == "edu"
-    assert info["query_credits"] == 192907
+    # info() now aggregates across all keys (each key's quota reported separately)
+    assert info["total_query_credits"] == 192907
+    assert info["n_keys"] == 1
+    assert info["keys"][0]["plan"] == "edu"
+    assert info["keys"][0]["query_credits"] == 192907
+
+
+@respx.mock
+def test_info_aggregates_across_multiple_keys():
+    # Two keys with very different quotas — both must be reported, summed.
+    route = respx.get(f"{BASE}/api-info")
+    route.side_effect = [
+        httpx.Response(200, json={"plan": "dev", "query_credits": 62}),
+        httpx.Response(200, json={"plan": "edu", "query_credits": 192907}),
+    ]
+    with ShodanClient(keys=["k1", "k2"], base_url=BASE) as c:
+        info = c.info()
+    assert info["n_keys"] == 2
+    assert info["total_query_credits"] == 62 + 192907
+    assert len(info["keys"]) == 2
+    plans = sorted(k["plan"] for k in info["keys"])
+    assert plans == ["dev", "edu"]
+
+
+@respx.mock
+def test_count_returns_none_when_endpoint_fails():
+    # count() returns None (not 0) on API failure so callers don't skip live queries.
+    respx.get(f"{BASE}/shodan/host/count").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+    with ShodanClient(keys=["k1"], base_url=BASE) as c:
+        assert c.count("http.title:LiteLLM") is None
+
+
+@respx.mock
+def test_count_returns_zero_when_truly_empty():
+    # count() returns 0 only when Shodan explicitly reports zero — safe to skip.
+    respx.get(f"{BASE}/shodan/host/count").mock(
+        return_value=httpx.Response(200, json={"total": 0})
+    )
+    with ShodanClient(keys=["k1"], base_url=BASE) as c:
+        assert c.count("nothing") == 0
 
 
 def test_no_keys_raises():

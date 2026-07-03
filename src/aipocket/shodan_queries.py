@@ -143,6 +143,29 @@ SHODAN_CREDENTIAL_QUERIES: list[str] = [
 ]
 
 
+# Country facets used to shard the largest product queries. Each facet becomes a
+# separate query (its page 1 costs 1 credit), and each shard independently
+# paginates up to SHODAN_MAX_PAGES — so a 20k-hit query fans out into N shards
+# that each return up to SHODAN_MAX_PAGES pages of mostly-non-overlapping hosts,
+# dodging the per-query 100-results/page wall.
+#
+# Selection: top countries for self-hosted AI gateways by deployment density.
+# US/DE/FR/GB = Western cloud; CN/KR = the LLM-proxy crowd that dominates
+# New-API/One-API; JP/SG = APAC. Shodan country codes are ISO-3166-1 alpha-2.
+# Order is for log readability only (US first); recall is order-independent.
+SHARD_COUNTRIES: list[str] = ["US", "CN", "DE", "JP", "FR", "GB", "SG", "KR"]
+
+# Products whose Shodan count estimate exceeds the per-query page cap
+# (100 * SHODAN_MAX_PAGES). Only these expand into country facets; smaller
+# products stay single queries to avoid inflating credit cost for no recall
+# gain. Keys MUST match SHODAN_PRODUCT_QUERIES (i.e. _normalize_product output).
+SHARD_PRODUCTS: set[str] = {"New-API", "OpenWebUI", "LibreChat", "LiteLLM", "Dify"}
+# Intentionally NO residual "no-country" query for sharded products: it would
+# heavily overlap the country shards (most indexed hosts live in these 8
+# countries), burning a page-1 credit for marginal recall. The 8 shards already
+# cover the bulk; the long tail of low-deployment countries is a deliberate cut.
+
+
 def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direct: bool = False) -> list[dict[str, str]]:
     """Build the full list of Shodan queries to run.
 
@@ -189,17 +212,26 @@ def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direc
         if not templates:
             continue
 
+        # High-volume products (SHARD_PRODUCTS) fan out into one query per
+        # country facet so each shard can paginate past the 100/page wall
+        # independently. Low-volume products run a single query each.
         for tmpl in templates:
-            if tmpl in seen:
-                continue
-            seen.add(tmpl)
-            out.append({
-                "query": tmpl,
-                "cve_id": cve["id"],
-                "product": product,
-                "type": cve_type,
-                "cvss": str(cve.get("cvss", "")),
-            })
+            facets = (
+                [f"{tmpl} country:{c}" for c in SHARD_COUNTRIES]
+                if base_product in SHARD_PRODUCTS
+                else [tmpl]
+            )
+            for q in facets:
+                if q in seen:
+                    continue
+                seen.add(q)
+                out.append({
+                    "query": q,
+                    "cve_id": cve["id"],
+                    "product": product,
+                    "type": cve_type,
+                    "cvss": str(cve.get("cvss", "")),
+                })
 
     return out
 
@@ -208,6 +240,8 @@ def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direc
 __all__ = [
     "SHODAN_PRODUCT_QUERIES",
     "SHODAN_CREDENTIAL_QUERIES",
+    "SHARD_COUNTRIES",
+    "SHARD_PRODUCTS",
     "build_shodan_queries",
     "PRODUCT_QUERIES",
     "SKIP_PRODUCTS",

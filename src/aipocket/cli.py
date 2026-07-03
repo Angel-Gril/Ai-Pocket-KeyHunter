@@ -178,13 +178,18 @@ def shodan_info():
     if not info:
         console.print("[red]Failed to reach Shodan API or all keys invalid.[/red]")
         raise typer.Exit(1)
-    table = Table(title="Shodan API key info")
-    table.add_column("field")
-    table.add_column("value")
-    for k in ("plan", "query_credits", "unlocked_left", "scan_credits", "monitored_ips", "https", "unlocked", "telnet"):
-        if k in info:
-            table.add_row(k, str(info[k]))
-    console.print(table)
+    # info() aggregates across ALL keys (each key's quota is reported separately,
+    # since accounts often mix a high-quota key with a low-quota one).
+    console.print(f"[bold]Keys:[/bold] {info['n_keys']}  [bold]Dead:[/bold] {info['n_dead']}  "
+                  f"[bold]Total query credits:[/bold] {info['total_query_credits']}")
+    for k in info.get("keys", []):
+        table = Table(title=f"Shodan API key {k.get('_key_masked', '?')}")
+        table.add_column("field")
+        table.add_column("value")
+        for field in ("plan", "query_credits", "unlocked_left", "scan_credits", "monitored_ips", "https", "unlocked", "telnet"):
+            if field in k:
+                table.add_row(field, str(k[field]))
+        console.print(table)
 
 
 @app.command()

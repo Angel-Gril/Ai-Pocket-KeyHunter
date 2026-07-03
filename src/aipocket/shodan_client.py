@@ -127,10 +127,24 @@ class ShodanClient:
         self._client = httpx.Client(timeout=self.timeout, follow_redirects=True)
 
     def info(self) -> dict[str, Any]:
-        """Return /api-info (plan, remaining query credits). Best-effort."""
+        """Per-key /api-info aggregated across ALL keys (best-effort).
+
+        Unlike search/count, this iterates every key directly (not via the
+        rotation cycle) so each key's plan & remaining credits are reported —
+        accounts often pair a high-quota key with a low-quota one, and only
+        seeing the first key's budget is misleading for credit planning.
+
+        Returns a dict:
+            {
+              "keys": [{"_key_masked": "...", "plan": ..., "query_credits": N}, ...],
+              "total_query_credits": int,
+              "n_keys": int, "n_dead": int,
+            }
+        Empty dict if every key failed. Invalid (401/403) keys are marked dead.
+        """
         url = f"{self.base_url}/api-info"
-        for _ in range(len(self.keys)):
-            key = next(self._key_cycle)
+        per_key: list[dict[str, Any]] = []
+        for key in self.keys:
             if key in self._dead:
                 continue
             try:
@@ -140,24 +154,41 @@ class ShodanClient:
                 continue
             if r.status_code == 200:
                 try:
-                    return r.json()
+                    data = r.json()
                 except ValueError:
-                    return {}
+                    continue
+                data["_key_masked"] = f"{key[:6]}…{key[-4:]}"
+                per_key.append(data)
+                continue
             if r.status_code in (401, 403):
                 log.warning("  shodan key %s… invalid (HTTP %d)", key[:6], r.status_code)
                 self._dead.add(key)
-                continue
-        return {}
+        if not per_key:
+            return {}
+        total = sum(int(k.get("query_credits", 0) or 0) for k in per_key)
+        return {
+            "keys": per_key,
+            "total_query_credits": total,
+            "n_keys": len(self.keys),
+            "n_dead": len(self._dead),
+        }
 
-    def count(self, query: str) -> int:
-        """Total matches for a query WITHOUT consuming query credits."""
+    def count(self, query: str) -> int | None:
+        """Total matches for a query WITHOUT consuming query credits.
+
+        Returns ``None`` when the count endpoint itself failed (network error,
+        all keys dead, non-200 / non-JSON) — callers MUST treat ``None`` as
+        "unknown, proceed with search" so a transient Shodan hiccup doesn't
+        silently drop a live query. Returns ``0`` ONLY when Shodan explicitly
+        reported zero matches (safe to skip).
+        """
         data = self._request("/shodan/host/count", {"query": query})
         if data is None:
-            return 0
+            return None
         try:
             return int(data.get("total", 0))
         except (TypeError, ValueError):
-            return 0
+            return None
 
     def search(
         self,

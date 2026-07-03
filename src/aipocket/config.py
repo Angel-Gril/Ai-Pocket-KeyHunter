@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # ===== Shodan (second data source) =====
     shodan_keys: str = ""
     shodan_base_url: str = "https://api.shodan.io"
-    shodan_max_pages: int = 1
+    shodan_max_pages: int = 10
     shodan_timeout: float = 30.0
     shodan_page_delay: float = 1.0
 

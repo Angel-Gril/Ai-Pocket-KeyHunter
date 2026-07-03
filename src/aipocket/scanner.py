@@ -321,15 +321,34 @@ def _fetch_shodan(max_queries: int | None, *, skip_direct: bool = False) -> tupl
             info = shodan.info()
             if info:
                 log.info(
-                    "  Shodan plan=%s query_credits_remaining=%s",
-                    info.get("plan"),
-                    info.get("query_credits"),
+                    "  Shodan keys=%d dead=%d total_query_credits=%s",
+                    info.get("n_keys"), info.get("n_dead"), info.get("total_query_credits"),
                 )
+                for k in info.get("keys", []):
+                    log.info(
+                        "    key %s plan=%s query_credits=%s",
+                        k.get("_key_masked"), k.get("plan"), k.get("query_credits"),
+                    )
         except Exception:  # noqa: BLE001 - info is best-effort
             pass
 
         for i, q in enumerate(queries, 1):
             log.info("[SHODAN %d/%d] %s | %s", i, len(queries), q["cve_id"], q["query"][:80])
+
+            # Credit-saving pre-filter: count() is FREE (no query credits). Only
+            # skip when Shodan explicitly reports zero — a None (count endpoint
+            # failed) MUST fall through to search so a transient error doesn't
+            # silently drop a live query. Each skipped 0-hit query saves 1 credit
+            # (page 1 of any filtered query is billed).
+            total = shodan.count(q["query"])
+            if total == 0:
+                log.info("  shodan count=0, skipping (credit saved)")
+                continue
+            if total is None:
+                log.info("  shodan count unknown, proceeding")
+            else:
+                log.info("  shodan count=%s", total)
+
             hits = shodan.search(q["query"], pages=settings.shodan_max_pages)
             if hits:
                 for h in hits:
