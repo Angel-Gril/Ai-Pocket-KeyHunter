@@ -245,6 +245,16 @@
     "date": "2026-04-18"
   },
   {
+    "id": "CVE-2026-29071",
+    "cvss": 0.0,
+    "product": "open webui",
+    "type": "信息泄露",
+    "description": "# CVE-2026-29071: Open WebUI Information Disclosure Flaw. CVE-2026-29071 is an information disclosure vulnerability in Open WebUI allowing authenticated users to access other users' private memories. A vulnerability exists in versions prior to 0.8.6 that allows any authenticated user to read other u",
+    "huntable": "中",
+    "date": "2026-07-03",
+    "source_url": "https://www.sentinelone.com/vulnerability-database/cve-2026-29071"
+  },
+  {
     "id": "CVE-2026-30617",
     "cvss": 8.6,
     "product": "LangChain-ChatChat",
@@ -447,6 +457,16 @@
     "description": "GraphCypherQAChain node forwards user input directly into Cypher query pipeline without sanitization. Attacker can inject arbitrary Cypher commands for data exfiltration, modification, or deletion on Neo4j database.",
     "huntable": "高",
     "date": "2026-05-04"
+  },
+  {
+    "id": "CVE-2026-41279",
+    "cvss": 0.0,
+    "product": "flowise",
+    "type": "认证绕过",
+    "description": "Native and Open Protection, Detection, and Response. One-Click Integrations to Unlock the Power of SentinelOne. Security Tuned for Your Industry. CVE-2026-41279 is an authentication bypass flaw in Flowise that allows unauthorized access to text-to-speech endpoints and credential decryption. Prior to",
+    "huntable": "高",
+    "date": "2026-07-03",
+    "source_url": "https://www.sentinelone.com/vulnerability-database/cve-2026-41279"
   },
   {
     "id": "CVE-2026-41481",
