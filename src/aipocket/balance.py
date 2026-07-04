@@ -49,6 +49,7 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
         ("litellm", _probe_litellm, base),
         ("oneapi", _probe_oneapi, base),
         ("newapi", _probe_newapi, base),
+        ("newapi_billing", _probe_newapi_billing, base),
         ("nexus", _probe_nexus_usage, base),
         ("deepseek", _probe_deepseek, base),
         ("moonshot", _probe_moonshot, base),
@@ -97,6 +98,36 @@ async def _probe_newapi(client: httpx.AsyncClient, base: str, key: str) -> dict[
         "remaining": quota - used,
         "balance_usd": round(quota / 500000, 4),
         "raw": user,
+    }
+
+
+async def _probe_newapi_billing(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    """Probe new-api's OpenAI-style billing proxy endpoints.
+
+    new-api (and one-api forks) accept an ``sk-`` API key on the proxied billing
+    endpoints even though the REST ``/api/user/self`` requires a separate user
+    access token. Reads the quota limit from ``/dashboard/billing/subscription``
+    and cumulative usage (in cents) from ``/dashboard/billing/usage``.
+    """
+    sub = await _safe_get(client, f"{base}/dashboard/billing/subscription", key)
+    if not sub or sub.get("object") != "billing_subscription":
+        return {}
+    hard_limit = float(sub.get("hard_limit_usd") or sub.get("system_hard_limit_usd") or 0)
+
+    # Usage is reported in cents (OpenAI convention). Use a wide date range so
+    # the cumulative total is captured regardless of when the key was created.
+    params = {"start_date": "2024-01-01", "end_date": "2099-12-31"}
+    usage = await _safe_get(client, f"{base}/dashboard/billing/usage", key, params=params)
+    used_usd = 0.0
+    if usage and usage.get("object") == "list":
+        used_usd = float(usage.get("total_usage") or 0) / 100.0
+
+    remaining = round(max(hard_limit - used_usd, 0.0), 4)
+    return {
+        "balance_usd": remaining,
+        "hard_limit_usd": hard_limit,
+        "used_usd": round(used_usd, 4),
+        "raw": {"subscription": sub, "usage": usage},
     }
 
 

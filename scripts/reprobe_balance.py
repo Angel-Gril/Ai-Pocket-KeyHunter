@@ -1,4 +1,8 @@
-"""Re-probe balance for 'unsupported' entries using the new nexus probe."""
+"""Re-probe balance for entries with no balance using the latest balance probes.
+
+Re-probes any credential whose gateway is ``unsupported`` or empty (i.e. no
+balance was resolved on the first pass), then rewrites the JSONL in place.
+"""
 
 import asyncio
 import json
@@ -20,14 +24,19 @@ async def main():
         sys.exit(1)
 
     entries = [json.loads(line) for line in valid_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    
-    # Find unsupported entries
-    unsupported_indices = [
-        i for i, c in enumerate(entries)
-        if c.get("gateway") == "unsupported"
-    ]
+
+    # Find entries with no resolved balance (unsupported or empty gateway / empty balance)
+    def needs_reprobe(c: dict) -> bool:
+        gw = c.get("gateway")
+        if gw in (None, "", "unsupported"):
+            return True
+        if not c.get("balance"):
+            return True
+        return False
+
+    unsupported_indices = [i for i, c in enumerate(entries) if needs_reprobe(c)]
     print(f"Total credentials: {len(entries)}")
-    print(f"Unsupported (to re-probe): {len(unsupported_indices)}")
+    print(f"To re-probe (no balance): {len(unsupported_indices)}")
     
     if not unsupported_indices:
         print("Nothing to do.")
