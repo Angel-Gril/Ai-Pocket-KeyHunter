@@ -10,6 +10,16 @@
     "source_url": "https://vulners.com/search/vendors/litellm/products/litellm"
   },
   {
+    "id": "CVE-2025-0628",
+    "cvss": 0.0,
+    "product": "litellm",
+    "type": "权限提升",
+    "description": "CVE-2025-0628 is a privilege escalation vulnerability in BerriAI/LiteLLM. Learn about its impact, affected versions, and mitigation methods.",
+    "huntable": "中",
+    "date": "2026-07-04",
+    "source_url": "https://www.sentinelone.com/vulnerability-database/cve-2025-0628"
+  },
+  {
     "id": "CVE-2025-3248",
     "cvss": 0.0,
     "product": "langflow",
@@ -64,6 +74,16 @@
     "description": "CORS misconfiguration in /console/api/setup reflects arbitrary Origin with Access-Control-Allow-Credentials: true, permitting external domains to make authenticated cross-origin requests.",
     "huntable": "中",
     "date": "2026-02-11"
+  },
+  {
+    "id": "CVE-2025-65114",
+    "cvss": 0.0,
+    "product": "mlflow",
+    "type": "信息泄露",
+    "description": "`OpenSSL, Apache Traffic Server, Liferay, WordPress, Apache Airflow, NetScaler, F5, Apache Camel, vLLM, MLflow, DNN, Qwik, Fortinet, Grafana, GitLab, Zabbix, Apache ActiveMQ, Apache Tomcat, Microsoft SharePoint, Adobe, Nginx, Oracle, Apache APISIX, JetBrains, Joomla`. | 520131 | Apache Traffic Serve",
+    "huntable": "中",
+    "date": "2026-07-04",
+    "source_url": "https://notifications.qualys.com/notifications/2026/04/30/application-security-detections-published-in-april-2026"
   },
   {
     "id": "CVE-2025-65958",
