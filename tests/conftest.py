@@ -10,6 +10,15 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _disable_dedup_by_default(monkeypatch):
+    """Every test runs with dedup disabled by default so the suite never depends
+    on a live Redis. Tests that exercise dedup opt back in by re-patching
+    `dedup_enabled` / `get_dedup_store` themselves (monkeypatch is LIFO, so a
+    later setattr in the test wins)."""
+    monkeypatch.setattr("aipocket.config.settings.dedup_enabled", False)
+
+
 @pytest.fixture
 def sample_cves() -> list[dict[str, Any]]:
     return [

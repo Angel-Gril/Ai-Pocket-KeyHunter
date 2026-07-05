@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from rich.table import Table
 
 from .config import settings
 from .models import Credential, ValidationResult
+
+if TYPE_CHECKING:
+    from .dedup import DedupStore
 
 log = logging.getLogger(__name__)
 
@@ -238,13 +241,29 @@ async def _probe_nexus_usage(client: httpx.AsyncClient, base: str, key: str) -> 
         return {"balance_usd": round(bal, 4), "raw": data}
     return {}
 
-async def enrich_results(results: list[ValidationResult]) -> list[ValidationResult]:
+async def enrich_results(
+    results: list[ValidationResult],
+    dedup: DedupStore | None = None,
+) -> list[ValidationResult]:
     sem = asyncio.Semaphore(settings.validate_concurrency)
     timeout = httpx.Timeout(settings.validate_timeout)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         async def _one(r: ValidationResult) -> ValidationResult:
             if not r.valid:
                 return r
+            # Cross-run balance cache: reuse the previous run's balance result
+            # instead of re-querying the endpoint. Falls through to a live
+            # query on miss / when dedup is disabled.
+            if dedup is not None:
+                cached = await dedup.get_cached_balance(r.credential)
+                if cached:
+                    r.balance = str(cached.get("balance_usd", ""))
+                    r.gateway = cached.get("gateway", "") or r.gateway
+                    if cached.get("tier"):
+                        r.tier = r.tier or cached["tier"]
+                    r.rate_limit_headers["balance_detail"] = str(cached)
+                    r.provider_info.balance_provider = cached.get("gateway", "") or r.provider_info.balance_provider
+                    return r
             try:
                 async with sem:
                     bal = await query_balance(client, r.credential)
@@ -258,6 +277,8 @@ async def enrich_results(results: list[ValidationResult]) -> list[ValidationResu
                     r.tier = r.tier or bal["tier"]
                 r.rate_limit_headers["balance_detail"] = str(bal)
                 r.provider_info.balance_provider = bal.get("gateway", "")
+                if dedup is not None:
+                    await dedup.cache_balance(r.credential, bal)
             return r
 
         return await asyncio.gather(*[_one(r) for r in results])

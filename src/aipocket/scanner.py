@@ -6,12 +6,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import settings
+from .dedup import DedupStore, get_dedup_store
 from .extractor import extract_credentials
 from .fofa_client import FofaClient
 from .models import Credential, ScanRunResult, ValidationResult
-from .writer import append_scan_result, write_scan_metadata, write_suspicious_results, write_valid_results
 from .queries import build_queries
 from .validator import validate_all
+from .writer import (
+    append_scan_result,
+    write_scan_metadata,
+    write_suspicious_results,
+    write_valid_results,
+)
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +48,26 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
     from . import analyzer as _analyzer
 
     _analyzer.set_run_dir(run_dir)
+
+    # Cross-run dedup store (Redis-backed; degrades to no-op if unavailable).
+    dedup = await get_dedup_store()
+
+    try:
+        return await _run_scan_inner(
+            max_queries, run_dir, skip_direct=skip_direct, started=started, dedup=dedup
+        )
+    finally:
+        await dedup.close()
+
+
+async def _run_scan_inner(
+    max_queries: int | None,
+    run_dir: Path | None,
+    *,
+    skip_direct: bool,
+    started: str,
+    dedup: DedupStore,
+) -> ScanRunResult:
 
     all_hits: list[dict] = []
     queries_used: list[str] = []
@@ -122,8 +148,6 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
         pre_filtered_count, len(creds), pre_filtered_count - len(creds),
     )
 
-    from .writer import write_raw_hits
-
     # Active probing — probe all hosts. Signal-based ordering ensures high-value
     # targets (those with key patterns in banner/header) are probed first, but
     # ALL hosts are probed (no cap — precision queries already limit the set).
@@ -140,6 +164,16 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
 
         # Stable sort: high-signal first, rest after
         probe_targets = sorted(all_hits, key=lambda h: (0 if _has_signal(h) else 1))
+
+        # Cross-run dedup: skip hosts already probed in a previous run.
+        before_probe = len(probe_targets)
+        probe_targets = await dedup.filter_unseen_hosts(probe_targets)
+        if before_probe != len(probe_targets):
+            log.info(
+                "Dedup: host probe %d → %d (skipped %d seen)",
+                before_probe, len(probe_targets), before_probe - len(probe_targets),
+            )
+        # Recount after dedup so the probe-log numbers are self-consistent.
         high_count = sum(1 for h in probe_targets if _has_signal(h))
 
         log.info(
@@ -147,12 +181,22 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
             len(probe_targets), high_count, len(probe_targets) - high_count,
         )
         probed_creds = await probe_hosts(probe_targets)
+        for h in probe_targets:
+            await dedup.mark_host(h.get("host", ""))
         seen = _merge_credentials(creds, probed_creds, seen)
         log.info("After active probing: %d candidate credentials", len(creds))
 
     from .analyzer import extract_with_gpt
 
     sampled = _sample_hits_for_gpt(all_hits)
+    # Cross-run dedup: hosts already GPT-extracted in a previous run are skipped.
+    before_gpt = len(sampled)
+    sampled = await dedup.filter_unseen_hosts(sampled)
+    if before_gpt != len(sampled):
+        log.info(
+            "Dedup: GPT sampling %d → %d (skipped %d seen hosts)",
+            before_gpt, len(sampled), before_gpt - len(sampled),
+        )
     fofa_sampled = sum(1 for h in sampled if h.get("_source") == "fofa")
     shodan_sampled = sum(1 for h in sampled if h.get("_source") == "shodan")
     log.info(
@@ -160,6 +204,8 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
         len(sampled), fofa_sampled, shodan_sampled,
     )
     gpt_creds = await extract_with_gpt(sampled)
+    for h in sampled:
+        await dedup.mark_host(h.get("host", ""))
     if gpt_creds:
         seen = _merge_credentials(creds, gpt_creds, seen)
         log.info("After GPT enrichment: %d candidate credentials", len(creds))
@@ -189,8 +235,33 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
             raw_hits=_trim_hits(all_hits),
         )
 
-    log.info("Validating %d credentials (concurrency=%d)...", len(creds), settings.validate_concurrency)
-    results: list[ValidationResult] = await validate_all(creds)
+    # Cross-run dedup: split creds into cache hits (reuse), recently-failed
+    # (skip this run), and the rest (validate fresh).
+    cached_results: list[ValidationResult] = []
+    to_validate: list[Credential] = []
+    n_recent_fail = 0
+    for c in creds:
+        hit = await dedup.get_cached_valid(c)
+        if hit is not None:
+            cached_results.append(hit)
+            continue
+        if await dedup.is_recently_failed(c):
+            n_recent_fail += 1
+            continue
+        to_validate.append(c)
+    log.info(
+        "Dedup: %d creds → %d cached / %d to validate / %d recently-failed (skipped)",
+        len(creds), len(cached_results), len(to_validate), n_recent_fail,
+    )
+
+    log.info("Validating %d credentials (concurrency=%d)...", len(to_validate), settings.validate_concurrency)
+    fresh_results: list[ValidationResult] = await validate_all(to_validate) if to_validate else []
+    for r in fresh_results:
+        if r.valid:
+            await dedup.cache_valid(r)
+        else:
+            await dedup.mark_failed(r.credential)
+    results: list[ValidationResult] = cached_results + fresh_results
 
     # No-auth honeypot probe: for each host that has a valid result, send a
     # FORGED key. If it also validates, the endpoint ignores Authorization and
@@ -255,7 +326,7 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
         # ValidationResult in place and returns the same objects, so the changes
         # are visible in `results` (and therefore `valid`/`suspicious`) directly.
         enrichable = [r for r in results if r.valid and not r.suspicious]
-        await enrich_results(enrichable)
+        await enrich_results(enrichable, dedup=dedup)
         log.info("Balance enrichment done.")
 
     # Write valid_*.jsonl + suspicious_*.jsonl after honeypot + balance enrichment

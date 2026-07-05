@@ -57,6 +57,18 @@ class Settings(BaseSettings):
 
     results_dir: str = "results"
 
+    # ===== Cross-run dedup (Redis) =====
+    # When True, hosts/credentials already processed in a previous run are
+    # skipped (successful validations are cached + reused; failures get a short
+    # TTL so they can be retried). Disabling, or an unreachable Redis, falls
+    # back to the original no-dedup behavior.
+    dedup_enabled: bool = True
+    dedup_redis_url: str = "redis://localhost:6379/0"
+    dedup_host_ttl: int = 604800    # 7d — host already probed + GPT-extracted
+    dedup_cred_ttl: int = 259200    # 3d — successful ValidationResult cached
+    dedup_fail_ttl: int = 21600     # 6h — failed cred, retried after this
+    dedup_balance_ttl: int = 86400  # 1d — balance query result cached
+
     @field_validator("fofa_keys", "shodan_keys")
     @classmethod
     def _strip_keys(cls, v: str) -> str:
