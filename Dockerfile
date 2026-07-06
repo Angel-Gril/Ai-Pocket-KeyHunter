@@ -1,7 +1,8 @@
 # --- Frontend build stage: compile the Vite + React app to static assets ---
-FROM node:20-slim AS frontend
+# Node 24: pnpm 11 (resolved by corepack) requires Node >= 22.13.
+FROM node:24-slim AS frontend
 
-# pnpm is the frontend package manager; corepack ships with Node 20.
+# pnpm is the frontend package manager; corepack ships with Node.
 RUN corepack enable
 
 WORKDIR /frontend
