@@ -52,9 +52,17 @@ def _flatten(rec: dict[str, Any]) -> dict[str, Any]:
 
 def _collect(req: ExportRequest) -> list[dict[str, Any]]:
     if req.dataset == "selected":
-        if not req.keys:
-            raise ApiError("selected export requires 'keys'", code="bad_request")
-        return [{"apikey": k.apikey, "apiurl": k.apiurl} for k in req.keys]
+        # Preferred path: read the plaintext keys server-side by index, so they
+        # never round-trip through the browser.
+        if req.run_id and req.indices:
+            recs = load_run_records_plain(req.run_id, req.kind)
+            return [_flatten(recs[i]) for i in req.indices if 0 <= i < len(recs)]
+        # Legacy path: explicit plaintext key rows supplied by the client.
+        if req.keys:
+            return [{"apikey": k.apikey, "apiurl": k.apiurl} for k in req.keys]
+        raise ApiError(
+            "selected export requires 'run_id'+'indices' or 'keys'", code="bad_request"
+        )
 
     if req.dataset == "run":
         if not req.run_id:

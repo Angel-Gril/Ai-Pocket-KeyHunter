@@ -41,7 +41,13 @@ def _merge_credentials(
             seen.add((c.apikey, c.apiurl))
     return seen
 
-async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, *, skip_direct: bool = False) -> ScanRunResult:
+async def run_scan(
+    max_queries: int | None = None,
+    run_dir: Path | None = None,
+    *,
+    skip_direct: bool = False,
+    sources: set[str] | None = None,
+) -> ScanRunResult:
     started = datetime.now(UTC).isoformat()
 
     # Stamp the run dir so GPT debug/failed-batch dumps land inside it.
@@ -54,7 +60,7 @@ async def run_scan(max_queries: int | None = None, run_dir: Path | None = None, 
 
     try:
         return await _run_scan_inner(
-            max_queries, run_dir, skip_direct=skip_direct, started=started, dedup=dedup
+            max_queries, run_dir, skip_direct=skip_direct, started=started, dedup=dedup, sources=sources
         )
     finally:
         await dedup.close()
@@ -67,6 +73,7 @@ async def _run_scan_inner(
     skip_direct: bool,
     started: str,
     dedup: DedupStore,
+    sources: set[str] | None = None,
 ) -> ScanRunResult:
 
     all_hits: list[dict] = []
@@ -83,18 +90,23 @@ async def _run_scan_inner(
     fofa_hits: list[dict] = []
     shodan_hits: list[dict] = []
 
+    # `sources` (when given) restricts which discovery backends run this scan —
+    # e.g. the web UI's single-source mode. None means "every configured source".
+    want_fofa = sources is None or "fofa" in sources
+    want_shodan = sources is None or "shodan" in sources
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         futures = {}
-        if settings.keys:
+        if want_fofa and settings.keys:
             sources_used.append("fofa")
             futures["fofa"] = pool.submit(_fetch_fofa, max_queries, skip_direct=skip_direct)
-        else:
+        elif want_fofa:
             log.info("FOFA keys not configured — skipping FOFA source")
 
-        if settings.shodan_key_list:
+        if want_shodan and settings.shodan_key_list:
             sources_used.append("shodan")
             futures["shodan"] = pool.submit(_fetch_shodan, max_queries, skip_direct=skip_direct)
-        else:
+        elif want_shodan:
             log.info("Shodan keys not configured — skipping Shodan source")
 
         for name, future in futures.items():

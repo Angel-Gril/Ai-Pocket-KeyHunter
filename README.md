@@ -41,19 +41,23 @@ uv run aipocket balance
 
 ### Docker 部署
 
+镜像采用多阶段构建：先用 `node:20-slim` 通过 pnpm 构建 React 前端（`frontend/dist`），再拷贝到 Python 镜像并经 `WEB_STATIC_DIR` 由后端静态托管。默认 `serve` 模式**只启动 Web 服务、不会自动扫描**——扫描一律从 Web UI 触发（或用一次性 CLI）。
+
 ```bash
-# 构建并启动（默认 serve 模式，Web API + 前端，监听 8000 端口）
+# 构建并启动（默认 serve 模式，Web API + 前端在 / 根路径，监听 8000 端口，不会自动扫描）
 docker compose up -d
 
 # 首次启动会自动将 .env.example 复制到 /data/aipocket/.env
-# 编辑配置（务必设置 WEB_PASSWORD / WEB_JWT_SECRET / FOFA_KEYS / SHODAN_KEYS）后重启
+# 首次使用前务必设置 WEB_PASSWORD / WEB_JWT_SECRET（缺失则 serve 拒绝启动），
+# 并按需填入 FOFA_KEYS / SHODAN_KEYS，然后重启
 vim /data/aipocket/.env
 docker compose restart
 
-# 打开 Web UI / API 文档
-open http://<vps-ip>:8000/docs
+# 打开 Web UI（根路径）/ API 文档
+open http://<vps-ip>:8000/         # Web UI
+open http://<vps-ip>:8000/docs     # API 文档
 
-# 单次扫描（一次性 CLI）
+# 扫描：日常从 Web UI 点击触发；如需一次性 CLI 扫描：
 docker compose run --rm aipocket scan --fast
 
 # 定时扫描守护（可选，与 Web 服务并存）

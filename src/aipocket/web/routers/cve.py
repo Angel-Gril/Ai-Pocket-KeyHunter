@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends
 
 from ...config import settings
@@ -17,7 +19,7 @@ async def get_cve() -> dict:
     """Return the current AI CVE list (sources/cve_2026_ai.json)."""
     from ...queries import load_cves
 
-    return {"cves": load_cves()}
+    return {"cves": await asyncio.to_thread(load_cves)}
 
 
 @router.post("/sync", response_model=CveSyncResponse)

@@ -6,6 +6,7 @@ services:
       - /data/aipocket:/data/aipocket
     environment:
       - RESULTS_DIR=/data/aipocket/results
+      - WEB_STATIC_DIR=/app/frontend-dist
       - DEDUP_REDIS_URL=redis://redis:6379/0
     # Web API (FastAPI). Reads WEB_PASSWORD / WEB_JWT_SECRET from the mounted
     # .env. Behind an HTTPS reverse proxy in production; for SSE (/api/scan/

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends
 
 from ...high_value_writer import load_all
@@ -18,7 +20,7 @@ async def get_high_value() -> dict:
     Reuses :func:`aipocket.high_value_writer.load_all` (append-only log) and
     dedups by apikey keeping the last-written entry.
     """
-    entries = load_all()
+    entries = await asyncio.to_thread(load_all)
     # Dedup by apikey (last write wins) — the file is append-only.
     by_key: dict[str, dict] = {}
     for e in entries:

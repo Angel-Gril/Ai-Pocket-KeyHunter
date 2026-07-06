@@ -1,0 +1,115 @@
+import { NavLink } from "react-router-dom"
+import { useQuery } from "@tanstack/react-query"
+import {
+  Gem,
+  LayoutList,
+  type LucideIcon,
+  Radar,
+  Settings,
+  ShieldAlert,
+} from "lucide-react"
+import { api, type ScanStatusResponse } from "@/lib/api"
+import { cn } from "@/lib/utils"
+
+interface NavItem {
+  to: string
+  label: string
+  icon: LucideIcon
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { to: "/history", label: "扫描历史", icon: LayoutList },
+  { to: "/high-value", label: "高价值 Key", icon: Gem },
+  { to: "/scan", label: "执行扫描", icon: Radar },
+  { to: "/cve", label: "CVE 库", icon: ShieldAlert },
+  { to: "/settings", label: "设置", icon: Settings },
+]
+
+function statusDisplay(status: ScanStatusResponse | undefined): {
+  dot: string
+  pulse: boolean
+  label: string
+  hint: string
+} {
+  const state = status?.state ?? "idle"
+  if (state === "running" || state === "stopping") {
+    const { valid, total } = status?.progress ?? { valid: 0, total: 0 }
+    return {
+      dot: "bg-success",
+      pulse: true,
+      label: state === "stopping" ? "STOPPING · 停止中" : "RUNNING · 扫描中",
+      hint: total > 0 ? `有效 ${valid} / ${total}` : `有效 ${valid}`,
+    }
+  }
+  if (state === "finished") {
+    return { dot: "bg-success", pulse: false, label: "FINISHED · 完成", hint: formatHint(status) }
+  }
+  if (state === "interrupted") {
+    return { dot: "bg-warning", pulse: false, label: "STOPPED · 已停止", hint: formatHint(status) }
+  }
+  return { dot: "bg-text-muted", pulse: false, label: "IDLE · 空闲", hint: formatHint(status) }
+}
+
+function formatHint(status: ScanStatusResponse | undefined): string {
+  const stamp = status?.finished_at ?? status?.started_at
+  if (!stamp) return "尚无扫描记录"
+  const date = new Date(stamp)
+  if (Number.isNaN(date.getTime())) return "尚无扫描记录"
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `上次扫描 ${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+export function Sidebar() {
+  const { data: status } = useQuery({
+    queryKey: ["scan-status"],
+    queryFn: ({ signal }) => api.scanStatus(signal),
+    // Poll fast while a scan is active; back off when idle to cut needless churn.
+    refetchInterval: (query) => {
+      const state = query.state.data?.state
+      return state === "running" || state === "stopping" ? 5000 : 20000
+    },
+  })
+
+  const display = statusDisplay(status)
+
+  return (
+    <aside className="flex h-full w-62 shrink-0 flex-col border-r border-border-primary bg-surface-raised">
+      <div className="flex items-center gap-2.5 border-b border-border-subtle px-5 py-6">
+        <span className="size-2.5 rounded-full bg-accent" />
+        <span className="font-mono text-[17px] font-semibold tracking-[-0.3px] text-text-primary">
+          aipocket
+        </span>
+      </div>
+
+      <nav className="flex flex-col gap-1 px-3 py-4">
+        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+          <NavLink
+            key={to}
+            to={to}
+            className={({ isActive }) =>
+              cn(
+                "flex items-center gap-3 rounded-sm px-3 py-2.5 text-sm transition-colors",
+                isActive
+                  ? "bg-accent-dim font-semibold text-accent"
+                  : "text-text-secondary hover:text-text-primary",
+              )
+            }
+          >
+            <Icon className="size-[18px]" />
+            {label}
+          </NavLink>
+        ))}
+      </nav>
+
+      <div className="flex-1" />
+
+      <div className="flex flex-col gap-2 border-t border-border-subtle px-5 py-4">
+        <div className="flex items-center gap-2">
+          <span className={cn("size-2 rounded-full", display.dot, display.pulse && "animate-pulse")} />
+          <span className="font-mono text-xs text-text-secondary">{display.label}</span>
+        </div>
+        <span className="font-mono text-[11px] text-text-muted">{display.hint}</span>
+      </div>
+    </aside>
+  )
+}

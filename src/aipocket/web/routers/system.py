@@ -15,6 +15,10 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[Depends(get_current_user)])
 
+# asyncio only holds weak refs to tasks, so keep our own strong ref until done —
+# otherwise the restart task could be GC'd mid-flight before it re-execs.
+_background_tasks: set[asyncio.Task] = set()
+
 
 async def _delayed_restart() -> None:
     """Re-exec the process after a short delay so the HTTP response flushes.
@@ -35,5 +39,7 @@ async def _delayed_restart() -> None:
 @router.post("/restart")
 async def restart() -> dict:
     """Request a backend restart. Returns immediately; restart happens after."""
-    asyncio.create_task(_delayed_restart())
+    task = asyncio.create_task(_delayed_restart())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return {"restarting": True}

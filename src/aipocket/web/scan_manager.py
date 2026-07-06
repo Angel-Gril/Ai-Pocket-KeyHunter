@@ -42,6 +42,8 @@ _LOG_FMT = logging.Formatter(
 _RE_TOTAL_HITS = re.compile(r"Total hits:\s*(\d+)")
 _RE_VALIDATING = re.compile(r"Validating\s+(\d+)\s+credential")
 _RE_EXTRACTED = re.compile(r"Extracted\s+(\d+)\s+candidate")
+# Emitted once per saved high-value key by high_value_writer.save_high_value_key.
+_RE_HIGH_VALUE = re.compile(r"high_value_key saved:")
 
 
 class _BufferHandler(logging.Handler):
@@ -90,6 +92,10 @@ class ScanManager:
         self._credentials = 0
         self._validated = 0
         self._valid = 0
+        # `_total` is the validation denominator ("Validating N credentials");
+        # `_high_value` increments live from the per-key high-value save log line.
+        self._total = 0
+        self._high_value = 0
 
     # -- introspection -----------------------------------------------------
     @property
@@ -111,6 +117,8 @@ class ScanManager:
                     "credentials": self._credentials,
                     "validated": self._validated,
                     "valid": self._valid,
+                    "total": self._total,
+                    "high_value": self._high_value,
                 },
                 "log_seq": self._seq,
             }
@@ -141,7 +149,16 @@ class ScanManager:
             self._credentials = max(self._credentials, int(m.group(1)))
         m = _RE_VALIDATING.search(msg)
         if m:
-            self._validated = int(m.group(1))
+            # This line reports the batch size to validate. The scanner has no
+            # per-key progress log, so `validated` mirrors this batch size (its
+            # long-standing meaning) and `total` records the same denominator;
+            # the frontend treats a running scan as indeterminate and leans on
+            # the live `hosts`/`valid`/`high_value` counters for feedback.
+            n = int(m.group(1))
+            self._validated = n
+            self._total = n
+        if _RE_HIGH_VALUE.search(msg):
+            self._high_value += 1
 
     # -- lifecycle ---------------------------------------------------------
     def start(self, source: str) -> dict:
@@ -166,28 +183,32 @@ class ScanManager:
         self._error = None
         self._state = "running"
         self._hosts = self._credentials = self._validated = self._valid = 0
+        self._total = self._high_value = 0
 
     def _attach_log_handlers(self) -> None:
-        root = logging.getLogger()
+        # Attach to the "aipocket" logger (not root), so only our own modules'
+        # records are buffered/written — unrelated libraries keep their handlers,
+        # and we don't force the whole process to INFO.
+        target = logging.getLogger("aipocket")
         buf = _BufferHandler(self)
         buf.setLevel(logging.INFO)
-        root.addHandler(buf)
+        target.addHandler(buf)
         self._handlers = [buf]
         if self._run_dir is not None:
             fh = logging.FileHandler(self._run_dir / "run.log", encoding="utf-8")
             fh.setFormatter(_LOG_FMT)
             fh.setLevel(logging.INFO)
-            root.addHandler(fh)
+            target.addHandler(fh)
             self._handlers.append(fh)
-        # Ensure INFO records actually propagate to our handlers.
-        if root.level > logging.INFO or root.level == logging.NOTSET:
-            root.setLevel(logging.INFO)
+        # Ensure INFO records from aipocket.* actually reach our handlers.
+        if target.level > logging.INFO or target.level == logging.NOTSET:
+            target.setLevel(logging.INFO)
 
     def _detach_log_handlers(self) -> None:
-        root = logging.getLogger()
+        target = logging.getLogger("aipocket")
         for h in self._handlers:
             try:
-                root.removeHandler(h)
+                target.removeHandler(h)
                 h.close()
             except Exception:  # noqa: BLE001
                 pass
@@ -196,21 +217,14 @@ class ScanManager:
     async def _run(self, source: str) -> None:
         from ..scanner import run_scan
 
-        # Restrict the scan to the chosen source(s) by temporarily blanking the
-        # OTHER source's keys — run_scan skips a source whose keys are empty
-        # (see scanner.py). Restored in finally so config isn't permanently
-        # mutated. (Editing settings here is safe: single-scan singleton.)
-        saved_fofa = settings.fofa_keys
-        saved_shodan = settings.shodan_keys
-        if source == "fofa":
-            settings.shodan_keys = ""
-        elif source == "shodan":
-            settings.fofa_keys = ""
+        # Restrict the scan to the chosen source(s) via a parameter — no global
+        # settings mutation, so concurrent /settings reads/writes stay correct.
+        sources = None if source == "all" else {source}
 
         result: ScanRunResult | None = None
         try:
             log.info("Web scan starting (source=%s, run=%s)", source, self._run_dir)
-            result = await run_scan(run_dir=self._run_dir)
+            result = await run_scan(run_dir=self._run_dir, sources=sources)
             with self._lock:
                 self._state = "finished"
                 self._valid = result.total_valid
@@ -231,8 +245,6 @@ class ScanManager:
                 self._error = str(e)
             log.exception("Web scan failed: %s", e)
         finally:
-            settings.fofa_keys = saved_fofa
-            settings.shodan_keys = saved_shodan
             with self._lock:
                 self._finished_at = datetime.now(UTC).isoformat()
             self._detach_log_handlers()

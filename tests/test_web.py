@@ -78,9 +78,14 @@ def _write_run(root, run_id, valid_rows, susp_rows=None):
     return run
 
 
-def _rec(apikey, apiurl="https://api.openai.com", valid=True):
+def _rec(apikey, apiurl="https://api.openai.com", valid=True, backend="fofa"):
     return {
-        "credential": {"apikey": apikey, "apiurl": apiurl, "host": "api.openai.com"},
+        "credential": {
+            "apikey": apikey,
+            "apiurl": apiurl,
+            "host": "api.openai.com",
+            "backend": backend,
+        },
         "valid": valid,
         "status_code": 200,
         "provider_info": {"provider": "openai"},
@@ -105,6 +110,39 @@ def test_list_runs_grouped_by_day(results_root):
     # newest run first within the day
     assert days[0]["runs"][0]["run_id"] == "run_2026_07_06_12-00-00"
     assert days[0]["runs"][0]["valid_count"] == 1
+
+
+def test_list_runs_extended_fields(results_root):
+    from aipocket.web import results_reader
+
+    run = _write_run(
+        results_root,
+        "run_2026_07_06_10-00-00",
+        [
+            _rec("sk-proj-aaaaaaaaaaaa", backend="fofa"),
+            _rec("sk-proj-bbbbbbbbbbbb", backend="shodan"),
+        ],
+    )
+    # raw hits file the extended list_runs counts
+    (run / "scan_20260706T000000Z.jsonl").write_text(
+        "{}\n{}\n{}\n", encoding="utf-8"
+    )
+    # global high-value log; the entry's saved_at falls after this run's start
+    hv = results_root / "high_value_keys"
+    hv.mkdir(parents=True)
+    (hv / "keys.jsonl").write_text(
+        json.dumps({"apikey": "sk-proj-aaaaaaaaaaaa", "saved_at": "2026-07-06T10:05:00+00:00"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entry = results_reader.list_runs()[0]["runs"][0]
+    assert entry["hits"] == 3
+    assert entry["sources"] == ["fofa", "shodan"]
+    assert entry["high_value"] == 1
+    # backward-compatible keys still present
+    assert entry["valid_count"] == 2
+    assert entry["has_log"] is True
 
 
 def test_load_run_records_masks_apikey(results_root):
@@ -185,6 +223,28 @@ def test_export_run_csv(results_root):
     assert "sk-proj-plaintextabc" in text  # plaintext in export
 
 
+def test_export_selected_by_indices(results_root):
+    """Selected export reads plaintext server-side by index (no client round-trip)."""
+    from aipocket.web.exporter import build_export
+    from aipocket.web.schemas import ExportRequest
+
+    _write_run(
+        results_root,
+        "run_2026_07_06_10-00-00",
+        [_rec("sk-proj-first1234567"), _rec("sk-proj-second234567")],
+    )
+    req = ExportRequest(
+        dataset="selected",
+        format="json",
+        run_id="run_2026_07_06_10-00-00",
+        indices=[1],
+    )
+    content, _media, _name = build_export(req)
+    data = json.loads(content)
+    assert len(data) == 1
+    assert data[0]["apikey"] == "sk-proj-second234567"
+
+
 # ---------------------------------------------------------------------------
 # scan_manager state machine
 # ---------------------------------------------------------------------------
@@ -203,15 +263,18 @@ def test_scan_manager_log_buffer_and_progress():
     mgr = ScanManager()
     mgr._ingest_log("12:00:00 [INFO] aipocket.scanner: Total hits: 42 (sources: fofa)")
     mgr._ingest_log("12:00:01 [INFO] aipocket.scanner: Validating 7 credentials (concurrency=20)")
+    mgr._ingest_log("12:00:02 [INFO] aipocket.high_value_writer: high_value_key saved: sk-proj-abcd…  status=200")
     lines, last = mgr.logs_since(0)
-    assert len(lines) == 2
-    assert last == 2
+    assert len(lines) == 3
+    assert last == 3
     st = mgr.status()
     assert st["progress"]["hosts"] == 42
     assert st["progress"]["validated"] == 7
+    assert st["progress"]["total"] == 7
+    assert st["progress"]["high_value"] == 1
     # since filter
     lines2, _ = mgr.logs_since(1)
-    assert len(lines2) == 1
+    assert len(lines2) == 2
 
 
 @pytest.mark.asyncio
@@ -255,6 +318,20 @@ def test_login_wrong_password(client):
     r = client.post("/api/auth/login", json={"password": "nope"})
     assert r.status_code == 401
     assert r.json()["error"]["code"] == "unauthorized"
+
+
+def test_login_rate_limited_after_repeated_failures(client):
+    from aipocket.web import auth
+
+    auth.reset_login_failures("testclient")  # isolate from other tests
+    try:
+        for _ in range(auth._LOGIN_MAX_FAILURES):
+            assert client.post("/api/auth/login", json={"password": "nope"}).status_code == 401
+        blocked = client.post("/api/auth/login", json={"password": "nope"})
+        assert blocked.status_code == 429
+        assert blocked.json()["error"]["code"] == "rate_limited"
+    finally:
+        auth.reset_login_failures("testclient")  # don't block later tests
 
 
 def test_runs_after_login(client, results_root):

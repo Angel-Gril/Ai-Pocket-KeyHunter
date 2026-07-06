@@ -7,7 +7,7 @@ import asyncio
 from fastapi import APIRouter, Depends, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
-from ..auth import get_current_user
+from ..auth import get_current_user, get_current_user_sse
 from ..errors import ApiError
 from ..scan_manager import ScanManager
 from ..schemas import (
@@ -18,7 +18,12 @@ from ..schemas import (
     ScanStatusResponse,
 )
 
-router = APIRouter(prefix="/api/scan", tags=["scan"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/api/scan", tags=["scan"])
+
+# Standard endpoints require the bearer token via the ``Authorization`` header.
+# The SSE stream is defined on the parent ``router`` instead, so it can use its
+# own query-param-aware dependency without weakening these.
+_protected = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 def _manager(request: Request) -> ScanManager:
@@ -38,7 +43,7 @@ def _to_status(raw: dict) -> ScanStatusResponse:
     )
 
 
-@router.post("/start", response_model=ScanStatusResponse)
+@_protected.post("/start", response_model=ScanStatusResponse)
 async def start_scan(body: ScanStartRequest, request: Request) -> ScanStatusResponse:
     mgr = _manager(request)
     try:
@@ -49,7 +54,7 @@ async def start_scan(body: ScanStartRequest, request: Request) -> ScanStatusResp
     return _to_status(raw)
 
 
-@router.post("/stop", response_model=ScanStatusResponse)
+@_protected.post("/stop", response_model=ScanStatusResponse)
 async def stop_scan(request: Request) -> ScanStatusResponse:
     mgr = _manager(request)
     try:
@@ -59,12 +64,12 @@ async def stop_scan(request: Request) -> ScanStatusResponse:
     return _to_status(raw)
 
 
-@router.get("/status", response_model=ScanStatusResponse)
+@_protected.get("/status", response_model=ScanStatusResponse)
 async def scan_status(request: Request) -> ScanStatusResponse:
     return _to_status(_manager(request).status())
 
 
-@router.get("/logs", response_model=ScanLogsResponse)
+@_protected.get("/logs", response_model=ScanLogsResponse)
 async def scan_logs(request: Request, since: int = Query(0, ge=0)) -> ScanLogsResponse:
     """Polling fallback — return buffered lines with seq > since."""
     lines, last = _manager(request).logs_since(since)
@@ -74,7 +79,7 @@ async def scan_logs(request: Request, since: int = Query(0, ge=0)) -> ScanLogsRe
     )
 
 
-@router.get("/logs/stream")
+@router.get("/logs/stream", dependencies=[Depends(get_current_user_sse)])
 async def scan_logs_stream(request: Request, since: int = Query(0, ge=0)) -> EventSourceResponse:
     """SSE stream — replay recent lines, then push new ones as they arrive.
 
@@ -102,3 +107,6 @@ async def scan_logs_stream(request: Request, since: int = Query(0, ge=0)) -> Eve
             await asyncio.sleep(1.0)
 
     return EventSourceResponse(_gen())
+
+
+router.include_router(_protected)

@@ -70,12 +70,81 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _hits_count(run: Path) -> int:
+    """Raw discovery-hit count = lines across the run's ``scan_*.jsonl`` file(s)."""
+    return sum(_count_lines(f) for f in run.glob("scan_*.jsonl"))
+
+
+def _sources_of(valid_files: list[Path]) -> list[str]:
+    """Distinct discovery backends (``fofa``/``shodan``) seen in a run's valid file."""
+    found: set[str] = set()
+    for f in valid_files:
+        for rec in _read_jsonl(f):
+            cred = rec.get("credential")
+            backend = cred.get("backend", "") if isinstance(cred, dict) else ""
+            for part in str(backend).split(","):
+                part = part.strip()
+                if part:
+                    found.add(part)
+    return sorted(found)
+
+
+def _high_value_by_window(started: list[str]) -> dict[str, int]:
+    """Best-effort per-run high-value counts.
+
+    The high-value log (``high_value_keys/keys.jsonl``) is global and keyed by
+    ``saved_at``, not by run. We attribute each entry to the most recent run that
+    started at or before its ``saved_at`` — i.e. the run that was in flight when
+    it was written. ``started`` is the list of run ``started_at`` ISO strings,
+    newest first. Returns ``{started_at: count}``.
+    """
+    counts: dict[str, int] = {s: 0 for s in started if s}
+    hv_path = settings.results_path / "high_value_keys" / "keys.jsonl"
+    if not hv_path.exists():
+        return counts
+    # started is newest-first; walk it to find the first run whose start <= saved_at.
+    ordered = [s for s in started if s]
+    for rec in _read_jsonl(hv_path):
+        saved = str(rec.get("saved_at", ""))
+        if not saved:
+            continue
+        for s in ordered:  # newest-first → first match is the enclosing run
+            if s <= saved:
+                counts[s] = counts.get(s, 0) + 1
+                break
+    return counts
+
+
+# Cache of the last computed run list, keyed by a cheap directory signature.
+# Building the list parses every run's JSONL files, so we skip the rebuild while
+# nothing on disk has changed (run dirs added/removed, or a run dir's mtime bumps
+# when new result files land inside it, or the high-value log changes).
+_runs_cache: tuple[tuple, list[dict[str, Any]]] | None = None
+
+
+def _runs_signature(root: Path, runs: list[Path]) -> tuple:
+    sig: list[tuple[str, int]] = []
+    for r in runs:
+        try:
+            sig.append((r.name, r.stat().st_mtime_ns))
+        except OSError:
+            sig.append((r.name, 0))
+    try:
+        hv_mtime = (root / "high_value_keys" / "keys.jsonl").stat().st_mtime_ns
+    except OSError:
+        hv_mtime = 0
+    return (tuple(sig), hv_mtime)
+
+
 def list_runs() -> list[dict[str, Any]]:
     """All runs, grouped by day (newest first).
 
     Returns ``[{"day": "2026-07-06", "runs": [{"run_id", "started_at",
-    "valid_count", "suspicious_count"}, ...]}, ...]``.
+    "valid_count", "suspicious_count", "has_log", "hits", "sources",
+    "high_value"}, ...]}, ...]``.
     """
+    global _runs_cache
+
     root = settings.results_path
     if not root.is_dir():
         return []
@@ -86,20 +155,33 @@ def list_runs() -> list[dict[str, Any]]:
         reverse=True,
     )
 
+    signature = _runs_signature(root, runs)
+    cache = _runs_cache  # snapshot for a consistent read under thread offload
+    if cache is not None and cache[0] == signature:
+        return cache[1]
+
+    started = [_run_id_to_iso(r.name) for r in runs]
+    hv_counts = _high_value_by_window(started)
+
     by_day: dict[str, list[dict[str, Any]]] = {}
-    for run in runs:
+    for run, run_started in zip(runs, started):
         valid_files = list(run.glob("valid_*.jsonl"))
         susp_files = list(run.glob("suspicious_*.jsonl"))
         entry = {
             "run_id": run.name,
-            "started_at": _run_id_to_iso(run.name),
+            "started_at": run_started,
             "valid_count": sum(_count_lines(f) for f in valid_files),
             "suspicious_count": sum(_count_lines(f) for f in susp_files),
             "has_log": (run / "run.log").exists(),
+            "hits": _hits_count(run),
+            "sources": _sources_of(valid_files),
+            "high_value": hv_counts.get(run_started, 0),
         }
         by_day.setdefault(_day_from_run_id(run.name), []).append(entry)
 
-    return [{"day": day, "runs": entries} for day, entries in by_day.items()]
+    result = [{"day": day, "runs": entries} for day, entries in by_day.items()]
+    _runs_cache = (signature, result)
+    return result
 
 
 def _run_id_to_iso(run_id: str) -> str:

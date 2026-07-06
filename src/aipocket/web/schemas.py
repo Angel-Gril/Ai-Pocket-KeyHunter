@@ -88,9 +88,12 @@ class RevealResponse(BaseModel):
 class ExportRequest(BaseModel):
     dataset: ExportDataset
     format: ExportFormat = "json"
-    # dataset="run" → run_id required; dataset="selected" → keys required.
+    # dataset="run"      → run_id required
+    # dataset="selected" → run_id + indices (preferred; server reads plaintext),
+    #                      or the legacy `keys` list of explicit plaintext rows.
     run_id: str | None = None
     kind: Literal["valid", "suspicious"] = "valid"
+    indices: list[int] = Field(default_factory=list)
     keys: list[KeyRef] = Field(default_factory=list)
 
 
@@ -106,6 +109,10 @@ class ScanProgress(BaseModel):
     credentials: int = 0
     validated: int = 0
     valid: int = 0
+    # Validation denominator ("Validating N credentials"); 0 until that phase.
+    total: int = 0
+    # High-value keys saved so far this run (live from the save log line).
+    high_value: int = 0
 
 
 class ScanStatusResponse(BaseModel):

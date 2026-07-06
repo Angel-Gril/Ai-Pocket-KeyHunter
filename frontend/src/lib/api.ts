@@ -1,0 +1,436 @@
+import { clearToken, getToken } from "@/lib/auth-storage"
+
+/* ------------------------------------------------------------------ */
+/* Types — mirror src/aipocket/web/schemas.py and models.py            */
+/* ------------------------------------------------------------------ */
+
+export type ScanSource = "fofa" | "shodan" | "all"
+export type ExportFormat = "json" | "csv"
+export type ExportDataset = "selected" | "run" | "high-value"
+export type ResultKind = "valid" | "suspicious"
+
+export interface LoginResponse {
+  token: string
+  token_type: string
+  expires_in: number
+}
+
+export interface KeyRef {
+  apikey: string
+  apiurl?: string
+}
+
+export interface ModelsResponse {
+  models: string[]
+}
+
+export interface BalanceResponse {
+  gateway: string
+  balance_usd: string
+  tier: string
+  detail: Record<string, unknown>
+}
+
+export interface ChatRequest {
+  apikey: string
+  apiurl?: string
+  model: string
+}
+
+export interface ChatResponse {
+  success: boolean
+  status_code: number | null
+  model: string
+  snippet: string
+  error: string
+  consumes_credit: boolean
+}
+
+export interface RevealRequest {
+  run_id: string
+  masked?: string
+  apiurl?: string
+  index?: number
+  kind: ResultKind
+}
+
+export interface RevealResponse {
+  apikey: string
+  apiurl: string
+}
+
+export interface ExportRequest {
+  dataset: ExportDataset
+  format?: ExportFormat
+  run_id?: string
+  kind?: ResultKind
+  /** For dataset="selected": 0-based indices into the run file (server reads plaintext). */
+  indices?: number[]
+  /** Legacy path for dataset="selected": explicit plaintext key rows. */
+  keys?: KeyRef[]
+}
+
+export interface ScanProgress {
+  hosts: number
+  credentials: number
+  validated: number
+  valid: number
+  total: number
+  high_value: number
+}
+
+export type ScanState = "idle" | "running" | "stopping" | "finished" | "interrupted"
+
+export interface ScanStatusResponse {
+  state: ScanState | string
+  source: string | null
+  run_id: string | null
+  started_at: string | null
+  finished_at: string | null
+  progress: ScanProgress
+  error: string | null
+  log_seq: number
+}
+
+export interface ScanLogLine {
+  seq: number
+  line: string
+}
+
+export interface ScanLogsResponse {
+  lines: ScanLogLine[]
+  last_seq: number
+}
+
+export interface CveSyncResponse {
+  total: number
+  added: number
+}
+
+export interface SettingsView {
+  fofa_keys: string
+  fofa_base_url: string
+  fofa_page_size: number
+  fofa_max_pages: number
+  fofa_timeout: number
+  shodan_keys: string
+  shodan_base_url: string
+  shodan_max_pages: number
+  shodan_timeout: number
+  shodan_page_delay: number
+  validate_concurrency: number
+  prober_concurrency: number
+}
+
+export type SettingsUpdate = Partial<SettingsView>
+
+export interface SettingsUpdateResponse {
+  updated: string[]
+  hot_reloaded: string[]
+  restart_required: string[]
+  settings: SettingsView
+}
+
+export interface FofaCheckResponse {
+  status: "ok" | "quota_exhausted" | "invalid"
+  message: string
+  consumes_quota: boolean
+}
+
+export interface ShodanKeyInfo {
+  key_masked: string
+  plan: string
+  query_credits: number
+  alive: boolean
+}
+
+export interface ShodanCheckResponse {
+  keys: ShodanKeyInfo[]
+  total_query_credits: number
+  n_keys: number
+  n_dead: number
+  consumes_quota: boolean
+}
+
+/** Credential sub-object of a scan result record (models.py Credential). */
+export interface Credential {
+  apikey: string
+  apiurl: string
+  source: string
+  source_type: string
+  backend: string
+  host: string
+  ip: string
+  port: string
+  product: string
+  raw_context: string
+  leak_host: string
+  routed_to_official: boolean
+}
+
+export interface ProviderInfo {
+  provider: string
+  category: string
+  models_available: string[]
+  models_verified: string[]
+  balance_provider: string
+}
+
+/**
+ * A validated-key record (models.py ValidationResult). The backend returns the
+ * raw JSONL dict, so extra fields may appear — kept open via the index signature.
+ */
+export interface KeyRecord {
+  credential: Credential
+  valid: boolean
+  status_code: number | null
+  error: string
+  tier: string
+  gateway: string
+  balance: string
+  rate_limit_headers: Record<string, string>
+  model_available: string
+  response_snippet: string
+  provider_info: ProviderInfo
+  validated_at: string
+  suspicious: boolean
+  suspicious_reason: string
+  [key: string]: unknown
+}
+
+export interface RunSummary {
+  run_id: string
+  started_at: string
+  valid_count: number
+  suspicious_count: number
+  has_log: boolean
+  hits: number
+  sources: string[]
+  high_value: number
+}
+
+export interface RunDay {
+  day: string
+  runs: RunSummary[]
+}
+
+export interface RunsResponse {
+  days: RunDay[]
+}
+
+export interface RunResultsResponse {
+  run_id: string
+  results: KeyRecord[]
+}
+
+export interface HighValueResponse {
+  results: KeyRecord[]
+}
+
+/** CVE records are loose dicts from the backend. */
+export type CveRecord = Record<string, unknown>
+
+export interface CveResponse {
+  cves: CveRecord[]
+}
+
+/* ------------------------------------------------------------------ */
+/* Core request machinery                                              */
+/* ------------------------------------------------------------------ */
+
+export class ApiError extends Error {
+  status: number
+  code: string
+
+  constructor(message: string, status: number, code: string) {
+    super(message)
+    this.name = "ApiError"
+    this.status = status
+    this.code = code
+  }
+}
+
+type UnauthorizedHandler = () => void
+let onUnauthorized: UnauthorizedHandler | null = null
+
+/** Register a callback invoked whenever the API returns 401 (token cleared). */
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  onUnauthorized = handler
+}
+
+function authHeaders(extra?: HeadersInit): Headers {
+  const headers = new Headers(extra)
+  const token = getToken()
+  if (token) headers.set("Authorization", `Bearer ${token}`)
+  return headers
+}
+
+async function parseError(res: Response): Promise<ApiError> {
+  let message = res.statusText || "request failed"
+  let code = "http_error"
+  try {
+    const body = (await res.json()) as { error?: { code?: string; message?: string } }
+    if (body?.error) {
+      message = body.error.message ?? message
+      code = body.error.code ?? code
+    }
+  } catch {
+    /* non-JSON error body */
+  }
+  return new ApiError(message, res.status, code)
+}
+
+async function handle<T>(res: Response): Promise<T> {
+  if (res.status === 401) {
+    clearToken()
+    onUnauthorized?.()
+    throw await parseError(res)
+  }
+  if (!res.ok) throw await parseError(res)
+  if (res.status === 204) return undefined as T
+  const contentType = res.headers.get("content-type") ?? ""
+  if (contentType.includes("application/json")) return (await res.json()) as T
+  return (await res.text()) as unknown as T
+}
+
+interface RequestOptions {
+  method?: string
+  body?: unknown
+  signal?: AbortSignal
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { method = "GET", body, signal } = options
+  const headers = authHeaders()
+  if (body !== undefined) headers.set("Content-Type", "application/json")
+  const res = await fetch(`/api${path}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
+  })
+  return handle<T>(res)
+}
+
+/* ------------------------------------------------------------------ */
+/* File download helper (export)                                       */
+/* ------------------------------------------------------------------ */
+
+function filenameFromDisposition(header: string | null, fallback: string): string {
+  if (!header) return fallback
+  const utf8 = header.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8?.[1]) return decodeURIComponent(utf8[1])
+  const plain = header.match(/filename="?([^";]+)"?/i)
+  return plain?.[1] ?? fallback
+}
+
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+/* ------------------------------------------------------------------ */
+/* SSE helper (scan logs stream)                                       */
+/* ------------------------------------------------------------------ */
+
+export interface ScanStreamHandlers {
+  onLog?: (line: ScanLogLine) => void
+  onStatus?: (state: string) => void
+  onError?: (event: Event) => void
+}
+
+/**
+ * Open a native EventSource against the scan-log stream. The bearer token is
+ * passed as a `token` query param because EventSource cannot set headers.
+ * Returns the EventSource so callers can `.close()` it on cleanup.
+ */
+export function openScanLogStream(since: number, handlers: ScanStreamHandlers): EventSource {
+  const params = new URLSearchParams({ since: String(since) })
+  const token = getToken()
+  if (token) params.set("token", token)
+  const source = new EventSource(`/api/scan/logs/stream?${params.toString()}`)
+
+  source.addEventListener("log", (event) => {
+    const messageEvent = event as MessageEvent<string>
+    handlers.onLog?.({ seq: Number(messageEvent.lastEventId) || 0, line: messageEvent.data })
+  })
+  source.addEventListener("status", (event) => {
+    handlers.onStatus?.((event as MessageEvent<string>).data)
+  })
+  source.onerror = (event) => handlers.onError?.(event)
+
+  return source
+}
+
+/* ------------------------------------------------------------------ */
+/* Public API surface                                                  */
+/* ------------------------------------------------------------------ */
+
+export const api = {
+  // Auth
+  login: (password: string) =>
+    request<LoginResponse>("/auth/login", { method: "POST", body: { password } }),
+  logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+
+  // Runs
+  getRuns: () => request<RunsResponse>("/runs"),
+  getRunResults: (runId: string, kind: ResultKind) =>
+    request<RunResultsResponse>(`/runs/${runId}/${kind}`),
+  getRunLog: (runId: string) => request<string>(`/runs/${runId}/log`),
+
+  // High-value
+  getHighValue: () => request<HighValueResponse>("/high-value"),
+
+  // Single-key testing
+  keyModels: (body: KeyRef) => request<ModelsResponse>("/key/models", { method: "POST", body }),
+  keyBalance: (body: KeyRef) => request<BalanceResponse>("/key/balance", { method: "POST", body }),
+  keyChat: (body: ChatRequest) => request<ChatResponse>("/key/chat", { method: "POST", body }),
+  keyReveal: (body: RevealRequest) => request<RevealResponse>("/key/reveal", { method: "POST", body }),
+
+  // Export (file download)
+  async export(body: ExportRequest): Promise<void> {
+    const res = await fetch("/api/export", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    })
+    if (res.status === 401) {
+      clearToken()
+      onUnauthorized?.()
+      throw await parseError(res)
+    }
+    if (!res.ok) throw await parseError(res)
+    const blob = await res.blob()
+    const fallback = `aipocket-export.${body.format ?? "json"}`
+    triggerBlobDownload(blob, filenameFromDisposition(res.headers.get("content-disposition"), fallback))
+  },
+
+  // Scan
+  scanStart: (source: ScanSource) =>
+    request<ScanStatusResponse>("/scan/start", { method: "POST", body: { source } }),
+  scanStop: () => request<ScanStatusResponse>("/scan/stop", { method: "POST" }),
+  scanStatus: (signal?: AbortSignal) => request<ScanStatusResponse>("/scan/status", { signal }),
+  scanLogs: (since = 0) => request<ScanLogsResponse>(`/scan/logs?since=${since}`),
+
+  // CVE
+  getCve: () => request<CveResponse>("/cve"),
+  cveSync: () => request<CveSyncResponse>("/cve/sync", { method: "POST" }),
+
+  // Settings
+  getSettings: () => request<SettingsView>("/settings"),
+  updateSettings: (body: SettingsUpdate) =>
+    request<SettingsUpdateResponse>("/settings", { method: "PUT", body }),
+  checkFofa: () => request<FofaCheckResponse>("/settings/check/fofa", { method: "POST" }),
+  checkShodan: () => request<ShodanCheckResponse>("/settings/check/shodan", { method: "POST" }),
+
+  // System
+  systemRestart: () => request<{ restarting: boolean }>("/system/restart", { method: "POST" }),
+}
+
+export type ApiClient = typeof api

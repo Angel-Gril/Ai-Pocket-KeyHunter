@@ -1,0 +1,223 @@
+import { useMemo, useState } from "react"
+import { Link, useNavigate } from "react-router-dom"
+import { useQuery } from "@tanstack/react-query"
+import { ChevronRight, Clock3, Inbox, Loader2, Plus, Search } from "lucide-react"
+import { api, type RunDay, type RunSummary } from "@/lib/api"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils"
+
+const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+
+function formatDay(day: string): string {
+  const date = new Date(`${day}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return day
+  return `${day} · ${WEEKDAYS[date.getDay()]}`
+}
+
+function formatTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return "--:--"
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+const SOURCE_DOT: Record<string, string> = { fofa: "bg-info", shodan: "bg-warning" }
+
+function SourceBadge({ source }: Readonly<{ source: string }>) {
+  const dot = SOURCE_DOT[source] ?? "bg-text-muted"
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-sm bg-surface-overlay px-2 py-[3px] font-mono text-[11px] text-text-secondary">
+      <span className={cn("size-1.5 shrink-0 rounded-full", dot)} />
+      {source}
+    </span>
+  )
+}
+
+function Stat({
+  value,
+  label,
+  className,
+}: Readonly<{ value: number; label: string; className: string }>) {
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <span className={cn("font-mono text-lg font-semibold tabular-nums", className)}>{value}</span>
+      <span className="font-mono text-[11px] text-text-muted">{label}</span>
+    </div>
+  )
+}
+
+function RunRow({ run }: Readonly<{ run: RunSummary }>) {
+  return (
+    <Link
+      to={`/runs/${run.run_id}`}
+      className="group flex items-center gap-[18px] rounded-md border border-border-primary bg-surface-raised px-[18px] py-4 transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+    >
+      <div className="flex w-[340px] shrink-0 flex-col gap-1.5">
+        <div className="flex items-center gap-2.5">
+          <Clock3 className="size-3.5 text-text-muted" />
+          <span className="font-mono text-[15px] font-semibold text-text-primary">
+            {formatTime(run.started_at)}
+          </span>
+        </div>
+        <span className="truncate font-mono text-[11px] text-text-muted">{run.run_id}</span>
+      </div>
+
+      <div className="flex w-[150px] shrink-0 flex-wrap gap-1.5">
+        {run.sources.length > 0 ? (
+          run.sources.map((source) => <SourceBadge key={source} source={source} />)
+        ) : (
+          <span className="font-mono text-[11px] text-text-muted">—</span>
+        )}
+      </div>
+
+      <div className="flex flex-1 items-center justify-end gap-7">
+        <Stat value={run.hits} label="命中" className="text-text-secondary" />
+        <Stat value={run.valid_count} label="可用" className="text-success" />
+        <Stat value={run.suspicious_count} label="可疑" className="text-info" />
+        <Stat value={run.high_value} label="高价值" className="text-warning" />
+      </div>
+
+      <div className="flex size-[34px] shrink-0 items-center justify-center rounded-sm bg-surface-overlay text-text-secondary transition-colors group-hover:text-text-primary">
+        <ChevronRight className="size-[17px]" />
+      </div>
+    </Link>
+  )
+}
+
+function StateMessage({ children }: Readonly<{ children: React.ReactNode }>) {
+  return <div className="flex flex-col items-center gap-3 py-24 text-center">{children}</div>
+}
+
+function HistoryContent({
+  isPending,
+  isError,
+  error,
+  days,
+  hasSearch,
+  onScan,
+}: Readonly<{
+  isPending: boolean
+  isError: boolean
+  error: unknown
+  days: RunDay[]
+  hasSearch: boolean
+  onScan: () => void
+}>) {
+  if (isPending) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-24 text-text-muted">
+        <Loader2 className="size-4 animate-spin" />
+        <span className="font-mono text-sm">加载扫描记录…</span>
+      </div>
+    )
+  }
+
+  if (isError) {
+    return (
+      <StateMessage>
+        <span className="text-sm text-danger">加载失败</span>
+        <span className="font-mono text-xs text-text-muted">
+          {error instanceof Error ? error.message : "无法获取扫描记录"}
+        </span>
+      </StateMessage>
+    )
+  }
+
+  if (days.length === 0) {
+    return (
+      <StateMessage>
+        <Inbox className="size-8 text-text-muted" />
+        <span className="text-sm text-text-secondary">
+          {hasSearch ? "没有匹配的扫描记录" : "尚无扫描记录"}
+        </span>
+        {hasSearch ? null : (
+          <Button variant="outline" size="sm" onClick={onScan}>
+            <Plus />
+            开始首次扫描
+          </Button>
+        )}
+      </StateMessage>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-7">
+      {days.map((day) => (
+        <section key={day.day} className="flex flex-col gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="font-mono text-[13px] font-semibold text-text-secondary">
+              {formatDay(day.day)}
+            </span>
+            <span className="h-px flex-1 bg-border-subtle" />
+          </div>
+          <div className="flex flex-col gap-3">
+            {day.runs.map((run) => (
+              <RunRow key={run.run_id} run={run} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  )
+}
+
+export default function HistoryPage() {
+  const navigate = useNavigate()
+  const [query, setQuery] = useState("")
+  const { data, isPending, isError, error } = useQuery({
+    queryKey: ["runs"],
+    queryFn: () => api.getRuns(),
+  })
+
+  const needle = query.trim().toLowerCase()
+  const { days, totalRuns } = useMemo(() => {
+    const filtered = (data?.days ?? [])
+      .map((day) => ({
+        ...day,
+        runs:
+          needle.length === 0
+            ? day.runs
+            : day.runs.filter((run) => run.run_id.toLowerCase().includes(needle)),
+      }))
+      .filter((day) => day.runs.length > 0)
+    return { days: filtered, totalRuns: filtered.reduce((sum, day) => sum + day.runs.length, 0) }
+  }, [data, needle])
+
+  return (
+    <div className="flex h-full flex-col">
+      <header className="flex items-center gap-4 border-b border-border-primary px-8 py-5">
+        <div className="flex flex-1 flex-col gap-0.5">
+          <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">扫描历史</h1>
+          <p className="font-mono text-xs text-text-muted">共 {totalRuns} 次扫描 · 按日期分组</p>
+        </div>
+
+        <div className="relative flex items-center">
+          <Search className="pointer-events-none absolute left-3 size-[15px] text-text-muted" />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索 run / host…"
+            className="w-[260px] border-border-primary bg-surface-raised pl-9 text-[13px] dark:bg-surface-raised"
+          />
+        </div>
+
+        <Button onClick={() => navigate("/scan")}>
+          <Plus />
+          执行扫描
+        </Button>
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-8 py-6">
+        <HistoryContent
+          isPending={isPending}
+          isError={isError}
+          error={error}
+          days={days}
+          hasSearch={needle.length > 0}
+          onScan={() => navigate("/scan")}
+        />
+      </div>
+    </div>
+  )
+}
