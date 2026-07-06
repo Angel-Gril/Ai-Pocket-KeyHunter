@@ -82,8 +82,8 @@ def scan(
             log.info("Realtest mode: defaulting to -n 3 (override with --max-queries)")
 
     # Create the run folder first so the log file lands inside it.
-    from .writer import new_run_dir
     from .scanner import run_scan
+    from .writer import new_run_dir
 
     run_dir = new_run_dir()
     _setup_logging(verbose, log_file=run_dir / "run.log")
@@ -94,6 +94,10 @@ def scan(
     result = asyncio.run(run_scan(max_queries=n, run_dir=run_dir, skip_direct=skip_direct))
     _print_summary(result)
     log.info("Run folder: %s", run_dir)
+
+    # Refresh the preview dashboards so the web pages are current right after
+    # each scan. Best-effort: a failure here must not mask a successful scan.
+    _regenerate_preview(run_dir)
 
 
 @app.command()
@@ -217,6 +221,37 @@ def balance(
 
     table = query_latest_balances()
     console.print(table)
+
+
+def _regenerate_preview(run_dir: Path) -> None:
+    """Regenerate preview/data.js and preview/highvalue.js after a scan.
+
+    Loads the generator scripts from scripts/ (not a package, so dynamic import)
+    and calls their ``gen()`` entry points. Best-effort: any failure is logged
+    as a warning and never masks a successful scan.
+    """
+    import importlib.util
+
+    # scripts/ lives at the project root; resolve it relative to this file.
+    project_root = Path(__file__).resolve().parents[2]
+    scripts_dir = project_root / "scripts"
+
+    for module_name, script in (
+        ("_gen_balance_html", scripts_dir / "gen_balance_html.py"),
+        ("_gen_highvalue_html", scripts_dir / "gen_highvalue_html.py"),
+    ):
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, script)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.gen()  # type: ignore[attr-defined]
+        except FileNotFoundError as e:
+            # No input data yet (e.g. first run produced no valid_*.jsonl).
+            log.info("Preview skip (%s): %s", script.name, e)
+        except Exception as e:  # noqa: BLE001 - preview is non-critical
+            log.warning("Preview generation failed for %s: %s", script.name, e)
 
 
 def _print_summary(result):

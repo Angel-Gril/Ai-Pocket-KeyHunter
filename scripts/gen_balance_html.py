@@ -23,12 +23,6 @@ def find_latest_valid() -> Path | None:
     return candidates[0] if candidates else None
 
 
-def find_latest_valid() -> Path | None:
-    """Find the most recent valid_*.jsonl across all run directories."""
-    candidates = sorted(RESULTS_DIR.glob("run_*/valid_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0] if candidates else None
-
-
 def find_matching_suspicious(valid_path: Path) -> Path | None:
     """Find the suspicious_*.jsonl that pairs with a given valid_*.jsonl.
 
@@ -59,17 +53,31 @@ def main():
     else:
         json_path = find_latest_valid()
 
-    if not json_path or not json_path.exists():
-        print("No valid_*.jsonl found in results/")
+    try:
+        gen(json_path)
+    except FileNotFoundError as e:
+        print(e)
         sys.exit(1)
 
-    print(f"Using valid: {json_path}")
 
-    entries = [json.loads(line) for line in json_path.read_text("utf-8").splitlines() if line.strip()]
+def gen(valid_path: Path | None = None) -> Path:
+    """Generate preview/data.js from the latest (or given) valid_*.jsonl.
+
+    Returns the output path. Raises FileNotFoundError when no valid_*.jsonl is
+    found. Designed to be called from cli.py after a scan completes.
+    """
+    if valid_path is None:
+        valid_path = find_latest_valid()
+    if not valid_path or not valid_path.exists():
+        raise FileNotFoundError("No valid_*.jsonl found in results/")
+
+    print(f"Using valid: {valid_path}")
+
+    entries = [json.loads(line) for line in valid_path.read_text("utf-8").splitlines() if line.strip()]
 
     # Load matching suspicious entries (honeypots / quarantined hosts), if any.
     suspicious_entries: list[dict] = []
-    suspicious_path = find_matching_suspicious(json_path)
+    suspicious_path = find_matching_suspicious(valid_path)
     if suspicious_path and suspicious_path.exists():
         suspicious_entries = [json.loads(line) for line in suspicious_path.read_text("utf-8").splitlines() if line.strip()]
         print(f"Using suspicious: {suspicious_path} ({len(suspicious_entries)} entries)")
@@ -92,11 +100,15 @@ def main():
         seen.add(key)
         merged.append(e)
 
+    # Scan-time token from the valid_ filename, e.g. valid_20260704T041501Z.jsonl.
+    scan_time = valid_path.name[len("valid_"):].removesuffix(".jsonl")
+
     data = {
         "total_valid": len(entries),
         "total_suspicious": len(suspicious_entries),
         "credentials": merged,
-        "_source_file": json_path.name,
+        "scan_time": scan_time,
+        "_source_file": valid_path.name,
         "_suspicious_file": suspicious_path.name if suspicious_path else "",
     }
 
@@ -104,7 +116,11 @@ def main():
     js_content = f"window.BALANCE_DATA = {json.dumps(data, ensure_ascii=False, indent=2)};\n"
     OUTPUT_JS.write_text(js_content, encoding="utf-8")
 
-    print(f"Data exported to: {OUTPUT_JS} (valid={len(entries)}, suspicious={len(suspicious_entries)}, merged={len(merged)})")
+    print(
+        f"Balance data: valid={len(entries)}, suspicious={len(suspicious_entries)}, "
+        f"merged={len(merged)} → {OUTPUT_JS}"
+    )
+    return OUTPUT_JS
 
 
 if __name__ == "__main__":

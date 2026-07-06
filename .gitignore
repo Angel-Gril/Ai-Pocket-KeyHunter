@@ -53,3 +53,5 @@ state/
 docs/FINGERPRINTS.md
 
 preview
+# Generated preview data (window.*_DATA) — never commit, always regenerated:
+preview/*.js
