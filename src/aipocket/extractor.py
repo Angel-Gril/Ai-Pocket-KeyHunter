@@ -4,7 +4,8 @@ import logging
 import re
 from typing import Any
 
-from .key_patterns import KEY_PATTERNS, is_noise as _is_noise_key
+from .key_patterns import KEY_PATTERNS
+from .key_patterns import is_noise as _is_noise_key
 from .models import Credential
 
 log = logging.getLogger(__name__)

@@ -57,6 +57,25 @@ class Settings(BaseSettings):
 
     results_dir: str = "results"
 
+    # ===== Web API (FastAPI service layer) =====
+    # Global password for the web UI — a single shared secret entered once on the
+    # login page. Empty => the app refuses to start (see web/app.py). NEVER echoed
+    # back by /api/settings and never written to logs.
+    web_password: str = ""
+    # HMAC secret used to sign JWT session tokens. Must be set (any long random
+    # string). Empty => the app refuses to start.
+    web_jwt_secret: str = ""
+    # Session token lifetime in seconds (default 24h).
+    web_token_ttl: int = 86400
+    # CORS allowed origins (comma-separated). "*" for dev; set to the real
+    # frontend origin in production.
+    web_cors_origins: str = "*"
+    # Directory holding the built React frontend (index.html + assets). When it
+    # exists, the API mounts it as static files. Empty/missing => API only.
+    web_static_dir: str = ""
+    # Max scan log lines held in memory for the rolling window / SSE replay.
+    web_log_buffer_lines: int = 2000
+
     # ===== Cross-run dedup (Redis) =====
     # When True, hosts/credentials already processed in a previous run are
     # skipped (successful validations are cached + reused; failures get a short
@@ -85,6 +104,13 @@ class Settings(BaseSettings):
     @property
     def results_path(self) -> Path:
         return Path(self.results_dir)
+
+    @property
+    def web_cors_origin_list(self) -> list[str]:
+        raw = self.web_cors_origins.strip()
+        if raw in ("", "*"):
+            return ["*"]
+        return [o.strip() for o in raw.split(",") if o.strip()]
 
 
 settings = Settings()  # type: ignore[call-arg]

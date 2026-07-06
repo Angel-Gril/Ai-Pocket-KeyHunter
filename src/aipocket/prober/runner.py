@@ -30,7 +30,6 @@ def _all_probers() -> list[type[Prober]]:
         DifyProber,
         FastGPTProber,
         FlowiseProber,
-        GenericPageProber,
         LangflowProber,
         LibreChatProber,
         LiteLLMProber,

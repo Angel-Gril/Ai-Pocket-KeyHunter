@@ -181,11 +181,10 @@ class Prober(ABC):
                 timeout=kwargs.pop("timeout", PROBE_TIMEOUT),
                 follow_redirects=kwargs.pop("follow_redirects", True),
                 verify=False,
-            ) as insecure:
-                async with self._sem:
-                    if method == "GET":
-                        return await insecure.get(url, **kwargs)
-                    return await insecure.post(url, **kwargs)
+            ) as insecure, self._sem:
+                if method == "GET":
+                    return await insecure.get(url, **kwargs)
+                return await insecure.post(url, **kwargs)
         except Exception:  # noqa: BLE001
             return None
 

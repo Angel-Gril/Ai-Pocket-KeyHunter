@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import logging
 import signal
-from pathlib import Path
 
 from .config import settings
 from .scanner import run_scan

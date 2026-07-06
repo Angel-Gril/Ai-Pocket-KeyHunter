@@ -42,16 +42,22 @@ uv run aipocket balance
 ### Docker 部署
 
 ```bash
-# 构建并启动（默认 watch 模式，定时扫描）
+# 构建并启动（默认 serve 模式，Web API + 前端，监听 8000 端口）
 docker compose up -d
 
 # 首次启动会自动将 .env.example 复制到 /data/aipocket/.env
-# 编辑配置后重启
+# 编辑配置（务必设置 WEB_PASSWORD / WEB_JWT_SECRET / FOFA_KEYS / SHODAN_KEYS）后重启
 vim /data/aipocket/.env
 docker compose restart
 
-# 单次扫描
+# 打开 Web UI / API 文档
+open http://<vps-ip>:8000/docs
+
+# 单次扫描（一次性 CLI）
 docker compose run --rm aipocket scan --fast
+
+# 定时扫描守护（可选，与 Web 服务并存）
+docker compose --profile watch up -d aipocket-watch
 
 # 查看结果
 ls /data/aipocket/results/
@@ -79,12 +85,52 @@ ls /data/aipocket/results/
 aipocket scan [--fast] [-n N] [-v]     # 扫描（-n 限制查询数）
 aipocket scan --realtest -v            # 小批量真测（精简 CVE + 默认 -n 3）
 aipocket watch                         # 周期执行（需 SCHEDULER_ENABLED=true）
+aipocket serve [--host H] [--port P]   # 启动 Web API（FastAPI，含前端托管）
 aipocket balance                       # 查询最近扫描结果的余额
 aipocket cve-sync                      # 同步 CVE 清单
 aipocket queries                       # 列出将执行的查询（dry-run）
 aipocket config                        # 查看当前配置（key 脱敏）
 aipocket shodan-info                   # Shodan 套餐与剩余积分
 ```
+
+---
+
+## Web API（FastAPI）
+
+`aipocket serve` 在现有 CLI 之外并列提供一个 HTTP 服务层，复用同一批扫描/验证/余额业务模块，供 Vite + React 前端调用。
+
+```bash
+# 本地启动（先在 .env 设置 WEB_PASSWORD 与 WEB_JWT_SECRET）
+uv run aipocket serve --port 8000 --reload
+# 交互式 API 文档
+open http://localhost:8000/docs
+```
+
+- **鉴权**：单一全局密码。`POST /api/auth/login` 用 `WEB_PASSWORD` 换取 JWT，其余接口以 `Authorization: Bearer <token>` 携带。
+- **主要端点**：`/api/runs`（按天分组的扫描归档）、`/api/runs/{id}/valid|suspicious|log`、`/api/high-value`、`/api/key/{models,balance,chat,reveal}`、`/api/export`、`/api/scan/{start,stop,status,logs,logs/stream}`、`/api/cve[/sync]`、`/api/settings[/check/fofa|/check/shodan]`、`/api/system/restart`。
+- **密钥展示**：列表接口返回**打码** apikey；`POST /api/key/reveal` 按 run 从磁盘取单条明文；`/api/export` 导出明文（后端不落盘保存）。
+- **单键"测对话"（`/api/key/chat`）会消耗目标 key 的额度**，必须显式传入 `model`。
+
+### 生产部署（nginx 反向代理 + HTTPS）
+
+VPS 公网暴露务必走 HTTPS，密码只经加密通道传输。实时扫描日志用 SSE，需为该路径关闭 nginx 缓冲：
+
+```nginx
+location /api/scan/logs/stream {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_buffering off;      # SSE 必须；否则日志会被缓冲、看起来"卡住"
+    proxy_read_timeout 3600s;
+}
+
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+}
+```
+
+> `WEB_STATIC_DIR` 指向前端构建产物（`dist/`）时，后端会在 `/` 直接托管 SPA；否则仅提供 API，由反向代理托管前端。
 
 ---
 

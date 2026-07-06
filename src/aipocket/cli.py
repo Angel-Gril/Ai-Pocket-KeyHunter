@@ -116,6 +116,35 @@ def watch(verbose: bool = typer.Option(False, "--verbose", "-v")):
 
 
 @app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", "--host", help="Bind address"),
+    port: int = typer.Option(8000, "--port", "-p", help="Bind port"),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code change (dev only)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Run the FastAPI web API (serves the React frontend + JSON endpoints)."""
+    _setup_logging(verbose)
+    if not settings.web_password or not settings.web_jwt_secret:
+        console.print(
+            "[red]WEB_PASSWORD and WEB_JWT_SECRET must be set in .env before "
+            "starting the web API.[/red]"
+        )
+        raise typer.Exit(1)
+
+    import uvicorn
+
+    console.print(f"[green]Starting aipocket API on http://{host}:{port} (docs at /docs)[/green]")
+    uvicorn.run(
+        "aipocket.web.app:create_app",
+        factory=True,
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="debug" if verbose else "info",
+    )
+
+
+@app.command()
 def queries(
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):

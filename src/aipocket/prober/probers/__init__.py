@@ -7,9 +7,9 @@ how to fingerprint a product and which endpoints to read for credentials.
 from __future__ import annotations
 
 from .dify import DifyProber
-from .generic import GenericPageProber
 from .fastgpt import FastGPTProber
 from .flowise import FlowiseProber
+from .generic import GenericPageProber
 from .langflow import LangflowProber
 from .librechat import LibreChatProber
 from .litellm import LiteLLMProber

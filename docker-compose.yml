@@ -7,6 +7,28 @@ services:
     environment:
       - RESULTS_DIR=/data/aipocket/results
       - DEDUP_REDIS_URL=redis://redis:6379/0
+    # Web API (FastAPI). Reads WEB_PASSWORD / WEB_JWT_SECRET from the mounted
+    # .env. Behind an HTTPS reverse proxy in production; for SSE (/api/scan/
+    # logs/stream) disable proxy buffering in nginx.
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
+
+  # Optional periodic scanner (original CLI behavior). Enable with:
+  #   docker compose --profile watch up -d aipocket-watch
+  aipocket-watch:
+    build: .
+    container_name: aipocket-watch
+    profiles: ["watch"]
+    volumes:
+      - /data/aipocket:/data/aipocket
+    environment:
+      - RESULTS_DIR=/data/aipocket/results
+      - DEDUP_REDIS_URL=redis://redis:6379/0
     restart: unless-stopped
     depends_on:
       redis:

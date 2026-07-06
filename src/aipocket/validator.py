@@ -344,9 +344,8 @@ async def verify_no_auth(
         Thin wrapper over :func:`_forged_key_probe` that carries the per-host
         ``log.warning`` calls (those need ``host``/``api_url`` for triage).
         """
-        async with sem:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                verdict = await _forged_key_probe(client, api_url, model, timeout=timeout)
+        async with sem, httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            verdict = await _forged_key_probe(client, api_url, model, timeout=timeout)
         if verdict == "suspicious_429":
             log.warning(
                 "suspicious host (forged-key 429): %s (%s) — host "
