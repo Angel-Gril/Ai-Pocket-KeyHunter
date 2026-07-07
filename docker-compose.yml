@@ -24,7 +24,7 @@ services:
     build: ./frontend
     container_name: aipocket-frontend
     ports:
-      - "80:80"
+      - "3080:80"
     restart: unless-stopped
     depends_on:
       - backend
