@@ -102,9 +102,17 @@ async def _run_scan_inner(
 
     # ------------------------------------------------------------------
     # Source fetching — run FOFA and Shodan in PARALLEL via threads
-    # (both use synchronous httpx clients internally)
+    # (both use synchronous httpx clients internally).
+    #
+    # We submit both to the pool, then AWAIT each via run_in_executor
+    # instead of calling future.result() synchronously. future.result()
+    # blocks the event-loop thread for the entire fetch (minutes), which
+    # freezes every async endpoint — /api/scan/stop won't respond and the
+    # SSE/polling log streams stall, even though logs keep flowing to the
+    # container's stdout. Awaiting keeps the loop schedulable.
     # ------------------------------------------------------------------
     import concurrent.futures
+    import functools
 
     fofa_hits: list[dict] = []
     shodan_hits: list[dict] = []
@@ -114,23 +122,35 @@ async def _run_scan_inner(
     want_fofa = sources is None or "fofa" in sources
     want_shodan = sources is None or "shodan" in sources
 
+    loop = asyncio.get_running_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {}
+        # run_in_executor returns an asyncio.Future (awaitable, loop-aware),
+        # not a concurrent.futures.Future — so the loop stays schedulable while
+        # the fetch threads run.
+        fofa_future: asyncio.Future | None = None
+        shodan_future: asyncio.Future | None = None
+
         if want_fofa and settings.keys:
             sources_used.append("fofa")
-            futures["fofa"] = pool.submit(_fetch_fofa, max_queries, skip_direct=skip_direct)
+            fofa_future = loop.run_in_executor(
+                pool, functools.partial(_fetch_fofa, max_queries, skip_direct=skip_direct)
+            )
         elif want_fofa:
             log.info("FOFA keys not configured — skipping FOFA source")
 
         if want_shodan and settings.shodan_key_list:
             sources_used.append("shodan")
-            futures["shodan"] = pool.submit(_fetch_shodan, max_queries, skip_direct=skip_direct)
+            shodan_future = loop.run_in_executor(
+                pool, functools.partial(_fetch_shodan, max_queries, skip_direct=skip_direct)
+            )
         elif want_shodan:
             log.info("Shodan keys not configured — skipping Shodan source")
 
-        for name, future in futures.items():
+        for name, future in (("fofa", fofa_future), ("shodan", shodan_future)):
+            if future is None:
+                continue
             try:
-                hits, used_queries = future.result()
+                hits, used_queries = await future
                 for h in hits:
                     if isinstance(h, dict):
                         h.setdefault("_source", name)
