@@ -90,7 +90,10 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
 
     log.info(
         "Prober: %d hits → %d probe tasks (product=%d, generic=%d)",
-        len(hits), len(assignments), len(assignments) - len(unmatched_hits), len(unmatched_hits),
+        len(hits),
+        len(assignments),
+        len(assignments) - len(unmatched_hits),
+        len(unmatched_hits),
     )
 
     if not assignments:
@@ -102,13 +105,17 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
     limits = httpx.Limits(max_connections=concurrency * 2)
 
     all_creds: list[Credential] = []
-    async with httpx.AsyncClient(timeout=PROBE_TIMEOUT, limits=limits, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=PROBE_TIMEOUT, limits=limits, follow_redirects=True
+    ) as client:
         tasks: list[asyncio.Task[list[Credential]]] = []
         for cls, hit in assignments:
             prober = cls(client, sem)
             host_label = hit.get("host", "?")[:40]
 
-            async def _run(p: Prober = prober, h: dict[str, Any] = hit, hl: str = host_label) -> list[Credential]:
+            async def _run(
+                p: Prober = prober, h: dict[str, Any] = hit, hl: str = host_label
+            ) -> list[Credential]:
                 try:
                     return await p.probe(h)
                 except Exception as e:  # noqa: BLE001
@@ -117,7 +124,17 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
 
             tasks.append(asyncio.ensure_future(_run()))
 
-        results = await asyncio.gather(*tasks)
+        # Drive completion via as_completed so we can emit periodic INFO progress.
+        # gather would block until every task finishes, leaving the web UI's log
+        # buffer silent for the whole probing phase (3.5w+ hosts at concurrency 50
+        # can take 20+ min). Logging roughly every 500 finished hosts keeps the
+        # Scan page visibly alive without flooding it.
+        progress_step = max(500, len(assignments) // 20) or 1
+        results: list[list[Credential]] = []
+        for done, coro in enumerate(asyncio.as_completed(tasks), start=1):
+            results.append(await coro)
+            if done % progress_step == 0 or done == len(assignments):
+                log.info("Prober progress: %d / %d hosts", done, len(assignments))
 
     seen: set[tuple[str, str]] = set()
     for batch in results:
