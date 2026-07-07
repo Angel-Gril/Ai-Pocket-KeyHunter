@@ -1,0 +1,19 @@
+# Development overrides — auto-loaded by `docker compose up`.
+# Hot-reload for both backend and frontend during development.
+services:
+  backend:
+    build: ./backend
+    volumes:
+      - /data/aipocket:/data/aipocket
+      - ./backend/src:/app/src:ro
+    command: ["serve", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  frontend:
+    build:
+      context: ./frontend
+      target: build
+    command: ["pnpm", "dev", "--host", "0.0.0.0", "--port", "5173"]
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src:ro

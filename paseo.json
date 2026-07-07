@@ -1,5 +1,5 @@
 {
   "worktree": {
-    "setup": "uv sync"
+    "setup": "cd backend && uv sync"
   }
 }

@@ -1,21 +1,15 @@
 services:
-  aipocket:
-    build: .
-    container_name: aipocket
+  backend:
+    build: ./backend
+    container_name: aipocket-backend
     volumes:
       - /data/aipocket:/data/aipocket
-    # Load secrets/config from .env; the environment block below still wins for
-    # the keys it sets (DB/Redis host must point at the compose service names).
     env_file:
       - .env
     environment:
       - RESULTS_DIR=/data/aipocket/results
-      - WEB_STATIC_DIR=/app/frontend-dist
       - DEDUP_REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql://aipocket:aipocket@postgres:5432/aipocket
-    # Web API (FastAPI). Reads WEB_PASSWORD / WEB_JWT_SECRET from the mounted
-    # .env. Behind an HTTPS reverse proxy in production; for SSE (/api/scan/
-    # logs/stream) disable proxy buffering in nginx.
     ports:
       - "8000:8000"
     restart: unless-stopped
@@ -26,10 +20,19 @@ services:
         condition: service_healthy
     command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
 
-  # Optional periodic scanner (original CLI behavior). Enable with:
-  #   docker compose --profile watch up -d aipocket-watch
-  aipocket-watch:
-    build: .
+  frontend:
+    build: ./frontend
+    container_name: aipocket-frontend
+    ports:
+      - "80:80"
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  # Optional periodic scanner. Enable with:
+  #   docker compose --profile watch up -d backend-watch
+  backend-watch:
+    build: ./backend
     container_name: aipocket-watch
     profiles: ["watch"]
     volumes:
@@ -49,11 +52,9 @@ services:
     command: ["watch"]
 
   # One-shot backfill of historical JSONL/JSON into PostgreSQL. Run with:
-  #   docker compose --profile import run --rm aipocket-import
-  # Reads the project's ./results tree (mounted read-only at /app/results) and
-  # the CVE JSON baked into the image. Safe to re-run (UPSERT / replace-per-run).
-  aipocket-import:
-    build: .
+  #   docker compose --profile import run --rm backend-import
+  backend-import:
+    build: ./backend
     profiles: ["import"]
     volumes:
       - ./results:/app/results:ro
@@ -67,9 +68,7 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
-    # entrypoint.sh runs first (creates dirs, symlinks .env), then execs the
-    # backfill instead of the default `aipocket` CLI.
-    entrypoint: ["/app/entrypoint.sh", "uv", "run", "python", "scripts/import_jsonl_to_pg.py"]
+    entrypoint: ["/app/entrypoint.sh", "uv", "run", "python", "scripts/oneoff/import_jsonl_to_pg.py"]
     command: ["--results", "/app/results"]
 
   postgres:
@@ -92,8 +91,6 @@ services:
     image: redis:7-alpine
     container_name: aipocket-redis
     restart: unless-stopped
-    # Persist the dedup cache across container restarts so a redeploy doesn't
-    # wipe cross-run dedup state and force a full re-scan.
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes:
       - /data/aipocket/redis:/data

@@ -34,6 +34,11 @@ dist/
 # uv
 uv.lock
 
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.pnpm-store/
+
 # IDE
 .vscode/
 .idea/
@@ -48,11 +53,14 @@ uv.lock
 *.sqlite3
 state/
 
+# Tooling
 .codegraph
 .omo
-docs/FINGERPRINTS.md
+.pnpm-store
 
-preview
-# Generated preview data (window.*_DATA) — never commit, always regenerated:
+# Generated preview data (temporary, replaced by React frontend)
+preview/
 preview/*.js
+
+# Design files
 *.pen
