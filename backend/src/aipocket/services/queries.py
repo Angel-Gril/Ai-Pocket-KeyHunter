@@ -163,26 +163,69 @@ def load_cves(path: Path | None = None) -> list[dict[str, Any]]:
     """Load the CVE map.
 
     An explicit ``path`` always reads that file (used by ``--realtest`` for a
-    trimmed subset). With no path: read PG (``cves`` table) when enabled, falling
-    back to the file if the table is empty (pre-backfill), else read the default
-    file.
+    trimmed subset). With no path and PG enabled: return the **union** of the PG
+    ``cves`` table and the file, merged by ``id`` (PG rows win on conflict). This
+    keeps the full set visible even when PG only holds a few newly-synced rows —
+    previously a non-empty-but-partial PG table shadowed the complete file and
+    the list shrank to just the synced entries.
     """
     if path is not None:
         return _load_cves_file(path)
 
     from aipocket.core.config import settings
 
-    if settings.pg_enabled:
-        from aipocket.core.db import get_pool
+    if not settings.pg_enabled:
+        return _load_cves_file(CVE_PATH)
 
-        pool = get_pool()
-        with pool.connection() as conn:
-            rows = conn.execute("SELECT record FROM cves ORDER BY id").fetchall()
-        if rows:
-            return [r["record"] for r in rows]
-        # Empty table (not yet backfilled) → fall back to the file.
+    from aipocket.core.db import get_pool
 
-    return _load_cves_file(CVE_PATH)
+    pool = get_pool()
+    with pool.connection() as conn:
+        rows = conn.execute("SELECT record FROM cves ORDER BY id").fetchall()
+    pg_records = [r["record"] for r in rows]
+
+    # Empty table (not yet backfilled) → fall back to the file alone.
+    if not pg_records:
+        return _load_cves_file(CVE_PATH)
+
+    # Merge: file is the base, PG rows override per-id, dedup by id, sort by id.
+    file_records = _load_cves_file(CVE_PATH)
+    merged: dict[str, dict[str, Any]] = {c["id"]: c for c in file_records if "id" in c}
+    for c in pg_records:
+        if "id" in c:
+            merged[c["id"]] = c
+    return sorted(merged.values(), key=lambda c: c.get("id", ""))
+
+
+def backfill_cves_from_file() -> int:
+    """Seed the PG ``cves`` table from the file on first start.
+
+    Idempotent: if the table already has rows, do nothing. Returns the number of
+    rows upserted (0 when the table is non-empty or PG is disabled). Best-effort
+    by design — callers should catch and log, never let this block startup.
+    """
+    from aipocket.core.config import settings
+
+    if not settings.pg_enabled:
+        return 0
+
+    from aipocket.core.db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        n = conn.execute("SELECT count(*) AS n FROM cves").fetchone()["n"]
+    if n:
+        return 0  # already populated
+
+    records = _load_cves_file(CVE_PATH)
+    if not records:
+        return 0
+
+    from aipocket.clients.tavily import _upsert_cves_pg
+
+    _upsert_cves_pg(records)
+    log.info("Backfilled %d CVEs into PG from %s", len(records), CVE_PATH)
+    return len(records)
 
 
 def _load_cves_file(p: Path) -> list[dict[str, Any]]:
@@ -193,9 +236,12 @@ def _load_cves_file(p: Path) -> list[dict[str, Any]]:
         return []
 
 
-SKIP_PRODUCTS = frozenset({
-    "langgraph", "langsmith",
-})
+SKIP_PRODUCTS = frozenset(
+    {
+        "langgraph",
+        "langsmith",
+    }
+)
 
 
 def _should_skip(product: str) -> bool:
@@ -203,7 +249,9 @@ def _should_skip(product: str) -> bool:
     return any(s in p for s in SKIP_PRODUCTS)
 
 
-def build_queries(cves: list[dict[str, Any]] | None = None, *, skip_direct: bool = False) -> list[dict[str, str]]:
+def build_queries(
+    cves: list[dict[str, Any]] | None = None, *, skip_direct: bool = False
+) -> list[dict[str, str]]:
     cves = cves or load_cves()
     seen: set[str] = set()
     out: list[dict[str, str]] = []
@@ -215,15 +263,19 @@ def build_queries(cves: list[dict[str, Any]] | None = None, *, skip_direct: bool
         if q in seen:
             continue
         seen.add(q)
-        out.append({
-            "query": q,
-            "cve_id": "DIRECT-CRED-LEAK",
-            "product": "generic",
-            "type": "API key泄露",
-            "cvss": "",
-        })
+        out.append(
+            {
+                "query": q,
+                "cve_id": "DIRECT-CRED-LEAK",
+                "product": "generic",
+                "type": "API key泄露",
+                "cvss": "",
+            }
+        )
 
-    sorted_cves = sorted(cves, key=lambda c: (VULN_TYPE_PRIORITIES.get(c.get("type", ""), 9), -c.get("cvss", 0)))
+    sorted_cves = sorted(
+        cves, key=lambda c: (VULN_TYPE_PRIORITIES.get(c.get("type", ""), 9), -c.get("cvss", 0))
+    )
 
     for cve in sorted_cves:
         product = cve.get("product", "")
@@ -241,7 +293,7 @@ def build_queries(cves: list[dict[str, Any]] | None = None, *, skip_direct: bool
             continue
 
         for tmpl in templates:
-            q = f"{tmpl} && status_code=\"200\""
+            q = f'{tmpl} && status_code="200"'
             if q in seen:
                 continue
             seen.add(q)

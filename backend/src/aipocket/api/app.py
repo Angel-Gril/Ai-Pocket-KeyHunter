@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from aipocket.core.config import settings
+
 from .errors import register_error_handlers
 from .scan_manager import ScanManager
 
@@ -42,6 +43,16 @@ def create_app() -> FastAPI:
     from aipocket.core.db import ensure_schema
 
     ensure_schema()
+
+    # Seed the CVE table from the bundled file on first start (idempotent, PG
+    # only). Best-effort: a failure here must not block startup.
+    if settings.pg_enabled:
+        try:
+            from aipocket.services.queries import backfill_cves_from_file
+
+            backfill_cves_from_file()
+        except Exception as e:  # noqa: BLE001 — CVE seeding is non-critical
+            log.warning("CVE backfill skipped: %s", e)
 
     app = FastAPI(
         title="aipocket API",

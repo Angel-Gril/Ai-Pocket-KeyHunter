@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+from aipocket.clients.fofa import FofaClient
 from aipocket.core.config import settings
+from aipocket.core.models import Credential, ScanRunResult, ValidationResult
+
 from .dedup import DedupStore, get_dedup_store
 from .extractor import extract_credentials
-from aipocket.clients.fofa import FofaClient
-from aipocket.core.models import Credential, ScanRunResult, ValidationResult
 from .queries import build_queries
 from .validator import validate_all
 from .writer import (
@@ -22,8 +24,9 @@ from .writer import (
 log = logging.getLogger(__name__)
 
 # Quick regex to detect potential credentials in hit blobs — used for sampling priority.
-_SK_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-]{20,}|AIza[0-9A-Za-z_\-]{35}|sk-ant-[A-Za-z0-9_\-]{20,}")
-
+_SK_PATTERN = re.compile(
+    r"sk-[A-Za-z0-9_\-]{20,}|AIza[0-9A-Za-z_\-]{35}|sk-ant-[A-Za-z0-9_\-]{20,}"
+)
 
 
 def _merge_credentials(
@@ -40,6 +43,7 @@ def _merge_credentials(
             existing.append(c)
             seen.add((c.apikey, c.apiurl))
     return seen
+
 
 async def run_scan(
     max_queries: int | None = None,
@@ -69,7 +73,12 @@ async def run_scan(
 
     try:
         return await _run_scan_inner(
-            max_queries, run_dir, skip_direct=skip_direct, started=started, dedup=dedup, sources=sources
+            max_queries,
+            run_dir,
+            skip_direct=skip_direct,
+            started=started,
+            dedup=dedup,
+            sources=sources,
         )
     finally:
         await dedup.close()
@@ -142,9 +151,7 @@ async def _run_scan_inner(
             "No discovery source configured. Set FOFA_KEYS and/or SHODAN_KEYS in .env"
         )
 
-    log.info(
-        "Total hits: %d (sources: %s)", len(all_hits), ", ".join(sources_used)
-    )
+    log.info("Total hits: %d (sources: %s)", len(all_hits), ", ".join(sources_used))
 
     # ------------------------------------------------------------------
     # Shared downstream pipeline (source-agnostic): extract -> validate
@@ -167,7 +174,9 @@ async def _run_scan_inner(
     creds = pre_filter_credentials(creds)
     log.info(
         "Pre-filter: %d → %d credentials (rejected %d bad formats)",
-        pre_filtered_count, len(creds), pre_filtered_count - len(creds),
+        pre_filtered_count,
+        len(creds),
+        pre_filtered_count - len(creds),
     )
 
     # Active probing — probe all hosts. Signal-based ordering ensures high-value
@@ -178,14 +187,16 @@ async def _run_scan_inner(
     probed_creds: list[Credential] = []
     if settings.scan_prober:
         # Sort: high-signal hosts first (have sk- / api_key / OPENAI / ANTHROPIC in banner/header)
-        _SIGNAL_RE = re.compile(r"sk-[A-Za-z0-9_\-]{6,}|api[_-]?key|OPENAI|ANTHROPIC|authorization", re.I)
+        _SIGNAL_RE = re.compile(
+            r"sk-[A-Za-z0-9_\-]{6,}|api[_-]?key|OPENAI|ANTHROPIC|authorization", re.I
+        )
 
         def _has_signal(h: dict) -> bool:
             blob = (h.get("header", "") or "") + " " + (h.get("banner", "") or "")
             return bool(_SIGNAL_RE.search(blob))
 
         # Stable sort: high-signal first, rest after
-        probe_targets = sorted(all_hits, key=lambda h: (0 if _has_signal(h) else 1))
+        probe_targets = sorted(all_hits, key=lambda h: 0 if _has_signal(h) else 1)
 
         # Cross-run dedup: skip hosts already probed in a previous run.
         before_probe = len(probe_targets)
@@ -193,14 +204,18 @@ async def _run_scan_inner(
         if before_probe != len(probe_targets):
             log.info(
                 "Dedup: host probe %d → %d (skipped %d seen)",
-                before_probe, len(probe_targets), before_probe - len(probe_targets),
+                before_probe,
+                len(probe_targets),
+                before_probe - len(probe_targets),
             )
         # Recount after dedup so the probe-log numbers are self-consistent.
         high_count = sum(1 for h in probe_targets if _has_signal(h))
 
         log.info(
             "Probing %d hosts (high-signal=%d, low-signal=%d)",
-            len(probe_targets), high_count, len(probe_targets) - high_count,
+            len(probe_targets),
+            high_count,
+            len(probe_targets) - high_count,
         )
         probed_creds = await probe_hosts(probe_targets)
         for h in probe_targets:
@@ -217,13 +232,17 @@ async def _run_scan_inner(
     if before_gpt != len(sampled):
         log.info(
             "Dedup: GPT sampling %d → %d (skipped %d seen hosts)",
-            before_gpt, len(sampled), before_gpt - len(sampled),
+            before_gpt,
+            len(sampled),
+            before_gpt - len(sampled),
         )
     fofa_sampled = sum(1 for h in sampled if h.get("_source") == "fofa")
     shodan_sampled = sum(1 for h in sampled if h.get("_source") == "shodan")
     log.info(
         "GPT sampling: %d hits (fofa=%d, shodan=%d)",
-        len(sampled), fofa_sampled, shodan_sampled,
+        len(sampled),
+        fofa_sampled,
+        shodan_sampled,
     )
     gpt_creds = await extract_with_gpt(sampled)
     for h in sampled:
@@ -251,7 +270,7 @@ async def _run_scan_inner(
             if settings.pg_enabled:
                 from .writer import persist_run_pg
 
-                persist_run_pg(run_dir.name, empty_meta, [], [])
+                await asyncio.to_thread(persist_run_pg, run_dir.name, empty_meta, [], [])
         return ScanRunResult(
             started_at=started,
             finished_at=finished,
@@ -281,10 +300,17 @@ async def _run_scan_inner(
         to_validate.append(c)
     log.info(
         "Dedup: %d creds → %d cached / %d to validate / %d recently-failed (skipped)",
-        len(creds), len(cached_results), len(to_validate), n_recent_fail,
+        len(creds),
+        len(cached_results),
+        len(to_validate),
+        n_recent_fail,
     )
 
-    log.info("Validating %d credentials (concurrency=%d)...", len(to_validate), settings.validate_concurrency)
+    log.info(
+        "Validating %d credentials (concurrency=%d)...",
+        len(to_validate),
+        settings.validate_concurrency,
+    )
     fresh_results: list[ValidationResult] = await validate_all(to_validate) if to_validate else []
     for r in fresh_results:
         if r.valid:
@@ -313,14 +339,17 @@ async def _run_scan_inner(
     # Write scan metadata + per-result JSONL lines
     scan_path: Path | None = None
     if run_dir:
-        scan_path = write_scan_metadata({
-            "started_at": started,
-            "sources": sources_used,
-            "hits_by_source": hits_by_source,
-            "total_hosts": len(all_hits),
-            "total_credentials": len(creds),
-            "queries_used": queries_used,
-        }, run_dir)
+        scan_path = write_scan_metadata(
+            {
+                "started_at": started,
+                "sources": sources_used,
+                "hits_by_source": hits_by_source,
+                "total_hosts": len(all_hits),
+                "total_credentials": len(creds),
+                "queries_used": queries_used,
+            },
+            run_dir,
+        )
         for r in results:
             append_scan_result(r, scan_path)
 
@@ -345,7 +374,9 @@ async def _run_scan_inner(
     valid = [r for r in valid if not r.suspicious]
     log.info(
         "Validation done: %d valid / %d total (%d suspicious quarantined)",
-        len(valid), len(results), len(suspicious),
+        len(valid),
+        len(results),
+        len(suspicious),
     )
 
     if valid:
@@ -369,24 +400,23 @@ async def _run_scan_inner(
 
     # Persist the whole run (metadata + valid + suspicious) to PG in one
     # transaction — the source of truth when DATABASE_URL is set.
+    # Offloaded to a worker thread: it's a synchronous write of (potentially)
+    # hundreds of rows, and running it on the event loop blocks every other
+    # async endpoint for the whole transaction.
     if run_dir and settings.pg_enabled:
         from .writer import persist_run_pg
 
-        persist_run_pg(
-            run_dir.name,
-            {
-                "started_at": started,
-                "finished_at": finished,
-                "state": "finished",
-                "sources": sources_used,
-                "hits_by_source": hits_by_source,
-                "total_hosts": len(all_hits),
-                "total_credentials": len(creds),
-                "queries_used": queries_used,
-            },
-            valid,
-            suspicious,
-        )
+        run_meta = {
+            "started_at": started,
+            "finished_at": finished,
+            "state": "finished",
+            "sources": sources_used,
+            "hits_by_source": hits_by_source,
+            "total_hosts": len(all_hits),
+            "total_credentials": len(creds),
+            "queries_used": queries_used,
+        }
+        await asyncio.to_thread(persist_run_pg, run_dir.name, run_meta, valid, suspicious)
 
     return ScanRunResult(
         started_at=started,
@@ -402,7 +432,9 @@ async def _run_scan_inner(
     )
 
 
-def _fetch_fofa(max_queries: int | None, *, skip_direct: bool = False) -> tuple[list[dict], list[str]]:
+def _fetch_fofa(
+    max_queries: int | None, *, skip_direct: bool = False
+) -> tuple[list[dict], list[str]]:
     """Run the FOFA backend: build queries, paginate each, tag hits with _cve/_product."""
     queries = build_queries(skip_direct=skip_direct)
     if max_queries:
@@ -427,9 +459,12 @@ def _fetch_fofa(max_queries: int | None, *, skip_direct: bool = False) -> tuple[
     return all_hits, queries_used
 
 
-def _fetch_shodan(max_queries: int | None, *, skip_direct: bool = False) -> tuple[list[dict], list[str]]:
+def _fetch_shodan(
+    max_queries: int | None, *, skip_direct: bool = False
+) -> tuple[list[dict], list[str]]:
     """Run the Shodan backend: build Shodan-syntax queries, paginate each."""
     from aipocket.clients.shodan import ShodanClient
+
     from .shodan_queries import build_shodan_queries
 
     queries = build_shodan_queries(skip_direct=skip_direct)
@@ -446,12 +481,16 @@ def _fetch_shodan(max_queries: int | None, *, skip_direct: bool = False) -> tupl
             if info:
                 log.info(
                     "  Shodan keys=%d dead=%d total_query_credits=%s",
-                    info.get("n_keys"), info.get("n_dead"), info.get("total_query_credits"),
+                    info.get("n_keys"),
+                    info.get("n_dead"),
+                    info.get("total_query_credits"),
                 )
                 for k in info.get("keys", []):
                     log.info(
                         "    key %s plan=%s query_credits=%s",
-                        k.get("_key_masked"), k.get("plan"), k.get("query_credits"),
+                        k.get("_key_masked"),
+                        k.get("plan"),
+                        k.get("query_credits"),
                     )
         except Exception:  # noqa: BLE001 - info is best-effort
             pass

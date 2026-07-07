@@ -33,41 +33,114 @@ RATE_LIMIT_HEADERS = [
 # Domain-fingerprint → (provider, category, probe models in priority order).
 # High-value models FIRST for honeypot resistance; cheap fallbacks after.
 DOMAIN_ROUTING: list[tuple[str, str, str, list[str]]] = [
-    ("openai.com", "openai", "international", [
-        "gpt-5.5", "gpt-5.4", "gpt-4o-mini", "gpt-3.5-turbo",
-    ]),
-    ("oaiusercontent", "openai", "international", [
-        "gpt-5.5", "gpt-5.4", "gpt-4o-mini",
-    ]),
-    ("anthropic.com", "anthropic", "international", [
-        # sonnet-4-6 first: most widely available high-value model on proxies.
-        # fable-5/opus-4-8 are rare; falling through 404s to sonnet is fine.
-        "claude-sonnet-4-6", "claude-sonnet-5",
-        "claude-opus-4-8", "claude-opus-4-7",
-        "claude-haiku-4-5-20251001",
-    ]),
-    ("deepseek.com", "deepseek", "domestic", [
-        "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat",
-    ]),
-    ("moonshot.cn", "kimi", "domestic", [
-        "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "moonshot-v1-8k",
-    ]),
-    ("bigmodel.cn", "glm", "domestic", [
-        "glm-5.2", "glm-5.1", "glm-5", "glm-4-flash",
-    ]),
-    ("zhipuai", "glm", "domestic", [
-        "glm-5.2", "glm-5.1", "glm-5", "glm-4-flash",
-    ]),
-    ("siliconflow.cn", "siliconflow", "domestic", [
-        "deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-7B-Instruct",
-    ]),
-    ("dashscope.aliyuncs.com", "qwen", "domestic", [
-        "qwen3.7-max", "qwen3-max", "qwen-turbo",
-    ]),
+    (
+        "openai.com",
+        "openai",
+        "international",
+        [
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-4o-mini",
+            "gpt-3.5-turbo",
+        ],
+    ),
+    (
+        "oaiusercontent",
+        "openai",
+        "international",
+        [
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-4o-mini",
+        ],
+    ),
+    (
+        "anthropic.com",
+        "anthropic",
+        "international",
+        [
+            # sonnet-4-6 first: most widely available high-value model on proxies.
+            # fable-5/opus-4-8 are rare; falling through 404s to sonnet is fine.
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-haiku-4-5-20251001",
+        ],
+    ),
+    (
+        "deepseek.com",
+        "deepseek",
+        "domestic",
+        [
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "deepseek-chat",
+        ],
+    ),
+    (
+        "moonshot.cn",
+        "kimi",
+        "domestic",
+        [
+            "kimi-k2.7-code",
+            "kimi-k2.6",
+            "kimi-k2.5",
+            "moonshot-v1-8k",
+        ],
+    ),
+    (
+        "bigmodel.cn",
+        "glm",
+        "domestic",
+        [
+            "glm-5.2",
+            "glm-5.1",
+            "glm-5",
+            "glm-4-flash",
+        ],
+    ),
+    (
+        "zhipuai",
+        "glm",
+        "domestic",
+        [
+            "glm-5.2",
+            "glm-5.1",
+            "glm-5",
+            "glm-4-flash",
+        ],
+    ),
+    (
+        "siliconflow.cn",
+        "siliconflow",
+        "domestic",
+        [
+            "deepseek-ai/DeepSeek-V3",
+            "Qwen/Qwen2.5-7B-Instruct",
+        ],
+    ),
+    (
+        "dashscope.aliyuncs.com",
+        "qwen",
+        "domestic",
+        [
+            "qwen3.7-max",
+            "qwen3-max",
+            "qwen-turbo",
+        ],
+    ),
     ("baidu.com", "qwen", "domestic", ["ernie-bot-turbo", "ernie-4.0-8k"]),
-    ("googleapis.com", "google", "international", [
-        "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-1.5-flash",
-    ]),
+    (
+        "googleapis.com",
+        "google",
+        "international",
+        [
+            "gemini-3.5-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-1.5-flash",
+        ],
+    ),
 ]
 
 # Fallback model list used when the provider is unknown (e.g. a bare IP gateway)
@@ -77,11 +150,15 @@ DOMAIN_ROUTING: list[tuple[str, str, str, list[str]]] = [
 # If a random gateway actually serves one of these, that's the finding we want.
 FALLBACK_MODELS = [
     # OpenAI frontier
-    "gpt-5.5", "gpt-5.4",
+    "gpt-5.5",
+    "gpt-5.4",
     # Anthropic Claude 4 family
-    "claude-sonnet-4-6", "claude-opus-4-8", "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
     # DeepSeek
-    "deepseek-v4-pro", "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
     # Zhipu GLM (glm-5.1 per target spec)
     "glm-5.1",
 ]
@@ -92,31 +169,52 @@ FALLBACK_MODELS = [
 # Order: most valuable first. Model IDs sourced from lobehub/model-bank (canary).
 HIGH_VALUE_MODELS = [
     # OpenAI frontier
-    "gpt-5.5-pro", "gpt-5.5",
-    "gpt-5.4-pro", "gpt-5.4",
+    "gpt-5.5-pro",
+    "gpt-5.5",
+    "gpt-5.4-pro",
+    "gpt-5.4",
     # Anthropic — official IDs + common proxy aliases (anthropic/ prefix, dot versions, -latest)
-    "claude-sonnet-4-6", "claude-sonnet-5",
-    "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-sonnet-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
     "claude-fable-5",
     # Proxy variants (OpenRouter/ZenMux style)
-    "anthropic/claude-sonnet-4", "anthropic/claude-opus-4",
-    "anthropic/claude-opus-4.1", "anthropic/claude-sonnet-4.5",
+    "anthropic/claude-sonnet-4",
+    "anthropic/claude-opus-4",
+    "anthropic/claude-opus-4.1",
+    "anthropic/claude-sonnet-4.5",
     # Legacy naming still seen on some proxies
-    "claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest",
+    "claude-3-7-sonnet-latest",
+    "claude-3-5-sonnet-latest",
     # Google Gemini (3.5-flash > 3.1-pro > gemini-pro-latest)
     "gemini-3.5-flash",
-    "gemini-3.1-pro-preview", "gemini-pro-latest",
+    "gemini-3.1-pro-preview",
+    "gemini-pro-latest",
     # DeepSeek V4
-    "deepseek-v4-pro", "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
     # Kimi / Moonshot
-    "kimi-k2.7-code", "kimi-k2.7-code-highspeed",
-    "kimi-k2.6", "kimi-k2.5",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-k2.6",
+    "kimi-k2.5",
     # Zhipu / GLM
-    "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-5-turbo", "glm-5",
+    "glm-5.2",
+    "glm-5.1",
+    "glm-5v-turbo",
+    "glm-5-turbo",
+    "glm-5",
     # Qwen / Alibaba Cloud DashScope
-    "qwen3.7-max", "qwen3.6-max-preview", "qwen3-max",
-    "qwen3-coder-next", "qwen3-coder-plus",
-    "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus",
+    "qwen3.7-max",
+    "qwen3.6-max-preview",
+    "qwen3-max",
+    "qwen3-coder-next",
+    "qwen3-coder-plus",
+    "qwen3.7-plus",
+    "qwen3.6-plus",
+    "qwen3.5-plus",
 ]
 
 # Providers whose native API is NOT /v1/chat/completions.
@@ -143,7 +241,13 @@ def _model_family_and_gen(model: str) -> tuple[str, str]:
 
     m = model.lower()
     families = (
-        "deepseek", "claude", "gemini", "glm", "qwen", "kimi", "gpt",
+        "deepseek",
+        "claude",
+        "gemini",
+        "glm",
+        "qwen",
+        "kimi",
+        "gpt",
     )
     family = next((f for f in families if m.startswith(f)), m.split("-")[0])
     # First integer run in the id = generation (5.5→5, 4o→4, 3.5→3, v4→4).
@@ -350,19 +454,21 @@ async def verify_no_auth(
             log.warning(
                 "suspicious host (forged-key 429): %s (%s) — host "
                 "rate-limits without checking auth (open proxy?)",
-                host, api_url,
+                host,
+                api_url,
             )
         elif verdict == "noauth":
             log.warning(
                 "no-auth host confirmed: forged key validated on "
                 "%s (%s) — voiding all keys on this host",
-                host, api_url,
+                host,
+                api_url,
             )
         elif verdict == "suspicious_noncompletion":
             log.warning(
-                "suspicious host (200 non-completion): %s (%s) — "
-                "host is not a real LLM gateway",
-                host, api_url,
+                "suspicious host (200 non-completion): %s (%s) — host is not a real LLM gateway",
+                host,
+                api_url,
             )
         return verdict
 
@@ -373,13 +479,15 @@ async def verify_no_auth(
     if no_auth:
         log.info(
             "verify_no_auth: %d/%d hosts accept a forged key (no-auth honeypots)",
-            len(no_auth), len(seen_hosts),
+            len(no_auth),
+            len(seen_hosts),
         )
     if suspicious:
         log.info(
             "verify_no_auth: %d/%d hosts suspicious (forged-429 / non-completion) "
             "→ quarantined to suspicious_*.jsonl",
-            len(suspicious), len(seen_hosts),
+            len(suspicious),
+            len(seen_hosts),
         )
     return no_auth, suspicious
 
@@ -393,8 +501,12 @@ async def _probe_one(
         result = await _probe(client, cred)
 
     # Real-time persistence: save high-value official keys immediately.
+    # Offload to a worker thread — this is a synchronous PG write, and running it
+    # on the event loop (inside validate_all's gather) blocks every other async
+    # endpoint (e.g. /api/cve) for the duration of each insert.
     from .high_value_writer import try_save
-    try_save(result)
+
+    await asyncio.to_thread(try_save, result)
 
     return result
 
@@ -417,9 +529,7 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
     for prefix, official_url, _provider_name in KEY_PREFIX_ROUTING:
         if cred.apikey.startswith(prefix):
             host = (urlparse(cred.apiurl).hostname or "").lower()
-            is_known_gateway = any(
-                fingerprint in host for fingerprint, _, _, _ in DOMAIN_ROUTING
-            )
+            is_known_gateway = any(fingerprint in host for fingerprint, _, _, _ in DOMAIN_ROUTING)
             if not is_known_gateway:
                 # Persist the override so downstream stages (balance, verify_no_auth,
                 # output) see the endpoint the key is ACTUALLY validated against,
@@ -438,7 +548,10 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
                 log.debug(
                     "Key %s… matches prefix '%s' but apiurl '%s' is not a known "
                     "provider gateway → overriding to %s (leak_host=%s)",
-                    cred.apikey[:12], prefix, cred.leak_host, official_url,
+                    cred.apikey[:12],
+                    prefix,
+                    cred.leak_host,
+                    official_url,
                     cred.leak_host,
                 )
             break
@@ -449,9 +562,7 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
         return result
 
     provider, category, probe_models = _route_provider(effective_url)
-    result.provider_info = ProviderInfo.model_validate(
-        {"provider": provider, "category": category}
-    )
+    result.provider_info = ProviderInfo.model_validate({"provider": provider, "category": category})
     # Best-effort: query /v1/models to enrich models_available for OpenAI-compatible gateways.
     available_models = await _fetch_models_list(client, cred, api_url)
     if available_models:
@@ -673,7 +784,9 @@ async def _probe_chat_completions(
                     log.warning(
                         "Severe model mismatch (honeypot): requested %s but got "
                         "%s for key %s… — rejecting",
-                        model, actual_model, cred.apikey[:12],
+                        model,
+                        actual_model,
+                        cred.apikey[:12],
                     )
                     result.valid = False
                     result.model_available = actual_model
@@ -686,7 +799,8 @@ async def _probe_chat_completions(
                 # proxy cost-saving. Keep valid but record the mismatch.
                 log.info(
                     "Mild model mismatch: requested %s but got %s — treating as valid",
-                    model, actual_model,
+                    model,
+                    actual_model,
                 )
                 result.valid = True
                 result.tier = _infer_tier(result.rate_limit_headers, r.headers)
@@ -769,7 +883,9 @@ async def _probe_chat_completions(
         except Exception:
             body_text = ""
         low = body_text.lower()
-        if r.status_code == 400 and any(kw in low for kw in ("model", "not found", "not exist", "does not exist")):
+        if r.status_code == 400 and any(
+            kw in low for kw in ("model", "not found", "not exist", "does not exist")
+        ):
             continue
         if "model" in low and ("not found" in low or "not exist" in low):
             continue
@@ -864,4 +980,9 @@ def _looks_like_api_error(body: dict) -> bool:
         return True
     msg = str(body.get("message", "")).lower()
     detail = str(body.get("detail", "")).lower()
-    return bool(any(kw in msg or kw in detail for kw in ("rate", "limit", "quota", "exceeded", "unauthorized")))
+    return bool(
+        any(
+            kw in msg or kw in detail
+            for kw in ("rate", "limit", "quota", "exceeded", "unauthorized")
+        )
+    )

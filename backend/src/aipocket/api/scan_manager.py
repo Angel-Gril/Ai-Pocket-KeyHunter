@@ -232,7 +232,8 @@ class ScanManager:
                 self._hosts = result.total_hosts
             log.info(
                 "Web scan finished: %d valid / %d creds",
-                result.total_valid, result.total_credentials,
+                result.total_valid,
+                result.total_credentials,
             )
         except asyncio.CancelledError:
             with self._lock:
@@ -248,7 +249,9 @@ class ScanManager:
             with self._lock:
                 self._finished_at = datetime.now(UTC).isoformat()
             self._detach_log_handlers()
-            self._persist_log_to_pg()
+            # run.log can be hundreds of KB; offload the synchronous UPDATE so it
+            # doesn't block the event loop (and thus other endpoints).
+            await asyncio.to_thread(self._persist_log_to_pg)
 
     def _persist_log_to_pg(self) -> None:
         """Store the final run.log text on the PG runs row (no-op when PG disabled).

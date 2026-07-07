@@ -141,7 +141,9 @@ def fake_pg(monkeypatch):
     return _install
 
 
-def _vr(apikey: str, *, valid: bool = True, status: int = 200, url: str = "https://a.com") -> ValidationResult:
+def _vr(
+    apikey: str, *, valid: bool = True, status: int = 200, url: str = "https://a.com"
+) -> ValidationResult:
     cred = Credential(apikey=apikey, apiurl=url, host="a.com")
     return ValidationResult(credential=cred, valid=valid, status_code=status)
 
@@ -290,12 +292,19 @@ class TestLoadLatestPg:
 # ---------------------------------------------------------------------------
 class TestLoadCvesPg:
     def test_reads_cves_from_pg(self, fake_pg):
+        # PG rows are merged with the file by id (PG wins on conflict), so a
+        # partial-but-non-empty PG table no longer shadows the full file set.
         rows = [{"record": {"id": "CVE-2026-1", "product": "Dify"}}]
         fake_pg({"FROM cves": rows})
         from aipocket.services.queries import load_cves
 
         cves = load_cves()
-        assert cves == [{"id": "CVE-2026-1", "product": "Dify"}]
+        # PG row is present and wins over any same-id file entry.
+        by_id = {c["id"]: c for c in cves}
+        assert by_id["CVE-2026-1"] == {"id": "CVE-2026-1", "product": "Dify"}
+        # File's full set is also present (result is the union), sorted by id.
+        assert len(cves) > 1
+        assert cves == sorted(cves, key=lambda c: c.get("id", ""))
 
     def test_empty_table_falls_back_to_file(self, fake_pg):
         # Empty cves table → load_cves reads the bundled CVE file instead.
