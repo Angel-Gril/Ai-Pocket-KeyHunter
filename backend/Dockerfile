@@ -17,7 +17,6 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src/ src/
 COPY sources/ sources/
 COPY scripts/ scripts/
-COPY .env.example ./
 COPY entrypoint.sh ./
 
 # Install the project itself
