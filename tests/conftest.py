@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Neutralize PostgreSQL config for the whole test session BEFORE anything imports
+# aipocket.config (which builds the `settings` singleton at import time). The
+# developer's .env may set DATABASE_URL; an empty env var takes priority over the
+# .env file in pydantic-settings, so every Settings() built during tests — the
+# singleton AND fresh instances constructed inside tests — sees PG as disabled.
+# Without this the suite would block trying to reach a Postgres that isn't up in
+# the test process, and JSONL writes (which most tests assert) would be turned
+# off. Tests that exercise the PG paths opt in explicitly via a fake pool.
+os.environ["DATABASE_URL"] = ""
+os.environ["PG_DUAL_WRITE"] = "false"
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +29,25 @@ def _disable_dedup_by_default(monkeypatch):
     `dedup_enabled` / `get_dedup_store` themselves (monkeypatch is LIFO, so a
     later setattr in the test wins)."""
     monkeypatch.setattr("aipocket.config.settings.dedup_enabled", False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_pg_by_default(monkeypatch):
+    """Belt-and-suspenders guard for the `settings` singleton.
+
+    The session-level env neutralization above already keeps every fresh
+    ``Settings()`` PG-free, but if the singleton was imported before this module
+    ran (import ordering), its fields were parsed from the .env. Re-clear the two
+    inputs ``pg_enabled`` / ``write_jsonl`` derive from so the singleton also
+    reports PG disabled.
+
+    ``pg_enabled`` / ``write_jsonl`` are read-only computed properties, so we
+    override those inputs rather than the properties themselves. Tests for the PG
+    code paths opt back in by setting ``database_url`` + monkeypatching
+    ``aipocket.db.get_pool`` with a fake pool (monkeypatch is LIFO, so a later
+    setattr in the test wins)."""
+    monkeypatch.setattr("aipocket.config.settings.database_url", "")
+    monkeypatch.setattr("aipocket.config.settings.pg_dual_write", False)
 
 
 @pytest.fixture

@@ -1,0 +1,386 @@
+"""Tests for the PostgreSQL persistence paths added alongside the JSONL writers.
+
+These exercise the SQL-shaping logic in the write/read code (writer.persist_run_pg,
+high_value_writer PG upsert/load, writer.load_latest, queries.load_cves, and
+results_reader's PG branch) WITHOUT a live database. A small in-memory FakePool
+stands in for :class:`psycopg_pool.ConnectionPool`: it records every executed
+statement and lets each test preload the rows a read query should return, so we
+can assert on the SQL/params the code emits and on how it maps rows back.
+
+Why a fake instead of a real Postgres: the suite must stay runnable anywhere
+(CI, ``docker run`` without a DB), and these tests are about the code's query
+shape, not Postgres semantics. The conftest ``_disable_pg_by_default`` fixture
+turns PG off globally; each test here re-enables it by setting ``database_url``
+and monkeypatching ``get_pool`` with a FakePool.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import pytest
+
+from aipocket.models import Credential, ValidationResult
+
+
+# ---------------------------------------------------------------------------
+# Fake connection pool
+# ---------------------------------------------------------------------------
+class FakeCursor:
+    """Cursor stand-in supporting execute/executemany + fetchone/fetchall.
+
+    ``responses`` maps an SQL substring → list-of-dict-rows to return for a query
+    whose text contains that substring (first match wins). Statements and their
+    params are appended to ``executed`` on the owning connection so tests can
+    assert on them.
+    """
+
+    def __init__(self, conn: FakeConnection):
+        self._conn = conn
+        self._result: list[dict[str, Any]] = []
+
+    def __enter__(self) -> FakeCursor:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: Any = None) -> FakeCursor:
+        self._conn.executed.append((_norm(sql), params))
+        self._result = self._conn._lookup(sql)
+        return self
+
+    def executemany(self, sql: str, rows: list[Any]) -> None:
+        self._conn.executed.append((_norm(sql), None))
+        self._conn.executemany_rows.append((_norm(sql), list(rows)))
+
+    def fetchone(self) -> dict[str, Any] | None:
+        return self._result[0] if self._result else None
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return list(self._result)
+
+
+class FakeTransaction:
+    def __enter__(self) -> FakeTransaction:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+class FakeConnection:
+    def __init__(self, pool: FakePool):
+        self._pool = pool
+        self.executed = pool.executed
+        self.executemany_rows = pool.executemany_rows
+        self.commits = pool.commits
+
+    def __enter__(self) -> FakeConnection:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def _lookup(self, sql: str) -> list[dict[str, Any]]:
+        for needle, rows in self._pool.responses.items():
+            if needle in sql:
+                return rows
+        return []
+
+    def execute(self, sql: str, params: Any = None) -> FakeCursor:
+        cur = FakeCursor(self)
+        return cur.execute(sql, params)
+
+    def cursor(self) -> FakeCursor:
+        return FakeCursor(self)
+
+    def transaction(self) -> FakeTransaction:
+        return FakeTransaction()
+
+    def commit(self) -> None:
+        self.commits.append(True)
+
+
+class FakePool:
+    """Minimal ConnectionPool: hands out FakeConnections and records activity."""
+
+    def __init__(self, responses: dict[str, list[dict[str, Any]]] | None = None):
+        self.responses = responses or {}
+        self.executed: list[tuple[str, Any]] = []
+        self.executemany_rows: list[tuple[str, list[Any]]] = []
+        self.commits: list[bool] = []
+
+    def connection(self) -> FakeConnection:
+        return FakeConnection(self)
+
+    # Helpers -----------------------------------------------------------------
+    def sql_containing(self, needle: str) -> list[tuple[str, Any]]:
+        return [(s, p) for (s, p) in self.executed if needle in s]
+
+
+def _norm(sql: str) -> str:
+    return " ".join(sql.split())
+
+
+@pytest.fixture
+def fake_pg(monkeypatch):
+    """Enable PG (override the conftest disable) and install a FakePool.
+
+    Returns a factory: call ``fake_pg(responses)`` to install a pool preloaded
+    with read responses and get it back for assertions.
+    """
+    monkeypatch.setattr("aipocket.config.settings.database_url", "postgresql://x/y")
+
+    def _install(responses: dict[str, list[dict[str, Any]]] | None = None) -> FakePool:
+        pool = FakePool(responses)
+        monkeypatch.setattr("aipocket.db.get_pool", lambda: pool)
+        return pool
+
+    return _install
+
+
+def _vr(apikey: str, *, valid: bool = True, status: int = 200, url: str = "https://a.com") -> ValidationResult:
+    cred = Credential(apikey=apikey, apiurl=url, host="a.com")
+    return ValidationResult(credential=cred, valid=valid, status_code=status)
+
+
+# ---------------------------------------------------------------------------
+# writer.persist_run_pg
+# ---------------------------------------------------------------------------
+class TestPersistRunPg:
+    def test_upserts_run_and_inserts_results(self, fake_pg):
+        pool = fake_pg()
+        from aipocket.writer import persist_run_pg
+
+        meta = {
+            "started_at": "2026-01-01T00:00:00",
+            "finished_at": "2026-01-01T00:01:00",
+            "state": "finished",
+            "sources": ["fofa"],
+            "hits_by_source": {"fofa": 3},
+            "queries_used": ["q1"],
+            "total_hosts": 3,
+            "total_credentials": 2,
+        }
+        valid = [_vr("sk-proj-aaa"), _vr("sk-proj-bbb")]
+        suspicious = [_vr("sk-proj-ccc", status=429)]
+
+        persist_run_pg("run_2026_01_01_00-00-00", meta, valid, suspicious)
+
+        # runs UPSERT ran with total_valid = len(valid).
+        run_stmts = pool.sql_containing("INSERT INTO runs")
+        assert len(run_stmts) == 1
+        assert "ON CONFLICT (run_id) DO UPDATE" in run_stmts[0][0]
+        run_params = run_stmts[0][1]
+        assert run_params[0] == "run_2026_01_01_00-00-00"
+        assert run_params[-1] == 2  # total_valid == len(valid)
+
+        # Old rows for the run are deleted first (idempotent re-persist).
+        assert pool.sql_containing("DELETE FROM results WHERE run_id")
+
+        # All valid+suspicious rows inserted via one executemany.
+        assert len(pool.executemany_rows) == 1
+        _sql, rows = pool.executemany_rows[0]
+        assert len(rows) == 3  # 2 valid + 1 suspicious
+        # seq is 0-based within each (run_id, kind); kind tags the split.
+        kinds = [r[1] for r in rows]
+        seqs = [r[2] for r in rows]
+        assert kinds == ["valid", "valid", "suspicious"]
+        assert seqs == [0, 1, 0]
+
+    def test_empty_run_skips_executemany(self, fake_pg):
+        pool = fake_pg()
+        from aipocket.writer import persist_run_pg
+
+        persist_run_pg("run_2026_01_01_00-00-00", {"started_at": "t0"}, [], [])
+        assert pool.sql_containing("INSERT INTO runs")
+        # No result rows → no executemany call.
+        assert pool.executemany_rows == []
+
+
+# ---------------------------------------------------------------------------
+# high_value_writer PG paths
+# ---------------------------------------------------------------------------
+class TestHighValuePg:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        from aipocket.high_value_writer import reset_session
+
+        reset_session()
+        yield
+        reset_session()
+
+    def test_save_upserts_and_skips_jsonl(self, fake_pg, tmp_path, monkeypatch):
+        pool = fake_pg()
+        # PG on + dual-write off ⇒ write_jsonl is False, so no file is written.
+        monkeypatch.setattr("aipocket.config.settings.results_dir", str(tmp_path))
+        from aipocket.high_value_writer import save_high_value_key
+
+        r = _vr("sk-proj-highvalue123", url="https://api.openai.com")
+        assert save_high_value_key(r, run_id="run_2026_01_01_00-00-00") is True
+
+        upserts = pool.sql_containing("INSERT INTO high_value_keys")
+        assert len(upserts) == 1
+        assert "ON CONFLICT (apikey) DO UPDATE" in upserts[0][0]
+        params = upserts[0][1]
+        assert params[0] == "sk-proj-highvalue123"  # apikey
+        assert params[1] == "run_2026_01_01_00-00-00"  # run_id
+        assert pool.commits  # committed
+
+        # write_jsonl False → no keys.jsonl on disk.
+        assert not (tmp_path / "high_value_keys" / "keys.jsonl").exists()
+
+    def test_dual_write_writes_both(self, fake_pg, tmp_path, monkeypatch):
+        pool = fake_pg()
+        monkeypatch.setattr("aipocket.config.settings.pg_dual_write", True)
+        monkeypatch.setattr("aipocket.config.settings.results_dir", str(tmp_path))
+        from aipocket.high_value_writer import save_high_value_key
+
+        assert save_high_value_key(_vr("sk-ant-dualwrite12"), run_id="r1") is True
+
+        assert pool.sql_containing("INSERT INTO high_value_keys")  # PG hit
+        path = tmp_path / "high_value_keys" / "keys.jsonl"
+        assert path.exists()  # AND JSONL written
+        data = json.loads(path.read_text(encoding="utf-8").strip())
+        assert data["apikey"] == "sk-ant-dualwrite12"
+        assert data["run_id"] == "r1"
+
+    def test_load_all_reads_pg(self, fake_pg):
+        rows = [
+            {"record": {"apikey": "sk-proj-one", "status_code": 200}},
+            {"record": {"apikey": "sk-ant-two", "status_code": 429}},
+        ]
+        fake_pg({"FROM high_value_keys": rows})
+        from aipocket.high_value_writer import load_all
+
+        loaded = load_all()
+        assert [e["apikey"] for e in loaded] == ["sk-proj-one", "sk-ant-two"]
+
+
+# ---------------------------------------------------------------------------
+# writer.load_latest (PG branch)
+# ---------------------------------------------------------------------------
+class TestLoadLatestPg:
+    def test_reads_newest_run_valid_records(self, fake_pg):
+        fake_pg(
+            {
+                "SELECT run_id FROM runs": [{"run_id": "run_2026_07_06_10-00-00"}],
+                "FROM results WHERE run_id": [
+                    {"record": {"credential": {"apikey": "sk-proj-latest"}, "valid": True}},
+                ],
+            }
+        )
+        from aipocket.writer import load_latest
+
+        out = load_latest()
+        assert out is not None
+        assert out[0]["credential"]["apikey"] == "sk-proj-latest"
+
+    def test_returns_none_when_no_runs(self, fake_pg):
+        fake_pg({"SELECT run_id FROM runs": []})
+        from aipocket.writer import load_latest
+
+        assert load_latest() is None
+
+
+# ---------------------------------------------------------------------------
+# queries.load_cves (PG branch + empty-table fallback)
+# ---------------------------------------------------------------------------
+class TestLoadCvesPg:
+    def test_reads_cves_from_pg(self, fake_pg):
+        rows = [{"record": {"id": "CVE-2026-1", "product": "Dify"}}]
+        fake_pg({"FROM cves": rows})
+        from aipocket.queries import load_cves
+
+        cves = load_cves()
+        assert cves == [{"id": "CVE-2026-1", "product": "Dify"}]
+
+    def test_empty_table_falls_back_to_file(self, fake_pg):
+        # Empty cves table → load_cves reads the bundled CVE file instead.
+        fake_pg({"FROM cves": []})
+        from aipocket.queries import load_cves
+
+        cves = load_cves()
+        assert isinstance(cves, list)
+        assert len(cves) > 0
+        assert "id" in cves[0]
+
+    def test_explicit_path_bypasses_pg(self, fake_pg, tmp_path):
+        pool = fake_pg({"FROM cves": [{"record": {"id": "should-not-be-used"}}]})
+        p = tmp_path / "cves.json"
+        p.write_text(json.dumps([{"id": "CVE-FILE", "product": "X"}]), encoding="utf-8")
+        from aipocket.queries import load_cves
+
+        cves = load_cves(p)
+        assert cves == [{"id": "CVE-FILE", "product": "X"}]
+        assert pool.executed == []  # PG never touched when a path is given
+
+
+# ---------------------------------------------------------------------------
+# results_reader PG branch
+# ---------------------------------------------------------------------------
+class TestResultsReaderPg:
+    def test_list_runs_uses_pg_aggregation(self, fake_pg):
+        import datetime as _dt
+
+        started = _dt.datetime(2026, 7, 6, 10, 0, 0)
+        fake_pg(
+            {
+                "FROM runs ORDER BY run_id DESC": [
+                    {
+                        "run_id": "run_2026_07_06_10-00-00",
+                        "started_at": started,
+                        "total_hosts": 5,
+                        "has_log": True,
+                    }
+                ],
+                "GROUP BY run_id, kind": [
+                    {"run_id": "run_2026_07_06_10-00-00", "kind": "valid", "n": 2},
+                    {"run_id": "run_2026_07_06_10-00-00", "kind": "suspicious", "n": 1},
+                ],
+                "FROM high_value_keys WHERE run_id IS NOT NULL": [
+                    {"run_id": "run_2026_07_06_10-00-00", "n": 1}
+                ],
+                "regexp_split_to_table": [
+                    {"run_id": "run_2026_07_06_10-00-00", "backend": "fofa"},
+                    {"run_id": "run_2026_07_06_10-00-00", "backend": "shodan"},
+                ],
+            }
+        )
+        from aipocket.web import results_reader
+
+        days = results_reader.list_runs()
+        assert days[0]["day"] == "2026-07-06"
+        entry = days[0]["runs"][0]
+        assert entry["valid_count"] == 2
+        assert entry["suspicious_count"] == 1
+        assert entry["hits"] == 5
+        assert entry["high_value"] == 1
+        assert entry["sources"] == ["fofa", "shodan"]
+
+    def test_load_kind_prefers_pg_when_run_exists(self, fake_pg):
+        fake_pg(
+            {
+                "SELECT 1 FROM runs WHERE run_id": [{"?column?": 1}],
+                "FROM results WHERE run_id": [
+                    {"record": {"credential": {"apikey": "sk-proj-pgrec"}, "valid": True}}
+                ],
+            }
+        )
+        from aipocket.web import results_reader
+
+        recs = results_reader.load_run_records_plain("run_2026_07_06_10-00-00", "valid")
+        assert recs[0]["credential"]["apikey"] == "sk-proj-pgrec"
+
+    def test_read_run_log_from_pg(self, fake_pg):
+        fake_pg(
+            {
+                "SELECT 1 FROM runs WHERE run_id": [{"?column?": 1}],
+                "SELECT log FROM runs WHERE run_id": [{"log": "line-a\nline-b"}],
+            }
+        )
+        from aipocket.web import results_reader
+
+        assert results_reader.read_run_log("run_2026_07_06_10-00-00") == "line-a\nline-b"
