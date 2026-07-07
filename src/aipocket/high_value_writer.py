@@ -69,10 +69,13 @@ def should_save(result: ValidationResult) -> bool:
     return is_high_value_key(key) and is_alive_status(status)
 
 
-def save_high_value_key(result: ValidationResult) -> bool:
-    """Append a high-value key to the JSONL file. Returns True if written.
+def save_high_value_key(result: ValidationResult, run_id: str | None = None) -> bool:
+    """Persist a high-value key. Returns True if written (False if already seen).
 
-    Thread-safe; deduplicates within the current process session.
+    Thread-safe; deduplicates within the current process session. Writes to
+    PostgreSQL (UPSERT on apikey, last write wins) and/or the JSONL file per the
+    ``settings.pg_enabled`` / ``settings.write_jsonl`` flags. ``run_id`` is the
+    enclosing scan's id (from the current_run_id ContextVar) for attribution.
     """
     key = result.credential.apikey
 
@@ -81,25 +84,53 @@ def save_high_value_key(result: ValidationResult) -> bool:
             return False
         _seen_keys.add(key)
 
-        entry = _build_entry(result)
-        line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
+        entry = _build_entry(result, run_id)
 
-        path = _output_path()
-        with path.open("a", encoding="utf-8") as f:
-            f.write(line)
+        if settings.pg_enabled:
+            _upsert_pg(entry)
+
+        if settings.write_jsonl:
+            line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
+            path = _output_path()
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line)
 
     log.info("high_value_key saved: %s…  status=%s", key[:16], result.status_code)
     return True
 
 
+def _upsert_pg(entry: dict[str, Any]) -> None:
+    """UPSERT one high-value entry into the high_value_keys table (last write wins)."""
+    from psycopg.types.json import Jsonb
+
+    from .db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO high_value_keys (apikey, run_id, saved_at, record)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (apikey) DO UPDATE
+              SET run_id = EXCLUDED.run_id,
+                  saved_at = EXCLUDED.saved_at,
+                  record = EXCLUDED.record
+            """,
+            (entry["apikey"], entry.get("run_id"), entry.get("saved_at"), Jsonb(entry)),
+        )
+        conn.commit()
+
+
 def try_save(result: ValidationResult) -> None:
     """Check and save if the result qualifies. Call after each validation."""
     if should_save(result):
-        save_high_value_key(result)
+        from .db import current_run_id
+
+        save_high_value_key(result, current_run_id.get())
 
 
-def _build_entry(result: ValidationResult) -> dict[str, Any]:
-    """Build the JSONL entry from a ValidationResult."""
+def _build_entry(result: ValidationResult, run_id: str | None = None) -> dict[str, Any]:
+    """Build the entry dict (JSONL line == PG record JSONB) from a ValidationResult."""
     return {
         "apikey": result.credential.apikey,
         "apiurl": result.credential.apiurl,
@@ -114,11 +145,27 @@ def _build_entry(result: ValidationResult) -> dict[str, Any]:
         "error": result.error,
         "saved_at": datetime.now(UTC).isoformat(),
         "host": result.credential.host,
+        "run_id": run_id,
     }
 
 
 def load_all() -> list[dict[str, Any]]:
-    """Load all entries from the high-value keys file."""
+    """Load all high-value entries. Reads PG when enabled, else the JSONL file.
+
+    The Web endpoint dedups by apikey (last write wins); PG already stores one
+    row per apikey, and the JSONL reader returns every appended line (dedup
+    happens downstream), so both back-ends preserve the existing contract.
+    """
+    if settings.pg_enabled:
+        from .db import get_pool
+
+        pool = get_pool()
+        with pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT record FROM high_value_keys ORDER BY saved_at DESC NULLS LAST"
+            ).fetchall()
+        return [r["record"] for r in rows]
+
     path = _output_path()
     if not path.exists():
         return []

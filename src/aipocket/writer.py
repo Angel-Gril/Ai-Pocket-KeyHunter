@@ -44,29 +44,140 @@ def new_run_dir(base: Path | None = None) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# PostgreSQL persistence (source of truth when DATABASE_URL is set)
+# ---------------------------------------------------------------------------
+
+
+def _result_row(r: ValidationResult, kind: str, seq: int) -> tuple:
+    """Build the (run_id-less) column tuple for one results row, with full record."""
+    from psycopg.types.json import Jsonb
+
+    rec = r.model_dump()
+    cred = rec.get("credential") or {}
+    return (
+        kind,
+        seq,
+        cred.get("apikey", ""),
+        cred.get("apiurl", ""),
+        cred.get("host", ""),
+        bool(rec.get("valid")),
+        Jsonb(rec),
+    )
+
+
+def persist_run_pg(
+    run_id: str,
+    metadata: dict,
+    valid: list[ValidationResult],
+    suspicious: list[ValidationResult],
+) -> None:
+    """Write one run's metadata + valid/suspicious results in a SINGLE transaction.
+
+    Idempotent per run_id: an UPSERT on ``runs`` plus a delete-then-insert of the
+    run's ``results`` rows, so re-running a scan into an existing run_id (or a
+    dual-write replay) doesn't accumulate duplicates. ``seq`` is the 0-based
+    position within each (run_id, kind) — the identity reveal/export map onto.
+    """
+    from psycopg.types.json import Jsonb
+
+    from .db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn, conn.transaction():
+        conn.execute(
+            """
+            INSERT INTO runs (run_id, started_at, finished_at, state, sources,
+                              hits_by_source, queries_used, total_hosts,
+                              total_credentials, total_valid)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (run_id) DO UPDATE SET
+                finished_at = EXCLUDED.finished_at,
+                state = EXCLUDED.state,
+                sources = EXCLUDED.sources,
+                hits_by_source = EXCLUDED.hits_by_source,
+                queries_used = EXCLUDED.queries_used,
+                total_hosts = EXCLUDED.total_hosts,
+                total_credentials = EXCLUDED.total_credentials,
+                total_valid = EXCLUDED.total_valid
+            """,
+            (
+                run_id,
+                metadata.get("started_at"),
+                metadata.get("finished_at"),
+                metadata.get("state"),
+                Jsonb(metadata.get("sources", [])),
+                Jsonb(metadata.get("hits_by_source", {})),
+                Jsonb(metadata.get("queries_used", [])),
+                metadata.get("total_hosts"),
+                metadata.get("total_credentials"),
+                len(valid),
+            ),
+        )
+        # Replace this run's result rows so a re-persist is idempotent.
+        conn.execute("DELETE FROM results WHERE run_id = %s", (run_id,))
+        rows = [
+            (run_id, *_result_row(r, "valid", i)) for i, r in enumerate(valid)
+        ] + [
+            (run_id, *_result_row(r, "suspicious", i)) for i, r in enumerate(suspicious)
+        ]
+        if rows:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO results (run_id, kind, seq, apikey, apiurl, host, valid, record)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    rows,
+                )
+    log.info(
+        "PG run persisted: %s (%d valid, %d suspicious)", run_id, len(valid), len(suspicious)
+    )
+
+
+def update_run_log_pg(run_id: str, log_text: str) -> None:
+    """Store the final run.log text on the runs row (best-effort; run must exist)."""
+    from .db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        conn.execute("UPDATE runs SET log = %s WHERE run_id = %s", (log_text, run_id))
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # JSONL writers
 # ---------------------------------------------------------------------------
 
 
 def write_scan_metadata(metadata: dict, run_dir: Path) -> Path:
-    """Write first line of scan_<ts>.jsonl — the metadata header."""
+    """Write first line of scan_<ts>.jsonl — the metadata header.
+
+    No-op (returns the intended path) when JSONL writing is disabled (PG-only
+    mode); the same metadata is persisted to the ``runs`` table via persist_run_pg.
+    """
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = run_dir / f"scan_{ts}.jsonl"
+    if not settings.write_jsonl:
+        return path
     path.write_text(_jsonl_line(metadata), encoding="utf-8")
     log.info("Scan metadata written: %s", path)
     return path
 
 
 def append_scan_result(result: ValidationResult, scan_path: Path) -> None:
-    """Append one ValidationResult as a JSONL line."""
+    """Append one ValidationResult as a JSONL line (no-op in PG-only mode)."""
+    if not settings.write_jsonl:
+        return
     with scan_path.open("a", encoding="utf-8") as f:
         f.write(_jsonl_line(result.model_dump()))
 
 
 def write_valid_results(results: list[ValidationResult], run_dir: Path) -> Path:
-    """Write valid_<ts>.jsonl — each line is one valid result."""
+    """Write valid_<ts>.jsonl — each line is one valid result (no-op in PG-only mode)."""
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = run_dir / f"valid_{ts}.jsonl"
+    if not settings.write_jsonl:
+        return path
     with path.open("w", encoding="utf-8") as f:
         for r in results:
             f.write(_jsonl_line(r.model_dump()))
@@ -81,9 +192,13 @@ def write_suspicious_results(results: list[ValidationResult], run_dir: Path) -> 
     (forged-key 429 = open-proxy signal, or 200-non-completion = not-a-real-
     gateway). They keep valid=True but are split out of valid_*.jsonl so they
     don't consume balance-enrichment budget or pollute the high-confidence set.
+
+    No-op in PG-only mode (results go to the ``results`` table, kind='suspicious').
     """
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = run_dir / f"suspicious_{ts}.jsonl"
+    if not settings.write_jsonl:
+        return path
     with path.open("w", encoding="utf-8") as f:
         for r in results:
             f.write(_jsonl_line(r.model_dump()))
@@ -110,10 +225,29 @@ def write_raw_hits(hits: list[dict[str, Any]], run_dir: Path | None = None) -> P
 
 
 def load_latest() -> list[dict] | None:
-    """Load the most recent valid_*.jsonl, return list of result dicts.
+    """Load the most recent run's valid results as dicts. None if none found.
 
-    Returns None if no valid_*.jsonl is found.
+    Reads PG (newest run by run_id, kind='valid', ordered by seq) when enabled;
+    otherwise falls back to the newest ``valid_*.jsonl`` file. Used by the CLI
+    ``balance`` command.
     """
+    if settings.pg_enabled:
+        from .db import get_pool
+
+        pool = get_pool()
+        with pool.connection() as conn:
+            row = conn.execute(
+                "SELECT run_id FROM runs ORDER BY run_id DESC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                log.warning("No runs in PG")
+                return None
+            recs = conn.execute(
+                "SELECT record FROM results WHERE run_id = %s AND kind = 'valid' ORDER BY seq",
+                (row["run_id"],),
+            ).fetchall()
+        return [r["record"] for r in recs]
+
     root = settings.results_path
     runs = sorted(
         (p for p in root.glob("run_*") if p.is_dir()),

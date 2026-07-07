@@ -90,10 +90,23 @@ def scan(
     if fast:
         log.info("Fast mode enabled")
 
+    # Create PG tables if needed (no-op when DATABASE_URL is unset).
+    from .db import ensure_schema
+
+    ensure_schema()
+
     n = max_queries or None
     result = asyncio.run(run_scan(max_queries=n, run_dir=run_dir, skip_direct=skip_direct))
     _print_summary(result)
     log.info("Run folder: %s", run_dir)
+
+    # Store the final run.log text on the PG runs row (no-op when PG disabled).
+    if settings.pg_enabled:
+        from .writer import update_run_log_pg
+
+        log_file = run_dir / "run.log"
+        if log_file.exists():
+            update_run_log_pg(run_dir.name, log_file.read_text(encoding="utf-8"))
 
     # Refresh the preview dashboards so the web pages are current right after
     # each scan. Best-effort: a failure here must not mask a successful scan.
@@ -112,6 +125,10 @@ def watch(verbose: bool = typer.Option(False, "--verbose", "-v")):
             "Set it to true to enable, or run `aipocket scan` for a one-off.[/yellow]"
         )
         raise typer.Exit(1)
+
+    from .db import ensure_schema
+
+    ensure_schema()
     asyncio.run(Scheduler().run_forever())
 
 
@@ -234,8 +251,10 @@ def cve_sync(
     if not settings.tavily_key:
         console.print("[red]TAVILY_KEY not configured. Set it in .env[/red]")
         raise typer.Exit(1)
+    from .db import ensure_schema
     from .tavily_client import sync_cves
 
+    ensure_schema()
     merged, added = asyncio.run(sync_cves())
     console.print(f"[green]CVE sync done: {len(merged)} total, {added} new[/green]")
 

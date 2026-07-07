@@ -33,6 +33,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Copy source code and assets
 COPY src/ src/
 COPY sources/ sources/
+COPY scripts/ scripts/
 COPY .env.example ./
 COPY entrypoint.sh ./
 

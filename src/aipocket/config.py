@@ -88,6 +88,22 @@ class Settings(BaseSettings):
     dedup_fail_ttl: int = 21600     # 6h — failed cred, retried after this
     dedup_balance_ttl: int = 86400  # 1d — balance query result cached
 
+    # ===== PostgreSQL (persistent source of truth) =====
+    # SQLAlchemy-style / libpq connection URL for the results/high-value/CVE
+    # store. Empty => PG disabled: the app keeps using JSONL files only (the
+    # original behavior), so existing deployments without a DATABASE_URL are
+    # unaffected until they opt in.
+    database_url: str = ""
+    # Connection pool sizing (psycopg_pool.ConnectionPool).
+    pg_pool_min: int = 2
+    pg_pool_max: int = 10
+    # Transitional dual-write: when True AND a database_url is set, writes go to
+    # BOTH PostgreSQL and the legacy JSONL files. Defaults to False — PG is the
+    # sole source of truth. Set True temporarily when migrating an existing
+    # deployment that still needs the JSONL files written (for backfill + verify
+    # + a rollback path) before committing to PG-only.
+    pg_dual_write: bool = False
+
     @field_validator("fofa_keys", "shodan_keys")
     @classmethod
     def _strip_keys(cls, v: str) -> str:
@@ -104,6 +120,20 @@ class Settings(BaseSettings):
     @property
     def results_path(self) -> Path:
         return Path(self.results_dir)
+
+    @property
+    def pg_enabled(self) -> bool:
+        """True when a DATABASE_URL is configured (PG is the source of truth)."""
+        return bool(self.database_url.strip())
+
+    @property
+    def write_jsonl(self) -> bool:
+        """True when JSONL files should be written.
+
+        Always True when PG is disabled. When PG is enabled, only True during the
+        transitional dual-write phase (``pg_dual_write``).
+        """
+        return (not self.pg_enabled) or self.pg_dual_write
 
     @property
     def web_cors_origin_list(self) -> list[str]:

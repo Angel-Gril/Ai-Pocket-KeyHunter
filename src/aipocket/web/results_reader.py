@@ -48,6 +48,38 @@ def _run_dir(run_id: str) -> Path:
     return d
 
 
+# ---------------------------------------------------------------------------
+# PostgreSQL read helpers (source of truth when DATABASE_URL is set). Each falls
+# back to the JSONL files when PG is disabled OR the run isn't in PG yet (so a
+# dual-write cutover and historical-before-backfill runs both keep working).
+# ---------------------------------------------------------------------------
+
+
+def _pg_has_run(run_id: str) -> bool:
+    """True when PG is enabled AND this run_id exists in the runs table."""
+    if not settings.pg_enabled:
+        return False
+    from ..db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        row = conn.execute("SELECT 1 FROM runs WHERE run_id = %s", (run_id,)).fetchone()
+    return row is not None
+
+
+def _pg_load_kind(run_id: str, kind: str) -> list[dict[str, Any]]:
+    """Raw records for a run's valid/suspicious list from PG, ordered by seq."""
+    from ..db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT record FROM results WHERE run_id = %s AND kind = %s ORDER BY seq",
+            (run_id, kind),
+        ).fetchall()
+    return [r["record"] for r in rows]
+
+
 def _day_from_run_id(run_id: str) -> str:
     """`run_2026_07_06_14-35-22` → `2026-07-06`."""
     m = re.match(r"^run_(\d{4})_(\d{2})_(\d{2})_", run_id)
@@ -142,7 +174,78 @@ def list_runs() -> list[dict[str, Any]]:
     Returns ``[{"day": "2026-07-06", "runs": [{"run_id", "started_at",
     "valid_count", "suspicious_count", "has_log", "hits", "sources",
     "high_value"}, ...]}, ...]``.
+
+    Reads PG (SQL aggregation) when enabled; otherwise walks the results/ tree.
     """
+    if settings.pg_enabled:
+        return _list_runs_pg()
+    return _list_runs_files()
+
+
+def _list_runs_pg() -> list[dict[str, Any]]:
+    """List runs from PG. Counts come from GROUP BY; high-value from the FK."""
+    from ..db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        runs = conn.execute(
+            """
+            SELECT run_id, started_at, total_hosts,
+                   (log IS NOT NULL AND log <> '') AS has_log
+            FROM runs ORDER BY run_id DESC
+            """
+        ).fetchall()
+        # Per-run valid/suspicious counts in one pass.
+        kind_counts = conn.execute(
+            "SELECT run_id, kind, COUNT(*) AS n FROM results GROUP BY run_id, kind"
+        ).fetchall()
+        hv_counts = conn.execute(
+            "SELECT run_id, COUNT(*) AS n FROM high_value_keys WHERE run_id IS NOT NULL GROUP BY run_id"
+        ).fetchall()
+        # Distinct discovery backends per run, matching the file version's
+        # _sources_of (a credential's `backend` may be "fofa,shodan", so split).
+        src_rows = conn.execute(
+            """
+            SELECT DISTINCT run_id,
+                   TRIM(part) AS backend
+            FROM results,
+                 LATERAL regexp_split_to_table(record->'credential'->>'backend', ',') AS part
+            WHERE kind = 'valid' AND TRIM(part) <> ''
+            """
+        ).fetchall()
+
+    valid_by: dict[str, int] = {}
+    susp_by: dict[str, int] = {}
+    for r in kind_counts:
+        if r["kind"] == "valid":
+            valid_by[r["run_id"]] = r["n"]
+        elif r["kind"] == "suspicious":
+            susp_by[r["run_id"]] = r["n"]
+    hv_by = {r["run_id"]: r["n"] for r in hv_counts}
+    src_by: dict[str, set[str]] = {}
+    for r in src_rows:
+        src_by.setdefault(r["run_id"], set()).add(r["backend"])
+
+    by_day: dict[str, list[dict[str, Any]]] = {}
+    for run in runs:
+        rid = run["run_id"]
+        started = run["started_at"]
+        entry = {
+            "run_id": rid,
+            "started_at": started.isoformat() if started else _run_id_to_iso(rid),
+            "valid_count": valid_by.get(rid, 0),
+            "suspicious_count": susp_by.get(rid, 0),
+            "has_log": bool(run["has_log"]),
+            "hits": run["total_hosts"] or 0,
+            "sources": sorted(src_by.get(rid, set())),
+            "high_value": hv_by.get(rid, 0),
+        }
+        by_day.setdefault(_day_from_run_id(rid), []).append(entry)
+    return [{"day": day, "runs": entries} for day, entries in by_day.items()]
+
+
+def _list_runs_files() -> list[dict[str, Any]]:
+    """Original file-based run listing (used when PG is disabled)."""
     global _runs_cache
 
     root = settings.results_path
@@ -164,7 +267,7 @@ def list_runs() -> list[dict[str, Any]]:
     hv_counts = _high_value_by_window(started)
 
     by_day: dict[str, list[dict[str, Any]]] = {}
-    for run, run_started in zip(runs, started):
+    for run, run_started in zip(runs, started, strict=True):
         valid_files = list(run.glob("valid_*.jsonl"))
         susp_files = list(run.glob("suspicious_*.jsonl"))
         entry = {
@@ -203,7 +306,15 @@ def _count_lines(path: Path) -> int:
 
 
 def _load_kind(run_id: str, kind: str) -> list[dict[str, Any]]:
-    """Load raw (unmasked) records for a run's ``valid`` or ``suspicious`` file."""
+    """Load raw (unmasked) records for a run's ``valid`` or ``suspicious`` list.
+
+    Reads PG (ordered by seq) when the run exists there; otherwise falls back to
+    the ``valid_*.jsonl`` / ``suspicious_*.jsonl`` files. Both preserve the same
+    ordering, so the ``index``/``indices`` (== seq) reveal/export contract holds.
+    """
+    _validate_run_id(run_id)
+    if _pg_has_run(run_id):
+        return _pg_load_kind(run_id, kind)
     d = _run_dir(run_id)
     glob = "valid_*.jsonl" if kind == "valid" else "suspicious_*.jsonl"
     records: list[dict[str, Any]] = []
@@ -234,8 +345,29 @@ def load_run_records_plain(run_id: str, kind: str) -> list[dict[str, Any]]:
 
 
 def read_run_log(run_id: str) -> str:
-    d = _run_dir(run_id)
-    log_path = d / "run.log"
+    """Return a run's full log text.
+
+    Prefers PG (``runs.log``), but a run still in flight — or one interrupted
+    before persist — has no log column yet, so we fall back to the live
+    ``<run_dir>/run.log`` file the FileHandler is writing. That fallback is also
+    what serves the SSE-adjacent "view current log" while a scan is running.
+    """
+    _validate_run_id(run_id)
+
+    if _pg_has_run(run_id):
+        from ..db import get_pool
+
+        pool = get_pool()
+        with pool.connection() as conn:
+            row = conn.execute(
+                "SELECT log FROM runs WHERE run_id = %s", (run_id,)
+            ).fetchone()
+        if row is not None and row["log"]:
+            return row["log"]
+        # Run row exists but log not persisted yet (still running / interrupted):
+        # fall through to the on-disk file.
+
+    log_path = settings.results_path / run_id / "run.log"
     if not log_path.exists():
         raise ApiError(f"no log for run {run_id}", status_code=404, code="not_found")
     try:

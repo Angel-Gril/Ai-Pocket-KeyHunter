@@ -202,22 +202,49 @@ def merge_cves(
     new: list[dict[str, Any]],
     path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
+    from .config import settings
+
     path = path or (Path(__file__).resolve().parents[2] / "sources" / "cve_2026_ai.json")
     seen = {c["id"] for c in existing}
     added = 0
     merged = list(existing)
+    new_records: list[dict[str, Any]] = []
     for cve in new:
         if cve["id"] not in seen:
             merged.append(cve)
+            new_records.append(cve)
             seen.add(cve["id"])
             added += 1
 
-    if added and path:
+    if added and settings.pg_enabled:
+        _upsert_cves_pg(new_records)
+
+    if added and path and settings.write_jsonl:
         merged_sorted = sorted(merged, key=lambda c: c.get("id", ""))
         path.write_text(json.dumps(merged_sorted, indent=2, ensure_ascii=False), encoding="utf-8")
         log.info("Wrote %d CVEs (%d new) to %s", len(merged_sorted), added, path)
 
     return merged, added
+
+
+def _upsert_cves_pg(records: list[dict[str, Any]]) -> None:
+    """UPSERT CVE records into the cves table (keyed on id)."""
+    from psycopg.types.json import Jsonb
+
+    from .db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO cves (id, record) VALUES (%s, %s)
+                ON CONFLICT (id) DO UPDATE SET record = EXCLUDED.record
+                """,
+                [(c["id"], Jsonb(c)) for c in records],
+            )
+        conn.commit()
+    log.info("PG cves upserted: %d", len(records))
 
 
 async def sync_cves() -> tuple[list[dict[str, Any]], int]:

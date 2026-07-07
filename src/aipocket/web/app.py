@@ -38,6 +38,11 @@ def _validate_startup_config() -> None:
 def create_app() -> FastAPI:
     _validate_startup_config()
 
+    # Create PG tables on startup (no-op when DATABASE_URL is unset).
+    from ..db import ensure_schema
+
+    ensure_schema()
+
     app = FastAPI(
         title="aipocket API",
         description="HTTP service layer over the aipocket scanner",

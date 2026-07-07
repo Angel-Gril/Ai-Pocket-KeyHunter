@@ -248,6 +248,27 @@ class ScanManager:
             with self._lock:
                 self._finished_at = datetime.now(UTC).isoformat()
             self._detach_log_handlers()
+            self._persist_log_to_pg()
+
+    def _persist_log_to_pg(self) -> None:
+        """Store the final run.log text on the PG runs row (no-op when PG disabled).
+
+        Called after handlers are detached (log file flushed/closed) so the text
+        is complete. Best-effort: a failure here must not crash the manager. Only
+        runs when the run row already exists — a scan interrupted before
+        persist_run_pg leaves no row, and the UPDATE simply matches zero rows.
+        """
+        if not settings.pg_enabled or self._run_dir is None:
+            return
+        log_file = self._run_dir / "run.log"
+        if not log_file.exists():
+            return
+        try:
+            from ..writer import update_run_log_pg
+
+            update_run_log_pg(self._run_dir.name, log_file.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001 — logging persistence is non-critical
+            log.warning("Failed to persist run.log to PG: %s", e)
 
     async def stop(self) -> dict:
         with self._lock:

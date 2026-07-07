@@ -160,7 +160,32 @@ CREDENTIAL_QUERIES: list[str] = [
 
 
 def load_cves(path: Path | None = None) -> list[dict[str, Any]]:
-    p = path or CVE_PATH
+    """Load the CVE map.
+
+    An explicit ``path`` always reads that file (used by ``--realtest`` for a
+    trimmed subset). With no path: read PG (``cves`` table) when enabled, falling
+    back to the file if the table is empty (pre-backfill), else read the default
+    file.
+    """
+    if path is not None:
+        return _load_cves_file(path)
+
+    from .config import settings
+
+    if settings.pg_enabled:
+        from .db import get_pool
+
+        pool = get_pool()
+        with pool.connection() as conn:
+            rows = conn.execute("SELECT record FROM cves ORDER BY id").fetchall()
+        if rows:
+            return [r["record"] for r in rows]
+        # Empty table (not yet backfilled) → fall back to the file.
+
+    return _load_cves_file(CVE_PATH)
+
+
+def _load_cves_file(p: Path) -> list[dict[str, Any]]:
     try:
         text = p.read_text(encoding="utf-8").strip()
         return json.loads(text) if text else []

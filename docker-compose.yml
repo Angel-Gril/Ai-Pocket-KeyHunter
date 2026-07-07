@@ -4,10 +4,15 @@ services:
     container_name: aipocket
     volumes:
       - /data/aipocket:/data/aipocket
+    # Load secrets/config from .env; the environment block below still wins for
+    # the keys it sets (DB/Redis host must point at the compose service names).
+    env_file:
+      - .env
     environment:
       - RESULTS_DIR=/data/aipocket/results
       - WEB_STATIC_DIR=/app/frontend-dist
       - DEDUP_REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://aipocket:aipocket@postgres:5432/aipocket
     # Web API (FastAPI). Reads WEB_PASSWORD / WEB_JWT_SECRET from the mounted
     # .env. Behind an HTTPS reverse proxy in production; for SSE (/api/scan/
     # logs/stream) disable proxy buffering in nginx.
@@ -16,6 +21,8 @@ services:
     restart: unless-stopped
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
 
@@ -27,14 +34,59 @@ services:
     profiles: ["watch"]
     volumes:
       - /data/aipocket:/data/aipocket
+    env_file:
+      - .env
     environment:
       - RESULTS_DIR=/data/aipocket/results
       - DEDUP_REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://aipocket:aipocket@postgres:5432/aipocket
     restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     command: ["watch"]
+
+  # One-shot backfill of historical JSONL/JSON into PostgreSQL. Run with:
+  #   docker compose --profile import run --rm aipocket-import
+  # Reads the project's ./results tree (mounted read-only at /app/results) and
+  # the CVE JSON baked into the image. Safe to re-run (UPSERT / replace-per-run).
+  aipocket-import:
+    build: .
+    profiles: ["import"]
+    volumes:
+      - ./results:/app/results:ro
+    env_file:
+      - .env
+    environment:
+      - RESULTS_DIR=/data/aipocket/results
+      - DEDUP_REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://aipocket:aipocket@postgres:5432/aipocket
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    # entrypoint.sh runs first (creates dirs, symlinks .env), then execs the
+    # backfill instead of the default `aipocket` CLI.
+    entrypoint: ["/app/entrypoint.sh", "uv", "run", "python", "scripts/import_jsonl_to_pg.py"]
+    command: ["--results", "/app/results"]
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: aipocket-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=aipocket
+      - POSTGRES_PASSWORD=aipocket
+      - POSTGRES_DB=aipocket
+    volumes:
+      - /data/aipocket/pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aipocket -d aipocket"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   redis:
     image: redis:7-alpine

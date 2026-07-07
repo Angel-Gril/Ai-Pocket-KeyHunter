@@ -55,6 +55,15 @@ async def run_scan(
 
     _analyzer.set_run_dir(run_dir)
 
+    # Propagate the run_id to deep write paths (high_value_writer.try_save) via a
+    # ContextVar — set here, read there — instead of threading it through every
+    # signature. The value is run_dir.name (the run_YYYY_… string), matching the
+    # `runs.run_id` primary key.
+    from .db import current_run_id
+
+    run_id = run_dir.name if run_dir else None
+    token = current_run_id.set(run_id)
+
     # Cross-run dedup store (Redis-backed; degrades to no-op if unavailable).
     dedup = await get_dedup_store()
 
@@ -64,6 +73,7 @@ async def run_scan(
         )
     finally:
         await dedup.close()
+        current_run_id.reset(token)
 
 
 async def _run_scan_inner(
@@ -224,19 +234,27 @@ async def _run_scan_inner(
 
     if not creds:
         log.info("No credentials found — writing empty scan results")
+        finished = datetime.now(UTC).isoformat()
+        empty_meta = {
+            "started_at": started,
+            "finished_at": finished,
+            "state": "finished",
+            "sources": sources_used,
+            "hits_by_source": hits_by_source,
+            "total_hosts": len(all_hits),
+            "total_credentials": 0,
+            "queries_used": queries_used,
+        }
         if run_dir:
-            scan_path = write_scan_metadata({
-                "started_at": started,
-                "sources": sources_used,
-                "hits_by_source": hits_by_source,
-                "total_hosts": len(all_hits),
-                "total_credentials": 0,
-                "queries_used": queries_used,
-            }, run_dir)
+            write_scan_metadata(empty_meta, run_dir)
             write_valid_results([], run_dir)
+            if settings.pg_enabled:
+                from .writer import persist_run_pg
+
+                persist_run_pg(run_dir.name, empty_meta, [], [])
         return ScanRunResult(
             started_at=started,
-            finished_at=datetime.now(UTC).isoformat(),
+            finished_at=finished,
             sources=sources_used,
             hits_by_source=hits_by_source,
             total_hosts=len(all_hits),
@@ -347,9 +365,32 @@ async def _run_scan_inner(
         if suspicious:
             write_suspicious_results(suspicious, run_dir)
 
+    finished = datetime.now(UTC).isoformat()
+
+    # Persist the whole run (metadata + valid + suspicious) to PG in one
+    # transaction — the source of truth when DATABASE_URL is set.
+    if run_dir and settings.pg_enabled:
+        from .writer import persist_run_pg
+
+        persist_run_pg(
+            run_dir.name,
+            {
+                "started_at": started,
+                "finished_at": finished,
+                "state": "finished",
+                "sources": sources_used,
+                "hits_by_source": hits_by_source,
+                "total_hosts": len(all_hits),
+                "total_credentials": len(creds),
+                "queries_used": queries_used,
+            },
+            valid,
+            suspicious,
+        )
+
     return ScanRunResult(
         started_at=started,
-        finished_at=datetime.now(UTC).isoformat(),
+        finished_at=finished,
         sources=sources_used,
         hits_by_source=hits_by_source,
         total_hosts=len(all_hits),
