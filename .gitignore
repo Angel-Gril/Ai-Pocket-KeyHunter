@@ -32,7 +32,6 @@ dist/
 .ruff_cache/
 
 # uv
-uv.lock
 
 # Node / Frontend
 frontend/node_modules/
