@@ -253,7 +253,8 @@ export default function HighValuePage() {
             <IndexedKeyRow
               key={`${key}:${index}`}
               index={index}
-              maskedKey={reveal?.apikey ?? fields.maskedKey}
+              maskedKey={fields.maskedKey}
+              revealedKey={reveal?.apikey}
               apiurl={reveal?.apiurl ?? fields.apiurl}
               host={fields.host}
               provider={fields.provider}

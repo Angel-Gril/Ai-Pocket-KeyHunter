@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ChevronDown, Copy, Eye, List, Loader2, MessageSquare, Wallet } from "lucide-react"
+import { ChevronDown, Copy, Eye, EyeOff, List, Loader2, MessageSquare, Wallet } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ProviderBadge } from "@/components/provider-badge"
 import { colWidthStyle } from "@/components/key-table-columns"
@@ -13,6 +13,7 @@ export interface KeyRowStatus {
 
 export interface KeyRowProps {
   maskedKey: string
+  revealedKey?: string
   apiurl?: string
   host?: string
   provider?: string
@@ -61,26 +62,44 @@ const ICON_BUTTON =
 /** APIKEY cell: masked value + optional reveal/copy actions. */
 function KeyCell({
   maskedKey,
+  revealedKey,
   onReveal,
   onCopy,
-}: Readonly<Pick<KeyRowProps, "maskedKey" | "onReveal" | "onCopy">>) {
+}: Readonly<Pick<KeyRowProps, "maskedKey" | "revealedKey" | "onReveal" | "onCopy">>) {
+  const [revealed, setRevealed] = useState(false)
+  // The plaintext only exists once the parent has fetched it; stay masked until then.
+  const canShowPlaintext = revealed && Boolean(revealedKey)
+  const value = canShowPlaintext ? revealedKey! : maskedKey
+
+  const toggleReveal = () => {
+    const next = !canShowPlaintext
+    if (next) onReveal?.()
+    setRevealed(next)
+  }
+
   return (
     <div className="flex shrink-0 items-center gap-2" style={colWidthStyle("apikey")}>
       {onReveal ? (
         <button
           type="button"
-          onClick={onReveal}
-          title="Reveal key"
+          onClick={toggleReveal}
+          title={canShowPlaintext ? "Hide key" : "Reveal key"}
           className="min-w-0 truncate font-mono text-[13px] text-text-primary hover:text-accent"
         >
-          {maskedKey}
+          {value}
         </button>
       ) : (
-        <span className="min-w-0 truncate font-mono text-[13px] text-text-primary">{maskedKey}</span>
+        <span className="min-w-0 truncate font-mono text-[13px] text-text-primary">{value}</span>
       )}
       {onReveal ? (
-        <button type="button" onClick={onReveal} aria-label="Reveal key" className={ICON_BUTTON}>
-          <Eye className="size-3.5" />
+        <button
+          type="button"
+          onClick={toggleReveal}
+          aria-label={canShowPlaintext ? "Hide key" : "Reveal key"}
+          aria-pressed={canShowPlaintext}
+          className={ICON_BUTTON}
+        >
+          {canShowPlaintext ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
         </button>
       ) : null}
       {onCopy ? (
@@ -166,6 +185,7 @@ function ModelsPanel({
 
 export function KeyRow({
   maskedKey,
+  revealedKey,
   apiurl,
   host,
   provider,
@@ -215,7 +235,7 @@ export function KeyRow({
           />
         ) : null}
 
-        <KeyCell maskedKey={maskedKey} onReveal={onReveal} onCopy={onCopy} />
+        <KeyCell maskedKey={maskedKey} revealedKey={revealedKey} onReveal={onReveal} onCopy={onCopy} />
 
         <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("endpoint")}>
           <span className="truncate font-mono text-xs text-text-secondary">{apiurl}</span>
