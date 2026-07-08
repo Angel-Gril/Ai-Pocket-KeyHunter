@@ -13,6 +13,7 @@ import "./index.css"
 
 import { App } from "@/App"
 import { AuthProvider } from "@/providers/auth-provider"
+import { ThemeProvider } from "@/providers/theme-provider"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
 
@@ -31,15 +32,17 @@ if (!rootElement) throw new Error("Root element #root not found")
 
 createRoot(rootElement).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AuthProvider>
-          <TooltipProvider>
-            <App />
-            <Toaster position="top-right" richColors />
-          </TooltipProvider>
-        </AuthProvider>
-      </BrowserRouter>
-    </QueryClientProvider>
+    <ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <AuthProvider>
+            <TooltipProvider>
+              <App />
+              <Toaster position="top-right" richColors />
+            </TooltipProvider>
+          </AuthProvider>
+        </BrowserRouter>
+      </QueryClientProvider>
+    </ThemeProvider>
   </StrictMode>,
 )

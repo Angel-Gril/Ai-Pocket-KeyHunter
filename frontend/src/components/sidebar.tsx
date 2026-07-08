@@ -4,11 +4,14 @@ import {
   Gem,
   LayoutList,
   type LucideIcon,
+  Moon,
   Radar,
   Settings,
   ShieldAlert,
+  Sun,
 } from "lucide-react"
 import { api, type ScanStatusResponse } from "@/lib/api"
+import { useTheme } from "@/providers/theme-provider"
 import { cn } from "@/lib/utils"
 
 interface NavItem {
@@ -60,6 +63,7 @@ function formatHint(status: ScanStatusResponse | undefined): string {
 }
 
 export function Sidebar() {
+  const { theme, toggleTheme } = useTheme()
   const { data: status } = useQuery({
     queryKey: ["scan-status"],
     queryFn: ({ signal }) => api.scanStatus(signal),
@@ -109,6 +113,18 @@ export function Sidebar() {
           <span className="font-mono text-xs text-text-secondary">{display.label}</span>
         </div>
         <span className="font-mono text-[11px] text-text-muted">{display.hint}</span>
+      </div>
+
+      <div className="border-t border-border-subtle px-3 py-3">
+        <button
+          type="button"
+          onClick={toggleTheme}
+          aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+          className="flex w-full items-center gap-3 rounded-sm px-3 py-2.5 text-sm text-text-secondary transition-colors hover:bg-surface-overlay hover:text-text-primary"
+        >
+          {theme === "dark" ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
+          {theme === "dark" ? "浅色主题" : "深色主题"}
+        </button>
       </div>
     </aside>
   )

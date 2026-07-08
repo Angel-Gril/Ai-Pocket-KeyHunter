@@ -4,10 +4,43 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * aipocket design tokens (from pencil-new.pen). Dark theme is the only theme,
- * so the values live directly on :root.
+ * aipocket design tokens (from pencil-new.pen). The raw palette is
+ * theme-scoped: light values on :root (default), dark values under `.dark`
+ * (applied to <html> by the theme provider). Everything downstream — the
+ * shadcn/ui semantic mappings and the `@theme inline` block — references these
+ * `--*` vars, so both themes flow through automatically.
  */
 :root {
+  --surface-base: #ffffff;
+  --surface-inset: #f4f4f5;
+  --surface-raised: #fafafa;
+  --surface-overlay: #f0f0f1;
+
+  --accent: #16a34a;
+  --accent-dim: #16a34a1a;
+  --accent-text: #ffffff;
+  --success: #16a34a;
+  --success-dim: #dcfce7;
+
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #a1a1aa;
+
+  --border-primary: #e4e4e7;
+  --border-subtle: #ededf0;
+
+  --info: #2563eb;
+  --info-dim: #dbeafe;
+  --warning: #d97706;
+  --warning-dim: #fef3c7;
+  --danger: #dc2626;
+  --danger-dim: #fee2e2;
+
+  --radius: 6px;
+  --radius-sm: 4px;
+}
+
+.dark {
   --surface-base: #0a0a0a;
   --surface-inset: #0f0f10;
   --surface-raised: #141414;
@@ -32,11 +65,11 @@
   --warning-dim: #3a2a08;
   --danger: #ef4444;
   --danger-dim: #3a1414;
+}
 
-  --radius: 6px;
-  --radius-sm: 4px;
-
-  /* shadcn/ui semantic tokens mapped onto the pencil palette. */
+/* shadcn/ui semantic tokens mapped onto the pencil palette (theme-agnostic —
+ * they resolve against whichever raw palette is active). */
+:root {
   --background: var(--surface-base);
   --foreground: var(--text-primary);
   --card: var(--surface-raised);
@@ -115,6 +148,9 @@
     @apply border-border;
   }
   html {
+    color-scheme: light;
+  }
+  html.dark {
     color-scheme: dark;
   }
   body {

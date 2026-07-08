@@ -1,11 +1,16 @@
-import { useCallback, useMemo, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useCallback, useMemo, useRef, useState } from "react"
+import { useMutation, useQuery } from "@tanstack/react-query"
 import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
-import { api, type ExportFormat, type KeyRecord } from "@/lib/api"
+import { api, type ChatResponse, type ExportFormat, type KeyRecord } from "@/lib/api"
+import { ChatTestDialog } from "@/components/chat-test-dialog"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { deriveKeyStatus, extractKeyFields, providerOf } from "@/components/key-record"
 import { cn, copyToClipboard } from "@/lib/utils"
+
+type Revealed = { apikey: string; apiurl: string }
+type RowBusy = { models?: boolean; balance?: boolean; chat?: boolean }
+type BalanceInfo = { balance?: string; tier?: string }
 
 const PROVIDER_COLORS: Record<string, string> = {
   openai: "text-accent",
@@ -20,8 +25,14 @@ function providerColor(provider: string): string {
 export default function HighValuePage() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [exporting, setExporting] = useState(false)
-  // Plaintext apikeys recovered via the reveal endpoint, keyed by masked value.
-  const [revealed, setRevealed] = useState<Record<string, string>>({})
+  // Per-row state, keyed by the record's masked apikey (stable across renders).
+  const [revealed, setRevealed] = useState<Record<string, Revealed>>({})
+  const [models, setModels] = useState<Record<string, string[]>>({})
+  const [balances, setBalances] = useState<Record<string, BalanceInfo>>({})
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState<Record<string, RowBusy>>({})
+  const [chatIndex, setChatIndex] = useState<number | null>(null)
+  const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["high-value"],
@@ -39,46 +50,36 @@ export default function HighValuePage() {
     return [...counts.entries()].sort((a, b) => b[1] - a[1])
   }, [records])
 
-  const handleSelectedChange = useCallback((index: number, checked: boolean) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (checked) next.add(index)
-      else next.delete(index)
-      return next
-    })
+  // Row identity key = masked apikey. Snapshot state in a ref so the row
+  // callbacks stay stable and the memoized `IndexedKeyRow`s don't all re-render.
+  const stateRef = useRef({ records, revealed })
+  stateRef.current = { records, revealed }
+
+  const maskedAt = useCallback((index: number): string => {
+    const rec = stateRef.current.records[index]
+    return rec ? extractKeyFields(rec).maskedKey : ""
   }, [])
 
-  const handleToggleAll = useCallback(
-    (checked: boolean) => setSelected(checked ? new Set(records.map((_, i) => i)) : new Set()),
-    [records],
-  )
+  const { mutateAsync: modelsAsync } = useMutation({ mutationFn: api.keyModels })
+  const { mutateAsync: balanceAsync } = useMutation({ mutationFn: api.keyBalance })
+  const { mutateAsync: chatAsync } = useMutation({ mutationFn: api.keyChat })
 
-  const runExport = useCallback(async (format: ExportFormat) => {
-    setExporting(true)
-    try {
-      await api.export({ dataset: "high-value", format })
-      toast.success("已导出全部高价值密钥")
-    } catch (err) {
-      toast.error("导出失败", {
-        description: err instanceof Error ? err.message : "无法生成导出文件",
-      })
-    } finally {
-      setExporting(false)
-    }
+  const setRowBusy = useCallback((key: string, patch: RowBusy) => {
+    setBusy((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }))
   }, [])
 
-  // Recover (and cache) the plaintext apikey for a row by its masked value.
-  const ensureRevealed = useCallback(
-    async (index: number): Promise<string> => {
-      const fields = extractKeyFields(records[index])
-      const cached = revealed[fields.maskedKey]
-      if (cached) return cached
-      const res = await api.highValueReveal({ masked: fields.maskedKey, apiurl: fields.apiurl })
-      setRevealed((prev) => ({ ...prev, [fields.maskedKey]: res.apikey }))
-      return res.apikey
-    },
-    [records, revealed],
-  )
+  // Recover (and cache) the plaintext apikey + apiurl for a row.
+  const ensureRevealed = useCallback(async (index: number): Promise<Revealed> => {
+    const rec = stateRef.current.records[index]
+    if (!rec) throw new Error("record not found")
+    const fields = extractKeyFields(rec)
+    const cached = stateRef.current.revealed[fields.maskedKey]
+    if (cached) return cached
+    const res = await api.highValueReveal({ masked: fields.maskedKey, apiurl: fields.apiurl })
+    const value: Revealed = { apikey: res.apikey, apiurl: res.apiurl || fields.apiurl || "" }
+    setRevealed((prev) => ({ ...prev, [fields.maskedKey]: value }))
+    return value
+  }, [])
 
   const errorMessage = (err: unknown, fallback: string) =>
     err instanceof Error ? err.message : fallback
@@ -97,7 +98,7 @@ export default function HighValuePage() {
   const handleCopy = useCallback(
     async (index: number) => {
       try {
-        const apikey = await ensureRevealed(index)
+        const { apikey } = await ensureRevealed(index)
         await copyToClipboard(apikey)
         toast.success("已复制密钥到剪贴板")
       } catch (err) {
@@ -106,6 +107,125 @@ export default function HighValuePage() {
     },
     [ensureRevealed],
   )
+
+  const loadModels = useCallback(
+    async (index: number) => {
+      const key = maskedAt(index)
+      if (!key) return
+      setRowBusy(key, { models: true })
+      try {
+        const { apikey, apiurl } = await ensureRevealed(index)
+        const res = await modelsAsync({ apikey, apiurl })
+        setModels((prev) => ({ ...prev, [key]: res.models }))
+        setExpanded((prev) => new Set(prev).add(key))
+      } catch (err) {
+        setModels((prev) => ({ ...prev, [key]: [] }))
+        toast.error("加载模型失败", { description: errorMessage(err, "无法获取模型列表") })
+      } finally {
+        setRowBusy(key, { models: false })
+      }
+    },
+    [ensureRevealed, modelsAsync, maskedAt, setRowBusy],
+  )
+
+  const handleBalance = useCallback(
+    async (index: number) => {
+      const key = maskedAt(index)
+      if (!key) return
+      setRowBusy(key, { balance: true })
+      try {
+        const { apikey, apiurl } = await ensureRevealed(index)
+        const res = await balanceAsync({ apikey, apiurl })
+        setBalances((prev) => ({
+          ...prev,
+          [key]: { balance: res.balance_usd ? `$${res.balance_usd}` : undefined, tier: res.tier || undefined },
+        }))
+        toast.success("余额已更新", { description: `${res.gateway || "gateway"} · ${res.balance_usd || "?"}` })
+      } catch (err) {
+        toast.error("查询余额失败", { description: errorMessage(err, "无法获取余额") })
+      } finally {
+        setRowBusy(key, { balance: false })
+      }
+    },
+    [ensureRevealed, balanceAsync, maskedAt, setRowBusy],
+  )
+
+  const handleExpandedChange = useCallback(
+    (index: number, isExpanded: boolean) => {
+      const key = maskedAt(index)
+      if (!key) return
+      setExpanded((prev) => {
+        const next = new Set(prev)
+        if (isExpanded) next.add(key)
+        else next.delete(key)
+        return next
+      })
+    },
+    [maskedAt],
+  )
+
+  const handleSelectedChange = useCallback((index: number, checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(index)
+      else next.delete(index)
+      return next
+    })
+  }, [])
+
+  const handleToggleAll = useCallback(
+    (checked: boolean) =>
+      setSelected(checked ? new Set(stateRef.current.records.map((_, i) => i)) : new Set()),
+    [],
+  )
+
+  const openChat = useCallback(
+    (index: number) => {
+      setChatResult(null)
+      setChatIndex(index)
+      const key = maskedAt(index)
+      if (key && stateRef.current.records[index] !== undefined && models[key] === undefined) {
+        void loadModels(index)
+      }
+    },
+    [loadModels, maskedAt, models],
+  )
+
+  const handleSendChat = useCallback(
+    async (model: string) => {
+      if (chatIndex === null) return
+      const key = maskedAt(chatIndex)
+      if (!key) return
+      setRowBusy(key, { chat: true })
+      try {
+        const { apikey, apiurl } = await ensureRevealed(chatIndex)
+        const res = await chatAsync({ apikey, apiurl, model })
+        setChatResult(res)
+        if (res.success) {
+          toast.success(res.consumes_credit ? "对话成功（已消耗额度）" : "对话成功")
+        } else {
+          toast.error("对话失败", { description: res.error || `HTTP ${res.status_code ?? "?"}` })
+        }
+      } catch (err) {
+        toast.error("对话请求失败", { description: errorMessage(err, "无法完成对话测试") })
+      } finally {
+        setRowBusy(key, { chat: false })
+      }
+    },
+    [chatIndex, ensureRevealed, chatAsync, maskedAt, setRowBusy],
+  )
+
+  const runExport = useCallback(async (format: ExportFormat) => {
+    setExporting(true)
+    try {
+      await api.export({ dataset: "high-value", format })
+      toast.success("已导出全部高价值密钥")
+    } catch (err) {
+      toast.error("导出失败", { description: errorMessage(err, "无法生成导出文件") })
+    } finally {
+      setExporting(false)
+    }
+  }, [])
 
   const allChecked = records.length > 0 && selected.size === records.length
 
@@ -131,26 +251,41 @@ export default function HighValuePage() {
   } else {
     body = (
       <div className="flex-1 overflow-y-auto">
-        {rows.map(({ fields, status }, index) => (
-          <IndexedKeyRow
-            key={`${fields.maskedKey}:${index}`}
-            index={index}
-            maskedKey={revealed[fields.maskedKey] ?? fields.maskedKey}
-            apiurl={fields.apiurl}
-            host={fields.host}
-            provider={fields.provider}
-            balance={fields.balance}
-            tier={fields.tier}
-            status={status}
-            selected={selected.has(index)}
-            onSelectedChange={handleSelectedChange}
-            onReveal={handleReveal}
-            onCopy={handleCopy}
-          />
-        ))}
+        {rows.map(({ fields, status }, index) => {
+          const key = fields.maskedKey
+          const reveal = revealed[key]
+          const balanceInfo = balances[key]
+          return (
+            <IndexedKeyRow
+              key={`${key}:${index}`}
+              index={index}
+              maskedKey={reveal?.apikey ?? fields.maskedKey}
+              apiurl={reveal?.apiurl ?? fields.apiurl}
+              host={fields.host}
+              provider={fields.provider}
+              balance={balanceInfo?.balance ?? fields.balance}
+              tier={balanceInfo?.tier ?? fields.tier}
+              status={status}
+              models={models[key]}
+              modelsLoading={busy[key]?.models}
+              selected={selected.has(index)}
+              expanded={expanded.has(key)}
+              busy={busy[key]}
+              onSelectedChange={handleSelectedChange}
+              onExpandedChange={handleExpandedChange}
+              onReveal={handleReveal}
+              onCopy={handleCopy}
+              onLoadModels={loadModels}
+              onBalance={handleBalance}
+              onChat={openChat}
+            />
+          )
+        })}
       </div>
     )
   }
+
+  const chatMasked = chatIndex !== null ? rows[chatIndex]?.fields.maskedKey ?? "" : ""
 
   return (
     <div className="flex h-full flex-col">
@@ -186,6 +321,17 @@ export default function HighValuePage() {
       <KeyTableHeader />
 
       {body}
+
+      <ChatTestDialog
+        open={chatIndex !== null}
+        onOpenChange={(open) => setChatIndex(open ? chatIndex : null)}
+        maskedKey={chatIndex !== null ? revealed[chatMasked]?.apikey ?? chatMasked : ""}
+        models={chatMasked ? models[chatMasked] ?? [] : []}
+        modelsLoading={chatMasked ? busy[chatMasked]?.models : false}
+        pending={chatMasked ? busy[chatMasked]?.chat : false}
+        result={chatResult}
+        onSend={handleSendChat}
+      />
     </div>
   )
 }
