@@ -1,0 +1,67 @@
+import { cn } from "@/lib/utils"
+
+/**
+ * Per-provider brand colours. Each provider gets a signature hue drawn from the
+ * AI company's own palette (e.g. Anthropic's clay-orange, OpenAI's teal). The
+ * badge renders a tinted chip whose text/dot use the brand colour and whose
+ * background is a low-opacity wash of the same hue, so it reads on both the
+ * light and dark themes without needing per-mode overrides.
+ *
+ * Keep the keys in sync with the backend `Provider` literal
+ * (backend/src/aipocket/core/models.py).
+ */
+const PROVIDER_BRAND: Record<string, { label: string; color: string }> = {
+  openai: { label: "OpenAI", color: "#10a37f" },
+  anthropic: { label: "Anthropic", color: "#d97757" },
+  deepseek: { label: "DeepSeek", color: "#4d6bfe" },
+  kimi: { label: "Kimi", color: "#7c5cff" },
+  glm: { label: "GLM", color: "#3859ff" },
+  qwen: { label: "Qwen", color: "#a855f7" },
+  siliconflow: { label: "SiliconFlow", color: "#00b3c4" },
+  google: { label: "Google", color: "#4285f4" },
+  gateway: { label: "Gateway", color: "#64748b" },
+  unknown: { label: "Unknown", color: "#7d8db0" },
+}
+
+// Prominent steel-blue-gray for providers not in the brand map — clearly visible
+// in both themes and distinct from gateway (#64748b) and every brand hue.
+const FALLBACK = { label: "", color: "#7d8db0" }
+
+/** Look up a provider's brand descriptor (label + hex colour), case-insensitively. */
+export function providerBrand(provider: string): { label: string; color: string } {
+  const brand = PROVIDER_BRAND[provider.toLowerCase()]
+  if (brand) return brand
+  return { ...FALLBACK, label: provider }
+}
+
+/** The brand hex colour for a provider — for text/number accents (e.g. stats). */
+export function providerBrandColor(provider: string): string {
+  return providerBrand(provider).color
+}
+
+export interface ProviderBadgeProps {
+  provider: string
+  className?: string
+}
+
+/** A tinted chip showing the provider name in its AI company's brand colour. */
+export function ProviderBadge({ provider, className }: Readonly<ProviderBadgeProps>) {
+  const { label, color } = providerBrand(provider)
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-sm px-2 py-0.5 font-mono text-[11px] font-medium",
+        className,
+      )}
+      style={{
+        color,
+        // 14% wash of the brand colour for the chip background, brand-tinted border.
+        backgroundColor: `${color}24`,
+        boxShadow: `inset 0 0 0 1px ${color}40`,
+      }}
+    >
+      <span className="size-1.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+      {label || provider}
+    </span>
+  )
+}

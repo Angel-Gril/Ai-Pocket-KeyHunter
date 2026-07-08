@@ -54,13 +54,13 @@ export function ChatTestDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="border-border-primary bg-surface-raised">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-4 overflow-y-auto border-border-primary bg-surface-raised">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-text-primary">
-            <MessageSquare className="size-4 text-accent" />
+          <DialogTitle className="flex items-center gap-2 pr-6 text-text-primary">
+            <MessageSquare className="size-4 shrink-0 text-accent" />
             测试对话
           </DialogTitle>
-          <DialogDescription className="font-mono text-xs text-text-muted">
+          <DialogDescription className="font-mono text-xs break-all text-text-muted">
             {maskedKey}
           </DialogDescription>
         </DialogHeader>

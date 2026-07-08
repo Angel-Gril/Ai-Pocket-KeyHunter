@@ -5,22 +5,14 @@ import { toast } from "sonner"
 import { api, type ChatResponse, type ExportFormat, type KeyRecord } from "@/lib/api"
 import { ChatTestDialog } from "@/components/chat-test-dialog"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
+import { useKeyTableSizing } from "@/components/key-table-columns"
 import { deriveKeyStatus, extractKeyFields, providerOf } from "@/components/key-record"
-import { cn, copyToClipboard } from "@/lib/utils"
+import { providerBrand, providerBrandColor } from "@/components/provider-badge"
+import { copyToClipboard } from "@/lib/utils"
 
 type Revealed = { apikey: string; apiurl: string }
 type RowBusy = { models?: boolean; balance?: boolean; chat?: boolean }
 type BalanceInfo = { balance?: string; tier?: string }
-
-const PROVIDER_COLORS: Record<string, string> = {
-  openai: "text-accent",
-  anthropic: "text-warning",
-  gateway: "text-info",
-}
-
-function providerColor(provider: string): string {
-  return PROVIDER_COLORS[provider] ?? "text-text-secondary"
-}
 
 export default function HighValuePage() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -33,6 +25,8 @@ export default function HighValuePage() {
   const [busy, setBusy] = useState<Record<string, RowBusy>>({})
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
+
+  const { table, columnSizeVars } = useKeyTableSizing()
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["high-value"],
@@ -299,8 +293,15 @@ export default function HighValuePage() {
           </div>
           {providerStats.map(([provider, count]) => (
             <div key={provider} className="flex flex-col items-end gap-0.5 px-1">
-              <span className={cn("font-mono text-xl font-semibold", providerColor(provider))}>{count}</span>
-              <span className="font-mono text-[11px] text-text-muted">{provider}</span>
+              <span
+                className="font-mono text-xl font-semibold"
+                style={{ color: providerBrandColor(provider) }}
+              >
+                {count}
+              </span>
+              <span className="font-mono text-[11px] text-text-muted">
+                {providerBrand(provider).label || provider}
+              </span>
             </div>
           ))}
         </div>
@@ -318,9 +319,10 @@ export default function HighValuePage() {
         csvLabel="导出全部 · CSV"
       />
 
-      <KeyTableHeader />
-
-      {body}
+      <div className="flex min-h-0 flex-1 flex-col" style={columnSizeVars}>
+        <KeyTableHeader table={table} />
+        {body}
+      </div>
 
       <ChatTestDialog
         open={chatIndex !== null}

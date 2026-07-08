@@ -1,19 +1,57 @@
 import { memo, useCallback } from "react"
 import { Braces, Loader2, Table as TableIcon } from "lucide-react"
+import type { Header, Table } from "@tanstack/react-table"
 import { KeyRow, type KeyRowProps } from "@/components/key-row"
+import { colWidthStyle, type KeyColumnId } from "@/components/key-table-columns"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 
+const COLUMN_LABELS: Record<KeyColumnId, string> = {
+  apikey: "APIKEY",
+  endpoint: "APIURL / HOST",
+  provider: "PROVIDER",
+  balance: "BALANCE",
+  status: "STATUS",
+}
+
+/** A single resizable header cell with its drag grip on the right edge. */
+function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) {
+  const id = header.column.id as KeyColumnId
+  const canResize = header.column.getCanResize()
+  return (
+    <span className="relative flex shrink-0 items-center" style={colWidthStyle(id)}>
+      <span className="truncate">{COLUMN_LABELS[id] ?? id}</span>
+      {canResize ? (
+        <span
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={`Resize ${COLUMN_LABELS[id] ?? id} column`}
+          onMouseDown={header.getResizeHandler()}
+          onTouchStart={header.getResizeHandler()}
+          onDoubleClick={() => header.column.resetSize()}
+          className="group absolute -right-3.5 top-0 flex h-full w-3.5 cursor-col-resize touch-none items-center justify-center select-none"
+        >
+          <span
+            className={cn(
+              "h-4 w-0.5 rounded-full transition-colors",
+              "bg-border-primary group-hover:bg-accent",
+              header.column.getIsResizing() && "bg-accent",
+            )}
+          />
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
 /** Column-aligned table header matching the shared `KeyRow` layout. */
-export function KeyTableHeader() {
+export function KeyTableHeader({ table }: Readonly<{ table: Table<unknown> }>) {
   return (
     <div className="flex items-center gap-3.5 border-b border-border-primary bg-surface-base px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.4px] text-text-muted">
       <span className="size-4 shrink-0" aria-hidden />
-      <span className="w-[280px]">APIKEY</span>
-      <span className="w-[230px]">APIURL / HOST</span>
-      <span className="w-24">PROVIDER</span>
-      <span className="w-[100px]">BALANCE</span>
-      <span className="w-[110px]">STATUS</span>
+      {table.getFlatHeaders().map((header) => (
+        <HeaderCell key={header.id} header={header} />
+      ))}
       <span className="flex-1 text-right">测试 / 操作</span>
     </div>
   )

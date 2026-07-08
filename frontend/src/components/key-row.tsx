@@ -1,6 +1,8 @@
 import { useState } from "react"
 import { ChevronDown, Copy, Eye, List, Loader2, MessageSquare, Wallet } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
+import { ProviderBadge } from "@/components/provider-badge"
+import { colWidthStyle } from "@/components/key-table-columns"
 import { StatusBadge, type StatusVariant } from "@/components/status-badge"
 import { cn } from "@/lib/utils"
 
@@ -63,18 +65,18 @@ function KeyCell({
   onCopy,
 }: Readonly<Pick<KeyRowProps, "maskedKey" | "onReveal" | "onCopy">>) {
   return (
-    <div className="flex w-[280px] items-center gap-2">
+    <div className="flex shrink-0 items-center gap-2" style={colWidthStyle("apikey")}>
       {onReveal ? (
         <button
           type="button"
           onClick={onReveal}
           title="Reveal key"
-          className="truncate font-mono text-[13px] text-text-primary hover:text-accent"
+          className="min-w-0 truncate font-mono text-[13px] text-text-primary hover:text-accent"
         >
           {maskedKey}
         </button>
       ) : (
-        <span className="truncate font-mono text-[13px] text-text-primary">{maskedKey}</span>
+        <span className="min-w-0 truncate font-mono text-[13px] text-text-primary">{maskedKey}</span>
       )}
       {onReveal ? (
         <button type="button" onClick={onReveal} aria-label="Reveal key" className={ICON_BUTTON}>
@@ -215,27 +217,25 @@ export function KeyRow({
 
         <KeyCell maskedKey={maskedKey} onReveal={onReveal} onCopy={onCopy} />
 
-        <div className="flex w-[230px] flex-col gap-0.5 overflow-hidden">
+        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("endpoint")}>
           <span className="truncate font-mono text-xs text-text-secondary">{apiurl}</span>
           <span className="truncate font-mono text-[11px] text-text-muted">{host}</span>
         </div>
 
-        <div className="w-24">
-          {provider ? (
-            <span className="inline-flex rounded-sm bg-surface-overlay px-2 py-0.5 font-mono text-[11px] font-medium text-text-secondary">
-              {provider}
-            </span>
-          ) : null}
+        <div className="min-w-0 shrink-0 overflow-hidden" style={colWidthStyle("provider")}>
+          {provider ? <ProviderBadge provider={provider} /> : null}
         </div>
 
-        <div className="flex w-[100px] flex-col gap-0.5">
+        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("balance")}>
           {balance ? (
-            <span className="font-mono text-sm font-semibold text-success">{balance}</span>
-          ) : null}
-          {tier ? <span className="font-mono text-[11px] text-text-muted">{tier}</span> : null}
+            <span className="truncate font-mono text-sm font-semibold text-success">{balance}</span>
+          ) : (
+            <span className="font-mono text-sm text-text-muted">N/A</span>
+          )}
+          {tier ? <span className="truncate font-mono text-[11px] text-text-muted">{tier}</span> : null}
         </div>
 
-        <div className="w-[110px]">
+        <div className="min-w-0 shrink-0 overflow-hidden" style={colWidthStyle("status")}>
           {status ? <StatusBadge variant={status.variant} label={status.label} /> : null}
         </div>
 

@@ -12,6 +12,7 @@ import {
 } from "@/lib/api"
 import { ChatTestDialog } from "@/components/chat-test-dialog"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
+import { useKeyTableSizing } from "@/components/key-table-columns"
 import { deriveKeyStatus, extractKeyFields } from "@/components/key-record"
 import { cn, copyToClipboard } from "@/lib/utils"
 
@@ -51,6 +52,8 @@ export default function RunResultsPage() {
   const [exporting, setExporting] = useState(false)
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
+
+  const { table, columnSizeVars } = useKeyTableSizing()
 
   const validQuery = useQuery({
     queryKey: ["run", runId, "valid"],
@@ -394,9 +397,10 @@ export default function RunResultsPage() {
         exporting={exporting}
       />
 
-      <KeyTableHeader />
-
-      {body}
+      <div className="flex min-h-0 flex-1 flex-col" style={columnSizeVars}>
+        <KeyTableHeader table={table} />
+        {body}
+      </div>
 
       <ChatTestDialog
         open={chatIndex !== null}
