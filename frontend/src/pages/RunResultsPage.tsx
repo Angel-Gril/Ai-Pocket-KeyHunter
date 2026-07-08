@@ -13,7 +13,7 @@ import {
 import { ChatTestDialog } from "@/components/chat-test-dialog"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { deriveKeyStatus, extractKeyFields } from "@/components/key-record"
-import { cn } from "@/lib/utils"
+import { cn, copyToClipboard } from "@/lib/utils"
 
 type Revealed = { apikey: string; apiurl: string }
 type RowBusy = { models?: boolean; balance?: boolean; chat?: boolean }
@@ -134,7 +134,7 @@ export default function RunResultsPage() {
     async (index: number) => {
       try {
         const { apikey } = await ensureRevealed(index)
-        await navigator.clipboard.writeText(apikey)
+        await copyToClipboard(apikey)
         toast.success("已复制密钥到剪贴板")
       } catch (err) {
         toast.error("复制失败", { description: errorMessage(err, "剪贴板不可用") })
