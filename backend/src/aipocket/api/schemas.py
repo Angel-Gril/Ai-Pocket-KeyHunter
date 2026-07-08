@@ -82,6 +82,13 @@ class RevealResponse(BaseModel):
     apiurl: str = ""
 
 
+class HighValueRevealRequest(BaseModel):
+    """Reveal a high-value plaintext apikey by its masked value (cross-run store)."""
+
+    masked: str
+    apiurl: str | None = None
+
+
 # ----------------------------------------------------------------------------
 # Export
 # ----------------------------------------------------------------------------

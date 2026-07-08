@@ -7,16 +7,17 @@ import json
 import pytest
 
 from aipocket.core.config import Settings
+from aipocket.core.models import Credential, ValidationResult
 from aipocket.services.high_value_writer import (
     is_alive_status,
     is_high_value_key,
     load_all,
     reset_session,
+    reveal_apikey,
     save_high_value_key,
     should_save,
     try_save,
 )
-from aipocket.core.models import Credential, ValidationResult
 
 
 @pytest.fixture(autouse=True)
@@ -202,3 +203,44 @@ class TestLoadAll:
 
     def test_missing_file(self, _patch_results_dir):
         assert load_all() == []
+
+
+class TestRevealApikey:
+    def _seed(self, tmp_path, entries):
+        d = tmp_path / "high_value_keys"
+        d.mkdir()
+        (d / "keys.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8"
+        )
+
+    def test_reveals_by_masked(self, _patch_results_dir, tmp_path):
+        plain = "sk-proj-abcdefghijklmnopqrst"
+        self._seed(tmp_path, [{"apikey": plain, "apiurl": "https://api.openai.com/v1"}])
+        # Masked form is what the /high-value list returns to the client.
+        from aipocket.api.masking import mask_apikey
+
+        found = reveal_apikey(mask_apikey(plain))
+        assert found["apikey"] == plain
+        assert found["apiurl"] == "https://api.openai.com/v1"
+
+    def test_disambiguates_by_apiurl(self, _patch_results_dir, tmp_path):
+        # Two keys that mask identically (same prefix + last4) — apiurl breaks the tie.
+        from aipocket.api.masking import mask_apikey
+
+        a = "sk-ant-0000000000000000wxyz"
+        b = "sk-ant-1111111111111111wxyz"
+        assert mask_apikey(a) == mask_apikey(b)
+        self._seed(
+            tmp_path,
+            [
+                {"apikey": a, "apiurl": "https://one.example/v1"},
+                {"apikey": b, "apiurl": "https://two.example/v1"},
+            ],
+        )
+        found = reveal_apikey(mask_apikey(b), apiurl="https://two.example/v1")
+        assert found["apikey"] == b
+
+    def test_not_found_raises(self, _patch_results_dir, tmp_path):
+        self._seed(tmp_path, [{"apikey": "sk-proj-real123456789", "apiurl": ""}])
+        with pytest.raises(KeyError):
+            reveal_apikey("sk-proj-****zzzz")

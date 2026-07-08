@@ -386,6 +386,8 @@ export const api = {
 
   // High-value
   getHighValue: () => request<HighValueResponse>("/high-value"),
+  highValueReveal: (body: { masked: string; apiurl?: string }) =>
+    request<RevealResponse>("/high-value/reveal", { method: "POST", body }),
 
   // Single-key testing
   keyModels: (body: KeyRef) => request<ModelsResponse>("/key/models", { method: "POST", body }),

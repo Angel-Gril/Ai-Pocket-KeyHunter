@@ -6,11 +6,16 @@ import asyncio
 
 from fastapi import APIRouter, Depends
 
-from aipocket.services.high_value_writer import load_all
-from ..deps import get_current_user
-from ..masking import mask_apikey
+from aipocket.services.high_value_writer import load_all, reveal_apikey
 
-router = APIRouter(prefix="/api/high-value", tags=["high-value"], dependencies=[Depends(get_current_user)])
+from ..deps import get_current_user
+from ..errors import ApiError
+from ..masking import mask_apikey
+from ..schemas import HighValueRevealRequest, RevealResponse
+
+router = APIRouter(
+    prefix="/api/high-value", tags=["high-value"], dependencies=[Depends(get_current_user)]
+)
 
 
 @router.get("")
@@ -35,3 +40,13 @@ async def get_high_value() -> dict:
     # Newest first by saved_at.
     masked.sort(key=lambda r: r.get("saved_at", ""), reverse=True)
     return {"results": masked}
+
+
+@router.post("/reveal", response_model=RevealResponse)
+async def reveal_high_value(body: HighValueRevealRequest) -> RevealResponse:
+    """Recover ONE plaintext high-value apikey by its masked value."""
+    try:
+        found = await asyncio.to_thread(reveal_apikey, body.masked, body.apiurl)
+    except KeyError as e:
+        raise ApiError("key not found", status_code=404, code="not_found") from e
+    return RevealResponse(apikey=found["apikey"], apiurl=found.get("apiurl", ""))

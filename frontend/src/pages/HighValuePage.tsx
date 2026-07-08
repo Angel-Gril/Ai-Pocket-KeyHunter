@@ -5,7 +5,7 @@ import { toast } from "sonner"
 import { api, type ExportFormat, type KeyRecord } from "@/lib/api"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { deriveKeyStatus, extractKeyFields, providerOf } from "@/components/key-record"
-import { cn } from "@/lib/utils"
+import { cn, copyToClipboard } from "@/lib/utils"
 
 const PROVIDER_COLORS: Record<string, string> = {
   openai: "text-accent",
@@ -20,6 +20,8 @@ function providerColor(provider: string): string {
 export default function HighValuePage() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [exporting, setExporting] = useState(false)
+  // Plaintext apikeys recovered via the reveal endpoint, keyed by masked value.
+  const [revealed, setRevealed] = useState<Record<string, string>>({})
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["high-value"],
@@ -65,6 +67,46 @@ export default function HighValuePage() {
     }
   }, [])
 
+  // Recover (and cache) the plaintext apikey for a row by its masked value.
+  const ensureRevealed = useCallback(
+    async (index: number): Promise<string> => {
+      const fields = extractKeyFields(records[index])
+      const cached = revealed[fields.maskedKey]
+      if (cached) return cached
+      const res = await api.highValueReveal({ masked: fields.maskedKey, apiurl: fields.apiurl })
+      setRevealed((prev) => ({ ...prev, [fields.maskedKey]: res.apikey }))
+      return res.apikey
+    },
+    [records, revealed],
+  )
+
+  const errorMessage = (err: unknown, fallback: string) =>
+    err instanceof Error ? err.message : fallback
+
+  const handleReveal = useCallback(
+    async (index: number) => {
+      try {
+        await ensureRevealed(index)
+      } catch (err) {
+        toast.error("显示密钥失败", { description: errorMessage(err, "无法读取明文密钥") })
+      }
+    },
+    [ensureRevealed],
+  )
+
+  const handleCopy = useCallback(
+    async (index: number) => {
+      try {
+        const apikey = await ensureRevealed(index)
+        await copyToClipboard(apikey)
+        toast.success("已复制密钥到剪贴板")
+      } catch (err) {
+        toast.error("复制失败", { description: errorMessage(err, "剪贴板不可用") })
+      }
+    },
+    [ensureRevealed],
+  )
+
   const allChecked = records.length > 0 && selected.size === records.length
 
   // Stable per-row view model (fresh `status`/`fields` each render would defeat
@@ -93,7 +135,7 @@ export default function HighValuePage() {
           <IndexedKeyRow
             key={`${fields.maskedKey}:${index}`}
             index={index}
-            maskedKey={fields.maskedKey}
+            maskedKey={revealed[fields.maskedKey] ?? fields.maskedKey}
             apiurl={fields.apiurl}
             host={fields.host}
             provider={fields.provider}
@@ -102,6 +144,8 @@ export default function HighValuePage() {
             status={status}
             selected={selected.has(index)}
             onSelectedChange={handleSelectedChange}
+            onReveal={handleReveal}
+            onCopy={handleCopy}
           />
         ))}
       </div>

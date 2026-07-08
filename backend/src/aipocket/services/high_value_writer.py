@@ -24,10 +24,10 @@ log = logging.getLogger(__name__)
 
 # Key prefixes that qualify as "high-value official" keys.
 HIGH_VALUE_PREFIXES = (
-    "sk-proj-",    # OpenAI project keys
-    "sk-admin-",   # OpenAI admin keys
-    "sk-svcacct-", # OpenAI service account keys
-    "sk-ant-",     # Anthropic (Claude) keys
+    "sk-proj-",  # OpenAI project keys
+    "sk-admin-",  # OpenAI admin keys
+    "sk-svcacct-",  # OpenAI service account keys
+    "sk-ant-",  # Anthropic (Claude) keys
 )
 
 # Status codes that indicate the key is alive (worth saving).
@@ -185,3 +185,29 @@ def load_all() -> list[dict[str, Any]]:
 def reset_session() -> None:
     """Reset the session dedup set (for testing or new scan runs)."""
     _seen_keys.clear()
+
+
+def reveal_apikey(masked: str, apiurl: str | None = None) -> dict[str, str]:
+    """Recover ONE plaintext high-value apikey by matching the masked value.
+
+    High-value keys are stored (PG or JSONL) with the plaintext apikey; the
+    ``/high-value`` list endpoint masks them via :func:`mask_apikey`. This
+    re-reads the store and matches each stored key's re-masking against
+    ``masked`` (optionally disambiguated by ``apiurl``), returning the plaintext.
+
+    Returns ``{"apikey": <plaintext>, "apiurl": ...}``. Raises if not found.
+    """
+    from aipocket.api.masking import mask_apikey
+
+    for entry in load_all():
+        apikey = str(entry.get("apikey", ""))
+        if not apikey:
+            continue
+        if mask_apikey(apikey) != masked:
+            continue
+        entry_url = str(entry.get("apiurl", ""))
+        if apiurl is not None and apiurl != "" and entry_url != apiurl:
+            continue
+        return {"apikey": apikey, "apiurl": entry_url}
+
+    raise KeyError("high-value key not found")
