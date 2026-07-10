@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from aipocket.core.config import settings
+from aipocket.services.queries import CVE_PATH
 
 log = logging.getLogger(__name__)
 
@@ -202,27 +203,32 @@ def merge_cves(
     new: list[dict[str, Any]],
     path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    from aipocket.core.config import settings
-
-    path = path or (Path(__file__).resolve().parents[2] / "sources" / "cve_2026_ai.json")
-    seen = {c["id"] for c in existing}
+    path = path or CVE_PATH
+    by_id = {c["id"]: dict(c) for c in existing}
     added = 0
-    merged = list(existing)
-    new_records: list[dict[str, Any]] = []
+    changed_records: list[dict[str, Any]] = []
     for cve in new:
-        if cve["id"] not in seen:
-            merged.append(cve)
-            new_records.append(cve)
-            seen.add(cve["id"])
+        current = by_id.get(cve["id"])
+        if current is None:
+            by_id[cve["id"]] = dict(cve)
             added += 1
+            changed_records.append(by_id[cve["id"]])
+            continue
+        updated = dict(current)
+        if cve.get("updated_at", "") >= current.get("updated_at", ""):
+            updated.update({key: value for key, value in cve.items() if value not in (None, "", 0, 0.0)})
+        if updated != current:
+            by_id[cve["id"]] = updated
+            changed_records.append(updated)
 
-    if added and settings.pg_enabled:
-        _upsert_cves_pg(new_records)
+    merged = sorted(by_id.values(), key=lambda c: c.get("id", ""))
 
-    if added and path and settings.write_jsonl:
-        merged_sorted = sorted(merged, key=lambda c: c.get("id", ""))
-        path.write_text(json.dumps(merged_sorted, indent=2, ensure_ascii=False), encoding="utf-8")
-        log.info("Wrote %d CVEs (%d new) to %s", len(merged_sorted), added, path)
+    if changed_records and settings.pg_enabled:
+        _upsert_cves_pg(changed_records)
+
+    if changed_records and settings.write_jsonl:
+        path.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
+        log.info("Wrote %d CVEs (%d new) to %s", len(merged), added, path)
 
     return merged, added
 

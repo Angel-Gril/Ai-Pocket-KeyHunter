@@ -55,6 +55,34 @@ def test_normalize_product_variants():
     assert _normalize_product("unknown product") == "unknown product"
 
 
+def test_normalize_product_rejects_empty_and_generic_short_names():
+    assert _normalize_product("") == ""
+    assert _normalize_product("api") == "api"
+    assert _normalize_product("chat") == "chat"
+
+
+def test_build_queries_empty_list_does_not_load_defaults(monkeypatch):
+    monkeypatch.setattr(
+        "aipocket.services.queries.load_cves",
+        lambda: (_ for _ in ()).throw(AssertionError("defaults loaded")),
+    )
+
+    assert build_queries([], skip_direct=True) == []
+
+
+def test_build_queries_unions_duplicate_query_provenance():
+    cves = [
+        {"id": "CVE-2026-1", "cvss": 9.8, "product": "Dify", "type": "认证绕过"},
+        {"id": "CVE-2026-2", "cvss": 8.1, "product": "Dify platform", "type": "信息泄露"},
+    ]
+
+    queries = build_queries(cves, skip_direct=True)
+
+    assert queries
+    assert all(q["advisory_ids"] == ["CVE-2026-1", "CVE-2026-2"] for q in queries)
+    assert all(q["product_hints"] == ["Dify", "Dify platform"] for q in queries)
+
+
 def test_priority_map_has_key_types():
     assert VULN_TYPE_PRIORITIES["API key泄露"] == 1
     assert VULN_TYPE_PRIORITIES["认证绕过"] == 1

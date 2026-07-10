@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -251,27 +252,25 @@ def _should_skip(product: str) -> bool:
 
 def build_queries(
     cves: list[dict[str, Any]] | None = None, *, skip_direct: bool = False
-) -> list[dict[str, str]]:
-    cves = cves or load_cves()
-    seen: set[str] = set()
-    out: list[dict[str, str]] = []
+) -> list[dict[str, Any]]:
+    cves = load_cves() if cves is None else cves
+    by_query: dict[str, dict[str, Any]] = {}
 
     for tmpl in CREDENTIAL_QUERIES:
         if skip_direct:
             continue
         q = tmpl
-        if q in seen:
+        if q in by_query:
             continue
-        seen.add(q)
-        out.append(
-            {
+        by_query[q] = {
                 "query": q,
                 "cve_id": "DIRECT-CRED-LEAK",
+                "advisory_ids": ["DIRECT-CRED-LEAK"],
+                "product_hints": ["generic"],
                 "product": "generic",
                 "type": "API key泄露",
                 "cvss": "",
             }
-        )
 
     sorted_cves = sorted(
         cves, key=lambda c: (VULN_TYPE_PRIORITIES.get(c.get("type", ""), 9), -c.get("cvss", 0))
@@ -294,26 +293,34 @@ def build_queries(
 
         for tmpl in templates:
             q = f'{tmpl} && status_code="200"'
-            if q in seen:
+            if q in by_query:
+                entry = by_query[q]
+                if cve["id"] not in entry["advisory_ids"]:
+                    entry["advisory_ids"].append(cve["id"])
+                if product not in entry["product_hints"]:
+                    entry["product_hints"].append(product)
                 continue
-            seen.add(q)
-            out.append(
-                {
+            by_query[q] = {
                     "query": q,
                     "cve_id": cve["id"],
+                    "advisory_ids": [cve["id"]],
+                    "product_hints": [product],
                     "product": product,
                     "type": cve_type,
                     "cvss": str(cve.get("cvss", "")),
                 }
-            )
 
-    return out
+    return list(by_query.values())
 
 
 def _normalize_product(product: str) -> str:
-    p = product.lower()
+    p = product.lower().strip()
+    if not p:
+        return product
     for key in PRODUCT_QUERIES:
-        if key.lower() in p or p in key.lower():
+        key_tokens = re.findall(r"[a-z0-9]+", key.lower())
+        product_tokens = re.findall(r"[a-z0-9]+", p)
+        if key_tokens and all(token in product_tokens for token in key_tokens):
             return key
     if "litellm" in p:
         return "LiteLLM"

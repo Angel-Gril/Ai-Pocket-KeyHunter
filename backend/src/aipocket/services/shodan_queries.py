@@ -166,7 +166,7 @@ SHARD_PRODUCTS: set[str] = {"New-API", "OpenWebUI", "LibreChat", "LiteLLM", "Dif
 # cover the bulk; the long tail of low-deployment countries is a deliberate cut.
 
 
-def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direct: bool = False) -> list[dict[str, str]]:
+def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direct: bool = False) -> list[dict[str, Any]]:
     """Build the full list of Shodan queries to run.
 
     Returns a list of dicts with the same keys as FOFA's build_queries():
@@ -174,23 +174,23 @@ def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direc
     sources uniformly while keeping the query strings source-specific.
     """
     cves = cves if cves is not None else load_cves()
-    seen: set[str] = set()
-    out: list[dict[str, str]] = []
+    by_query: dict[str, dict[str, Any]] = {}
 
     # 1. Direct credential-leak queries first (highest ROI).
     for q in SHODAN_CREDENTIAL_QUERIES:
         if skip_direct:
             continue
-        if q in seen:
+        if q in by_query:
             continue
-        seen.add(q)
-        out.append({
+        by_query[q] = {
             "query": q,
             "cve_id": "DIRECT-CRED-LEAK",
+            "advisory_ids": ["DIRECT-CRED-LEAK"],
+            "product_hints": ["generic"],
             "product": "generic",
             "type": "API key泄露",
             "cvss": "",
-        })
+        }
 
     # 2. Product-fingerprint queries derived from the CVE map, ordered by priority.
     sorted_cves = sorted(
@@ -222,18 +222,24 @@ def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direc
                 else [tmpl]
             )
             for q in facets:
-                if q in seen:
+                if q in by_query:
+                    entry = by_query[q]
+                    if cve["id"] not in entry["advisory_ids"]:
+                        entry["advisory_ids"].append(cve["id"])
+                    if product not in entry["product_hints"]:
+                        entry["product_hints"].append(product)
                     continue
-                seen.add(q)
-                out.append({
+                by_query[q] = {
                     "query": q,
                     "cve_id": cve["id"],
+                    "advisory_ids": [cve["id"]],
+                    "product_hints": [product],
                     "product": product,
                     "type": cve_type,
                     "cvss": str(cve.get("cvss", "")),
-                })
+                }
 
-    return out
+    return list(by_query.values())
 
 
 # Re-export for callers/tests that want the catalogue alongside the builder.

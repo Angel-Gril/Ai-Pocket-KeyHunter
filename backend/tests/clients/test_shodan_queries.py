@@ -74,7 +74,7 @@ def test_shard_constants_well_formed():
     assert SHARD_COUNTRIES
     assert all(isinstance(c, str) and len(c) == 2 for c in SHARD_COUNTRIES)
     assert len(set(SHARD_COUNTRIES)) == len(SHARD_COUNTRIES)
-    assert SHARD_PRODUCTS <= set(SHODAN_PRODUCT_QUERIES)
+    assert set(SHODAN_PRODUCT_QUERIES) >= SHARD_PRODUCTS
 
 
 def test_shard_products_expand_into_country_facets(real_cves):
@@ -107,3 +107,16 @@ def test_non_shard_products_not_faceted():
         assert matched, f"{product_name} should have a query"
         for q in matched:
             assert "country:" not in q["query"], f"{product_name} unexpectedly faceted: {q['query']}"
+
+
+def test_duplicate_shodan_queries_union_provenance():
+    cves = [
+        {"id": "CVE-2026-1", "cvss": 9.8, "product": "LobeChat", "type": "认证绕过"},
+        {"id": "CVE-2026-2", "cvss": 8.2, "product": "Lobe Chat", "type": "信息泄露"},
+    ]
+
+    queries = build_shodan_queries(cves, skip_direct=True)
+
+    assert len(queries) == 1
+    assert queries[0]["advisory_ids"] == ["CVE-2026-1", "CVE-2026-2"]
+    assert queries[0]["product_hints"] == ["LobeChat", "Lobe Chat"]
