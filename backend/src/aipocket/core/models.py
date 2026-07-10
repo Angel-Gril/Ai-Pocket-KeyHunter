@@ -7,17 +7,18 @@ from pydantic import BaseModel, Field
 
 SourceType = Literal["header", "banner", "body", "fingerprint"]
 
-# Canonical provider categories
-Provider = Literal[
-    "openai", "anthropic", "deepseek", "kimi", "glm",
-    "qwen", "siliconflow", "google", "gateway", "unknown",
+# Canonical provider vocabulary shared by validation and provider routing.
+ProviderName = Literal[
+    "openai", "anthropic", "deepseek", "kimi", "glm", "qwen",
+    "siliconflow", "google", "groq", "openrouter", "azure_openai",
+    "vertex", "gemini", "gateway", "ambiguous", "unknown",
 ]
 ProviderCategory = Literal["international", "domestic", "gateway", "unknown"]
 
 
 class ProviderInfo(BaseModel):
     """Provider classification + model availability for a validated credential."""
-    provider: Provider = "unknown"
+    provider: ProviderName = "unknown"
     category: ProviderCategory = "unknown"
     # Models listed by GET /v1/models (or equivalent)
     models_available: list[str] = Field(default_factory=list)
@@ -39,12 +40,11 @@ class Credential(BaseModel):
     port: str = ""
     product: str = ""
     raw_context: str = ""
-    # Original URL the key was scraped from (leak/discovery site). Populated when
-    # KEY_PREFIX_ROUTING overrides apiurl to the official endpoint — preserves the
-    # true provenance so the leak site isn't lost when validation is redirected.
+    # Original URL the key was scraped from. Populated when provider-registry
+    # key-prefix routing overrides apiurl to the official endpoint, preserving
+    # the true provenance while validation is redirected.
     leak_host: str = ""
-    # True when apiurl was overridden by KEY_PREFIX_ROUTING to an official gateway
-    # (the key was found on an unrelated host but belongs to a known provider).
+    # True when provider-registry routing selected an official validation endpoint.
     routed_to_official: bool = False
 
 

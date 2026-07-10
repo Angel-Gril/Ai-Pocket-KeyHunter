@@ -7,10 +7,28 @@ import { cn } from "@/lib/utils"
  * background is a low-opacity wash of the same hue, so it reads on both the
  * light and dark themes without needing per-mode overrides.
  *
- * Keep the keys in sync with the backend `Provider` literal
- * (backend/src/aipocket/core/models.py).
+ * Keep this vocabulary in sync with backend `ProviderName`
+ * (`backend/src/aipocket/core/models.py`).
  */
-const PROVIDER_BRAND: Record<string, { label: string; color: string }> = {
+export type ProviderName =
+  | "openai"
+  | "anthropic"
+  | "deepseek"
+  | "kimi"
+  | "glm"
+  | "qwen"
+  | "siliconflow"
+  | "google"
+  | "groq"
+  | "openrouter"
+  | "azure_openai"
+  | "vertex"
+  | "gemini"
+  | "gateway"
+  | "ambiguous"
+  | "unknown"
+
+const PROVIDER_BRAND: Record<ProviderName, { label: string; color: string }> = {
   openai: { label: "OpenAI", color: "#10a37f" },
   anthropic: { label: "Anthropic", color: "#d97757" },
   deepseek: { label: "DeepSeek", color: "#4d6bfe" },
@@ -19,7 +37,13 @@ const PROVIDER_BRAND: Record<string, { label: string; color: string }> = {
   qwen: { label: "Qwen", color: "#a855f7" },
   siliconflow: { label: "SiliconFlow", color: "#00b3c4" },
   google: { label: "Google", color: "#4285f4" },
+  groq: { label: "Groq", color: "#f55036" },
+  openrouter: { label: "OpenRouter", color: "#6b5cff" },
+  azure_openai: { label: "Azure OpenAI", color: "#0078d4" },
+  vertex: { label: "Vertex AI", color: "#1a73e8" },
+  gemini: { label: "Gemini", color: "#8e75b2" },
   gateway: { label: "Gateway", color: "#64748b" },
+  ambiguous: { label: "Ambiguous", color: "#d97706" },
   unknown: { label: "Unknown", color: "#7d8db0" },
 }
 
@@ -29,7 +53,9 @@ const FALLBACK = { label: "", color: "#7d8db0" }
 
 /** Look up a provider's brand descriptor (label + hex colour), case-insensitively. */
 export function providerBrand(provider: string): { label: string; color: string } {
-  const brand = PROVIDER_BRAND[provider.toLowerCase()]
+  const brand = (PROVIDER_BRAND as Partial<Record<string, { label: string; color: string }>>)[
+    provider.toLowerCase()
+  ]
   if (brand) return brand
   return { ...FALLBACK, label: provider }
 }

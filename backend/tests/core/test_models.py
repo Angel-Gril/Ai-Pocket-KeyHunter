@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aipocket.core.models import Credential, ScanRunResult, ValidationResult
+from aipocket.core.models import Credential, ProviderInfo, ScanRunResult, ValidationResult
 
 
 def test_credential_defaults():
@@ -48,3 +48,34 @@ def test_credential_invalid_source_type_rejected():
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         Credential(apikey="k", apiurl="u", source_type="invalid")  # type: ignore[arg-type]
+
+
+def test_provider_info_accepts_complete_registry_vocabulary():
+    providers = {
+        "openai",
+        "anthropic",
+        "deepseek",
+        "kimi",
+        "glm",
+        "qwen",
+        "siliconflow",
+        "google",
+        "groq",
+        "openrouter",
+        "azure_openai",
+        "vertex",
+        "gemini",
+        "gateway",
+        "ambiguous",
+        "unknown",
+    }
+    for provider in providers:
+        assert ProviderInfo(provider=provider).provider == provider  # type: ignore[arg-type]
+
+
+def test_provider_info_rejects_unknown_provider_name():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ProviderInfo(provider="not-a-provider")  # type: ignore[arg-type]

@@ -10,6 +10,7 @@ import httpx
 
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
+from aipocket.services.providers import provider_registry, resolve_provider
 
 log = logging.getLogger(__name__)
 
@@ -30,138 +31,6 @@ RATE_LIMIT_HEADERS = [
     "tier",
 ]
 
-# Domain-fingerprint → (provider, category, probe models in priority order).
-# High-value models FIRST for honeypot resistance; cheap fallbacks after.
-DOMAIN_ROUTING: list[tuple[str, str, str, list[str]]] = [
-    (
-        "openai.com",
-        "openai",
-        "international",
-        [
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-4o-mini",
-            "gpt-3.5-turbo",
-        ],
-    ),
-    (
-        "oaiusercontent",
-        "openai",
-        "international",
-        [
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-4o-mini",
-        ],
-    ),
-    (
-        "anthropic.com",
-        "anthropic",
-        "international",
-        [
-            # sonnet-4-6 first: most widely available high-value model on proxies.
-            # fable-5/opus-4-8 are rare; falling through 404s to sonnet is fine.
-            "claude-sonnet-4-6",
-            "claude-sonnet-5",
-            "claude-opus-4-8",
-            "claude-opus-4-7",
-            "claude-haiku-4-5-20251001",
-        ],
-    ),
-    (
-        "deepseek.com",
-        "deepseek",
-        "domestic",
-        [
-            "deepseek-v4-pro",
-            "deepseek-v4-flash",
-            "deepseek-chat",
-        ],
-    ),
-    (
-        "moonshot.cn",
-        "kimi",
-        "domestic",
-        [
-            "kimi-k2.7-code",
-            "kimi-k2.6",
-            "kimi-k2.5",
-            "moonshot-v1-8k",
-        ],
-    ),
-    (
-        "bigmodel.cn",
-        "glm",
-        "domestic",
-        [
-            "glm-5.2",
-            "glm-5.1",
-            "glm-5",
-            "glm-4-flash",
-        ],
-    ),
-    (
-        "zhipuai",
-        "glm",
-        "domestic",
-        [
-            "glm-5.2",
-            "glm-5.1",
-            "glm-5",
-            "glm-4-flash",
-        ],
-    ),
-    (
-        "siliconflow.cn",
-        "siliconflow",
-        "domestic",
-        [
-            "deepseek-ai/DeepSeek-V3",
-            "Qwen/Qwen2.5-7B-Instruct",
-        ],
-    ),
-    (
-        "dashscope.aliyuncs.com",
-        "qwen",
-        "domestic",
-        [
-            "qwen3.7-max",
-            "qwen3-max",
-            "qwen-turbo",
-        ],
-    ),
-    ("baidu.com", "qwen", "domestic", ["ernie-bot-turbo", "ernie-4.0-8k"]),
-    (
-        "googleapis.com",
-        "google",
-        "international",
-        [
-            "gemini-3.5-flash",
-            "gemini-3.1-pro-preview",
-            "gemini-1.5-flash",
-        ],
-    ),
-]
-
-# Fallback model list used when the provider is unknown (e.g. a bare IP gateway)
-# or when /v1/models is unreachable. HIGH-VALUE ONLY — no cheap models.
-# Reason: cheap IDs (gpt-4o-mini, gpt-3.5-turbo) are exactly what honeypots
-# hardcode, so probing with them validates nothing and inflates false positives.
-# If a random gateway actually serves one of these, that's the finding we want.
-FALLBACK_MODELS = [
-    # OpenAI frontier
-    "gpt-5.5",
-    "gpt-5.4",
-    # Anthropic Claude 4 family
-    "claude-sonnet-4-6",
-    "claude-opus-4-8",
-    "claude-opus-4-7",
-    # DeepSeek
-    "deepseek-v4-pro",
-    "deepseek-v4-flash",
-    # Zhipu GLM (glm-5.1 per target spec)
-    "glm-5.1",
-]
 
 # High-value models — the core targets. When any of these appear in /v1/models,
 # we probe with them FIRST (not as a secondary pass). This avoids honeypot false
@@ -217,8 +86,6 @@ HIGH_VALUE_MODELS = [
     "qwen3.5-plus",
 ]
 
-# Providers whose native API is NOT /v1/chat/completions.
-ANTHROPIC_PROVIDERS = {"anthropic"}
 
 
 # "Generation" major version per model family — used to distinguish a plausible
@@ -274,20 +141,6 @@ def _is_severe_model_mismatch(requested: str, actual: str) -> bool:
         return True
     return False
 
-
-# Key-prefix → (official_api_url, provider_name).
-# When a credential's key matches one of these prefixes but its apiurl points to an
-# unrelated leaked host (e.g. a PHP blog that exposed the key in response headers),
-# we override the apiurl with the official endpoint so the key is actually testable.
-KEY_PREFIX_ROUTING: list[tuple[str, str, str]] = [
-    ("sk-proj", "https://api.openai.com/v1", "openai"),
-    ("sk-admin", "https://api.openai.com/v1", "openai"),
-    ("sk-svcacct", "https://api.openai.com/v1", "openai"),
-    ("sk-ant-api", "https://api.anthropic.com/v1", "anthropic"),
-    ("sk-ant-oat", "https://api.anthropic.com/v1", "anthropic"),
-    ("sk-ant-sid", "https://api.anthropic.com/v1", "anthropic"),
-    ("AIza", "https://generativelanguage.googleapis.com/v1beta", "google"),
-]
 
 
 async def validate_all(credentials: list[Credential]) -> list[ValidationResult]:
@@ -511,14 +364,6 @@ async def _probe_one(
     return result
 
 
-def _route_provider(apiurl: str) -> tuple[str, str, list[str]]:
-    """Return (provider, category, probe_models) based on the apiurl domain."""
-    host = urlparse(apiurl).hostname or apiurl
-    host_lower = host.lower()
-    for fingerprint, provider, category, models in DOMAIN_ROUTING:
-        if fingerprint in host_lower:
-            return provider, category, models
-    return "unknown", "unknown", FALLBACK_MODELS
 
 
 async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResult:
@@ -526,43 +371,42 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
 
     effective_url = cred.apiurl
 
-    for prefix, official_url, _provider_name in KEY_PREFIX_ROUTING:
-        if cred.apikey.startswith(prefix):
-            host = (urlparse(cred.apiurl).hostname or "").lower()
-            is_known_gateway = any(fingerprint in host for fingerprint, _, _, _ in DOMAIN_ROUTING)
-            if not is_known_gateway:
-                # Persist the override so downstream stages (balance, verify_no_auth,
-                # output) see the endpoint the key is ACTUALLY validated against,
-                # not the leaking blog/banner host the key was scraped from. The
-                # original leak site is preserved in cred.leak_host.
-                cred.leak_host = cred.apiurl
-                cred.apiurl = official_url
-                cred.routed_to_official = True
-                parsed = urlparse(official_url)
-                cred.host = parsed.hostname or cred.host
-                # ip/port described the leak host, not the official gateway — clear
-                # them so clustering/no-auth logic keys on the validation endpoint.
-                cred.ip = ""
-                cred.port = str(parsed.port) if parsed.port else ""
-                effective_url = official_url
-                log.debug(
-                    "Key %s… matches prefix '%s' but apiurl '%s' is not a known "
-                    "provider gateway → overriding to %s (leak_host=%s)",
-                    cred.apikey[:12],
-                    prefix,
-                    cred.leak_host,
-                    official_url,
-                    cred.leak_host,
-                )
-            break
+    key_spec = provider_registry.match_key(cred.apikey)
+    if key_spec is not None and key_spec.official_api_url:
+        domain_spec = provider_registry.match_domain(cred.apiurl)
+        if domain_spec is None:
+            # Persist the override so downstream stages (balance, verify_no_auth,
+            # output) see the endpoint the key is ACTUALLY validated against,
+            # not the leaking site where it was discovered.
+            cred.leak_host = cred.apiurl
+            cred.apiurl = key_spec.official_api_url
+            cred.routed_to_official = True
+            parsed = urlparse(key_spec.official_api_url)
+            cred.host = parsed.hostname or cred.host
+            cred.ip = ""
+            cred.port = str(parsed.port) if parsed.port else ""
+            effective_url = key_spec.official_api_url
+            log.debug(
+                "Key %s… matches provider '%s' but apiurl '%s' is not a known "
+                "provider gateway → overriding to %s (leak_host=%s)",
+                cred.apikey[:12],
+                key_spec.name,
+                cred.leak_host,
+                key_spec.official_api_url,
+                cred.leak_host,
+            )
 
     api_url = _normalize_apiurl(effective_url)
     if not api_url:
         result.error = "no apiurl"
         return result
 
-    provider, category, probe_models = _route_provider(effective_url)
-    result.provider_info = ProviderInfo.model_validate({"provider": provider, "category": category})
+    resolution = resolve_provider(apiurl=effective_url, apikey=cred.apikey)
+    probe_models = list(resolution.default_model_hints)
+    result.provider_info = ProviderInfo(
+        provider=resolution.provider,
+        category=resolution.category,
+    )
     # Best-effort: query /v1/models to enrich models_available for OpenAI-compatible gateways.
     available_models = await _fetch_models_list(client, cred, api_url)
     if available_models:
@@ -587,7 +431,7 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             # claims to serve.
             probe_models = available_models[:5] + probe_models
 
-    if provider in ANTHROPIC_PROVIDERS:
+    if resolution.protocol_family == "anthropic":
         result = await _probe_anthropic(client, cred, api_url, result, probe_models)
     else:
         result = await _probe_chat_completions(client, cred, api_url, result, probe_models)
