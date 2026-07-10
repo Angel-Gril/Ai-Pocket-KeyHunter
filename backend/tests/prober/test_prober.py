@@ -22,10 +22,12 @@ from aipocket.prober.probers import (
     OneAPIProber,
     OpenWebUIProber,
 )
+from aipocket.prober.runner import _select_prober
 
 # ---------------------------------------------------------------------------
 # Key extraction
 # ---------------------------------------------------------------------------
+
 
 class TestExtractKeys:
     def test_openrouter_uuid_format(self):
@@ -89,36 +91,62 @@ class TestExtractKeys:
 # Product fingerprinting
 # ---------------------------------------------------------------------------
 
+
 class TestFingerprinting:
-    @pytest.mark.parametrize("prober_cls,blob", [
-        (FlowiseProber, "Flowise - Build AI Apps"),
-        (LangflowProber, "langflow"),
-        (LiteLLMProber, "LiteLLM Proxy"),
-        (NewAPIProber, "New API Dashboard"),
-        (OneAPIProber, "One API"),
-        (LobeChatProber, "LobeChat"),
-        (OpenWebUIProber, "Open WebUI"),
-        (LibreChatProber, "LibreChat"),
-        (DifyProber, "Dify"),
-        (FastGPTProber, "FastGPT"),
-    ])
+    @pytest.mark.parametrize(
+        "prober_cls,blob",
+        [
+            (FlowiseProber, "Flowise - Build AI Apps"),
+            (LangflowProber, "langflow"),
+            (LiteLLMProber, "LiteLLM Proxy"),
+            (NewAPIProber, "New API Dashboard"),
+            (OneAPIProber, "One API"),
+            (LobeChatProber, "LobeChat"),
+            (OpenWebUIProber, "Open WebUI"),
+            (LibreChatProber, "LibreChat"),
+            (DifyProber, "Dify"),
+            (FastGPTProber, "FastGPT"),
+        ],
+    )
     def test_identify_positive(self, prober_cls, blob):
         hit = {"title": blob, "header": "", "banner": ""}
         assert prober_cls.identify(hit)
 
-    @pytest.mark.parametrize("prober_cls", [
-        FlowiseProber, LangflowProber, LiteLLMProber, NewAPIProber,
-        OneAPIProber, LobeChatProber, OpenWebUIProber, LibreChatProber,
-        DifyProber, FastGPTProber,
-    ])
+    @pytest.mark.parametrize(
+        "prober_cls",
+        [
+            FlowiseProber,
+            LangflowProber,
+            LiteLLMProber,
+            NewAPIProber,
+            OneAPIProber,
+            LobeChatProber,
+            OpenWebUIProber,
+            LibreChatProber,
+            DifyProber,
+            FastGPTProber,
+        ],
+    )
     def test_identify_negative(self, prober_cls):
         hit = {"title": "nginx", "header": "server: nginx", "banner": ""}
         assert not prober_cls.identify(hit)
+
+    def test_explicit_product_provenance_precedes_textual_fingerprint(self):
+        hit = {
+            "_product": "Dify",
+            "_product_hints": ["dify"],
+            "title": "Flowise - Build AI Apps",
+            "header": "",
+            "banner": "",
+        }
+
+        assert _select_prober(hit, [FlowiseProber, DifyProber]) is DifyProber
 
 
 # ---------------------------------------------------------------------------
 # Active probe with mocked HTTP
 # ---------------------------------------------------------------------------
+
 
 class TestLobeChatProbe:
     @pytest.mark.asyncio
@@ -133,6 +161,7 @@ class TestLobeChatProbe:
             "banner": "",
         }
         import asyncio
+
         sem = asyncio.Semaphore(5)
         with respx.mock(assert_all_called=False) as router:
             router.get("https://lobe.example.com/api/config").mock(
@@ -144,9 +173,7 @@ class TestLobeChatProbe:
             router.get("https://lobe.example.com/api/client/config").mock(
                 return_value=httpx.Response(404)
             )
-            router.get("https://lobe.example.com/api/env").mock(
-                return_value=httpx.Response(404)
-            )
+            router.get("https://lobe.example.com/api/env").mock(return_value=httpx.Response(404))
             async with httpx.AsyncClient() as client:
                 prober = LobeChatProber(client, sem)
                 creds = await prober.probe(hit)
@@ -168,10 +195,13 @@ class TestNewAPIProbe:
             "banner": "",
         }
         import asyncio
+
         sem = asyncio.Semaphore(5)
         with respx.mock(assert_all_called=False) as router:
             router.post("https://newapi.example.com/api/user/login").mock(
-                return_value=httpx.Response(200, json={"success": True, "data": "session-token-abc"}),
+                return_value=httpx.Response(
+                    200, json={"success": True, "data": "session-token-abc"}
+                ),
             )
             router.get("https://newapi.example.com/api/channel/").mock(
                 return_value=httpx.Response(
@@ -200,6 +230,6 @@ class TestNewAPIProbe:
 
 class TestWeakCredentials:
     def test_has_common_defaults(self):
-        pairs = { (u, p) for u, p in WEAK_CREDENTIALS }
+        pairs = {(u, p) for u, p in WEAK_CREDENTIALS}
         assert ("admin", "admin") in pairs
         assert ("admin", "123456") in pairs

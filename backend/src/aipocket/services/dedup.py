@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
 
     from aipocket.core.models import Credential, ValidationResult
+    from aipocket.core.targets import DiscoveryTarget
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +60,10 @@ class DedupStore(Protocol):
     # ---- host-level (probe + GPT share this marker) ----
     async def mark_host(self, host: str) -> None: ...
     async def filter_unseen_hosts(self, hosts: list[dict]) -> list[dict]: ...
+    async def mark_target(self, stage: str, target: DiscoveryTarget) -> None: ...
+    async def filter_unseen_targets(
+        self, stage: str, targets: list[DiscoveryTarget]
+    ) -> list[DiscoveryTarget]: ...
 
     # ---- credential-level validation cache ----
     async def get_cached_valid(self, cred: Credential) -> ValidationResult | None: ...
@@ -83,6 +88,14 @@ class NoopDedupStore:
 
     async def filter_unseen_hosts(self, hosts: list[dict]) -> list[dict]:
         return hosts
+
+    async def mark_target(self, stage: str, target: DiscoveryTarget) -> None:
+        pass
+
+    async def filter_unseen_targets(
+        self, stage: str, targets: list[DiscoveryTarget]
+    ) -> list[DiscoveryTarget]:
+        return targets
 
     async def get_cached_valid(self, cred: Credential) -> ValidationResult | None:
         return None
@@ -133,6 +146,22 @@ class RedisDedupStore:
         seen = await self._r.mget(keys)
         return [h for h, s in zip(hosts, seen, strict=True) if s is None]
 
+    async def mark_target(self, stage: str, target: DiscoveryTarget) -> None:
+        await self._r.set(
+            self._k(f"target:{stage}:{target.identity.identity_hash}"),
+            "1",
+            ex=settings.dedup_host_ttl,
+        )
+
+    async def filter_unseen_targets(
+        self, stage: str, targets: list[DiscoveryTarget]
+    ) -> list[DiscoveryTarget]:
+        if not targets:
+            return targets
+        keys = [self._k(f"target:{stage}:{target.identity.identity_hash}") for target in targets]
+        seen = await self._r.mget(keys)
+        return [target for target, marker in zip(targets, seen, strict=True) if marker is None]
+
     async def get_cached_valid(self, cred: Credential) -> ValidationResult | None:
         from aipocket.core.models import ValidationResult
 
@@ -156,9 +185,7 @@ class RedisDedupStore:
         return bool(await self._r.get(self._k(f"cred:fail:{_cred_key(cred)}")))
 
     async def mark_failed(self, cred: Credential) -> None:
-        await self._r.set(
-            self._k(f"cred:fail:{_cred_key(cred)}"), "1", ex=settings.dedup_fail_ttl
-        )
+        await self._r.set(self._k(f"cred:fail:{_cred_key(cred)}"), "1", ex=settings.dedup_fail_ttl)
 
     async def mark_rejected(self, cred: Credential) -> None:
         await self._r.set(

@@ -9,6 +9,7 @@ from pathlib import Path
 from aipocket.clients.fofa import FofaClient
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ScanRunResult, ValidationResult
+from aipocket.core.targets import canonicalize_hits
 
 from .dedup import DedupStore, get_dedup_store
 from .extractor import extract_credentials
@@ -163,6 +164,8 @@ async def _run_scan_inner(
                 log.error("Source %s failed: %s", name, e)
 
     all_hits = fofa_hits + shodan_hits
+    targets = canonicalize_hits(all_hits)
+    target_hits = [target.to_hit() for target in targets]
     hits_by_source["fofa"] = len(fofa_hits)
     hits_by_source["shodan"] = len(shodan_hits)
 
@@ -171,7 +174,12 @@ async def _run_scan_inner(
             "No discovery source configured. Set FOFA_KEYS and/or SHODAN_KEYS in .env"
         )
 
-    log.info("Total hits: %d (sources: %s)", len(all_hits), ", ".join(sources_used))
+    log.info(
+        "Discovery: raw_hits=%d unique_targets=%d (sources: %s)",
+        len(all_hits),
+        len(targets),
+        ", ".join(sources_used),
+    )
 
     # ------------------------------------------------------------------
     # Shared downstream pipeline (source-agnostic): extract -> validate
@@ -216,12 +224,15 @@ async def _run_scan_inner(
             return bool(_SIGNAL_RE.search(blob))
 
         # Stable sort: high-signal first, rest after
-        probe_targets = sorted(all_hits, key=lambda h: 0 if _has_signal(h) else 1)
+        ordered_targets = sorted(
+            targets, key=lambda target: 0 if _has_signal(target.to_hit()) else 1
+        )
 
         # Cross-run dedup: skip hosts already probed in a previous run.
-        before_probe = len(probe_targets)
-        probe_targets = await dedup.filter_unseen_hosts(probe_targets)
-        if before_probe != len(probe_targets):
+        before_probe = len(ordered_targets)
+        ordered_targets = await dedup.filter_unseen_targets("probe", ordered_targets)
+        probe_targets = [target.to_hit() for target in ordered_targets]
+        if before_probe != len(ordered_targets):
             log.info(
                 "Dedup: host probe %d → %d (skipped %d seen)",
                 before_probe,
@@ -238,17 +249,20 @@ async def _run_scan_inner(
             len(probe_targets) - high_count,
         )
         probed_creds = await probe_hosts(probe_targets)
-        for h in probe_targets:
-            await dedup.mark_host(h.get("host", ""))
+        for target in ordered_targets:
+            await dedup.mark_target("probe", target)
         seen = _merge_credentials(creds, probed_creds, seen)
         log.info("After active probing: %d candidate credentials", len(creds))
 
     from .analyzer import extract_with_gpt
 
-    sampled = _sample_hits_for_gpt(all_hits)
+    sampled = _sample_hits_for_gpt(target_hits)
     # Cross-run dedup: hosts already GPT-extracted in a previous run are skipped.
     before_gpt = len(sampled)
-    sampled = await dedup.filter_unseen_hosts(sampled)
+    sampled_identities = {hit["host"] for hit in sampled}
+    sampled_targets = [target for target in targets if target.identity.url in sampled_identities]
+    sampled_targets = await dedup.filter_unseen_targets("gpt", sampled_targets)
+    sampled = [target.to_hit() for target in sampled_targets]
     if before_gpt != len(sampled):
         log.info(
             "Dedup: GPT sampling %d → %d (skipped %d seen hosts)",
@@ -265,8 +279,8 @@ async def _run_scan_inner(
         shodan_sampled,
     )
     gpt_creds = await extract_with_gpt(sampled)
-    for h in sampled:
-        await dedup.mark_host(h.get("host", ""))
+    for target in sampled_targets:
+        await dedup.mark_target("gpt", target)
     if gpt_creds:
         seen = _merge_credentials(creds, gpt_creds, seen)
         log.info("After GPT enrichment: %d candidate credentials", len(creds))
@@ -280,7 +294,9 @@ async def _run_scan_inner(
             "state": "finished",
             "sources": sources_used,
             "hits_by_source": hits_by_source,
-            "total_hosts": len(all_hits),
+            "raw_hits": len(all_hits),
+            "unique_targets": len(targets),
+            "total_hosts": len(targets),
             "total_credentials": 0,
             "queries_used": queries_used,
         }
@@ -296,7 +312,7 @@ async def _run_scan_inner(
             finished_at=finished,
             sources=sources_used,
             hits_by_source=hits_by_source,
-            total_hosts=len(all_hits),
+            total_hosts=len(targets),
             total_credentials=0,
             total_valid=0,
             queries_used=queries_used,
@@ -358,7 +374,9 @@ async def _run_scan_inner(
                 "started_at": started,
                 "sources": sources_used,
                 "hits_by_source": hits_by_source,
-                "total_hosts": len(all_hits),
+                "raw_hits": len(all_hits),
+                "unique_targets": len(targets),
+                "total_hosts": len(targets),
                 "total_credentials": len(creds),
                 "queries_used": queries_used,
             },
@@ -424,7 +442,9 @@ async def _run_scan_inner(
             "state": "finished",
             "sources": sources_used,
             "hits_by_source": hits_by_source,
-            "total_hosts": len(all_hits),
+            "raw_hits": len(all_hits),
+            "unique_targets": len(targets),
+            "total_hosts": len(targets),
             "total_credentials": len(creds),
             "queries_used": queries_used,
         }
@@ -435,7 +455,7 @@ async def _run_scan_inner(
         finished_at=finished,
         sources=sources_used,
         hits_by_source=hits_by_source,
-        total_hosts=len(all_hits),
+        total_hosts=len(targets),
         total_credentials=len(creds),
         total_valid=len(valid),
         queries_used=queries_used,

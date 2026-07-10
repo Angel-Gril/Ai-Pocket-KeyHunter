@@ -4,6 +4,7 @@ import pytest
 
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ValidationResult
+from aipocket.core.targets import canonicalize_hits
 from aipocket.services.dedup import (
     NoopDedupStore,
     RedisDedupStore,
@@ -91,6 +92,27 @@ async def test_host_filter_empty_input(redis_store):
     assert await store.filter_unseen_hosts([]) == []
 
 
+async def test_probe_marker_does_not_hide_target_from_gpt_stage(redis_store):
+    store, client = redis_store
+    target = canonicalize_hits([{"host": "https://example.com"}])[0]
+
+    await store.mark_target("probe", target)
+
+    assert await store.filter_unseen_targets("gpt", [target]) == [target]
+    keys = await client.keys("*")
+    assert any("target:probe:" in key for key in keys)
+
+
+async def test_target_marker_filters_only_same_stage(redis_store):
+    store, _ = redis_store
+    target = canonicalize_hits([{"host": "https://example.com"}])[0]
+
+    await store.mark_target("gpt", target)
+
+    assert await store.filter_unseen_targets("gpt", [target]) == []
+    assert await store.filter_unseen_targets("probe", [target]) == [target]
+
+
 async def test_valid_result_round_trip(redis_store):
     store, _ = redis_store
     cred = _cred()
@@ -152,6 +174,7 @@ async def test_corrupt_cred_cache_returns_none(redis_store):
     # Write garbage directly under the cred key.
     from aipocket.services.dedup import _PREFIX
     from aipocket.services.dedup import _cred_key as ck
+
     await client.set(f"{_PREFIX}:cred:ok:{ck(cred)}", "not-json{")
     assert await store.get_cached_valid(cred) is None
 
@@ -161,6 +184,7 @@ async def test_balance_corrupt_returns_none(redis_store):
     cred = _cred()
     from aipocket.services.dedup import _PREFIX
     from aipocket.services.dedup import _cred_key as ck
+
     await client.set(f"{_PREFIX}:cred:bal:{ck(cred)}", "not-json")
     assert await store.get_cached_balance(cred) is None
 

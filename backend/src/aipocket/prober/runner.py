@@ -15,6 +15,7 @@ import httpx
 
 from aipocket.core.config import settings
 from aipocket.core.models import Credential
+
 from .base import PROBE_TIMEOUT, Prober
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,24 @@ def _all_probers() -> list[type[Prober]]:
     ]
 
 
+def _select_prober(hit: dict[str, Any], prober_classes: list[type[Prober]]) -> type[Prober] | None:
+    hints = {
+        str(value).lower().replace("_", "-")
+        for value in (hit.get("_product_hints") or [hit.get("_product", "")])
+        if value
+    }
+    for cls in prober_classes:
+        if cls.product_name.lower() in hints:
+            return cls
+    for cls in prober_classes:
+        try:
+            if cls.identify(hit):
+                return cls
+        except Exception:  # noqa: BLE001 — identify must never crash the run
+            continue
+    return None
+
+
 async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
     """Probe all hits for exposed credentials.
 
@@ -69,17 +88,11 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
     assignments: list[tuple[type[Prober], dict[str, Any]]] = []
     unmatched_hits: list[dict[str, Any]] = []
     for hit in hits:
-        matched = False
-        for cls in prober_classes:
-            try:
-                if cls.identify(hit):
-                    assignments.append((cls, hit))
-                    matched = True
-                    break  # one prober per hit is enough
-            except Exception:  # noqa: BLE001 — identify must never crash the run
-                continue
-        if not matched:
+        selected = _select_prober(hit, prober_classes)
+        if selected is None:
             unmatched_hits.append(hit)
+        else:
+            assignments.append((selected, hit))
 
     # Route unmatched hosts to GenericPageProber — fetches index + .env + common
     # config paths to catch keys (especially Claude/Anthropic) in page bodies.

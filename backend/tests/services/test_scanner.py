@@ -38,19 +38,41 @@ async def test_run_scan_fofa_and_shodan_both_run(tmp_path, monkeypatch):
     monkeypatch.setattr("aipocket.core.config.settings.results_dir", str(tmp_path))
 
     fofa_hits = [
-        {"host": "https://a.com", "ip": "1.1.1.1", "port": "443",
-         "header": f"Bearer {FOFA_KEY}", "banner": "", "title": "", "product": "", "cert": ""}
+        {
+            "host": "https://a.com",
+            "ip": "1.1.1.1",
+            "port": "443",
+            "header": f"Bearer {FOFA_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
     ]
     shodan_hits = [
-        {"host": "https://b.com", "ip": "2.2.2.2", "port": "443",
-         "header": f"Bearer {FOFA_KEY}", "banner": "", "title": "", "product": "", "cert": ""}
+        {
+            "host": "https://b.com",
+            "ip": "2.2.2.2",
+            "port": "443",
+            "header": f"Bearer {FOFA_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
     ]
 
-    monkeypatch.setattr("aipocket.services.scanner.FofaClient", lambda: _make_mock_client(fofa_hits))
-    monkeypatch.setattr("aipocket.clients.shodan.ShodanClient", lambda: _make_mock_client(shodan_hits))
+    monkeypatch.setattr(
+        "aipocket.services.scanner.FofaClient", lambda: _make_mock_client(fofa_hits)
+    )
+    monkeypatch.setattr(
+        "aipocket.clients.shodan.ShodanClient", lambda: _make_mock_client(shodan_hits)
+    )
 
     async def fake_validate(creds):
-        return [ValidationResult(credential=c, valid=True, status_code=200, tier="tier5") for c in creds]
+        return [
+            ValidationResult(credential=c, valid=True, status_code=200, tier="tier5") for c in creds
+        ]
 
     monkeypatch.setattr("aipocket.services.scanner.validate_all", fake_validate)
 
@@ -70,8 +92,14 @@ async def test_run_scan_fofa_and_shodan_both_run(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_run_scan_same_key_from_both_sources_merges_backend(tmp_path, monkeypatch):
     """When both sources find the same apikey+url, the credential keeps both backends."""
-    monkeypatch.setattr("aipocket.services.scanner.build_queries", lambda **kw: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}])
-    monkeypatch.setattr("aipocket.services.shodan_queries.build_shodan_queries", lambda **kw: [{"query": "sq", "cve_id": "sc", "product": "sp", "type": "t"}])
+    monkeypatch.setattr(
+        "aipocket.services.scanner.build_queries",
+        lambda **kw: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}],
+    )
+    monkeypatch.setattr(
+        "aipocket.services.shodan_queries.build_shodan_queries",
+        lambda **kw: [{"query": "sq", "cve_id": "sc", "product": "sp", "type": "t"}],
+    )
     monkeypatch.setattr("aipocket.core.config.settings.fofa_keys", "k")
     monkeypatch.setattr("aipocket.core.config.settings.shodan_keys", "sk")
     monkeypatch.setattr("aipocket.core.config.settings.gpt_key", "")
@@ -79,12 +107,24 @@ async def test_run_scan_same_key_from_both_sources_merges_backend(tmp_path, monk
     monkeypatch.setattr("aipocket.core.config.settings.results_dir", str(tmp_path))
 
     same_hits = [
-        {"host": "https://a.com", "ip": "1.1.1.1", "port": "443",
-         "header": f"Bearer {FOFA_KEY}", "banner": "", "title": "", "product": "", "cert": ""}
+        {
+            "host": "https://a.com",
+            "ip": "1.1.1.1",
+            "port": "443",
+            "header": f"Bearer {FOFA_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
     ]
     # distinct dict objects per source (the scanner tags each hit with _source)
-    monkeypatch.setattr("aipocket.services.scanner.FofaClient", lambda: _make_mock_client(copy.deepcopy(same_hits)))
-    monkeypatch.setattr("aipocket.clients.shodan.ShodanClient", lambda: _make_mock_client(copy.deepcopy(same_hits)))
+    monkeypatch.setattr(
+        "aipocket.services.scanner.FofaClient", lambda: _make_mock_client(copy.deepcopy(same_hits))
+    )
+    monkeypatch.setattr(
+        "aipocket.clients.shodan.ShodanClient", lambda: _make_mock_client(copy.deepcopy(same_hits))
+    )
 
     async def fake_validate(creds):
         return [ValidationResult(credential=c, valid=True, status_code=200) for c in creds]
@@ -99,8 +139,44 @@ async def test_run_scan_same_key_from_both_sources_merges_backend(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_run_scan_probes_unique_targets_and_reports_discovery_counts(tmp_path, monkeypatch):
+    same_endpoint = [{"host": "example.com:443", "protocol": "https", "header": "", "banner": ""}]
+    _scan_mocks(
+        monkeypatch,
+        tmp_path,
+        fofa_hits=copy.deepcopy(same_endpoint),
+        shodan_hits=[
+            {"host": "https://EXAMPLE.com", "protocol": "https", "header": "", "banner": ""}
+        ],
+    )
+    monkeypatch.setattr("aipocket.core.config.settings.gpt_base_url", "")
+    probed: list[dict] = []
+
+    async def capture_probe(hits):
+        probed.extend(hits)
+        return []
+
+    monkeypatch.setattr("aipocket.prober.probe_hosts", capture_probe)
+    (tmp_path / "run_test").mkdir()
+
+    result = await run_scan(max_queries=1, run_dir=tmp_path / "run_test")
+
+    assert len(probed) == 1
+    assert result.total_hosts == 1
+    import json
+
+    scan_path = next((tmp_path / "run_test").glob("scan_*.jsonl"))
+    metadata = json.loads(scan_path.read_text().splitlines()[0])
+    assert metadata["raw_hits"] == 2
+    assert metadata["unique_targets"] == 1
+
+
+@pytest.mark.asyncio
 async def test_run_scan_fofa_only_when_shodan_unconfigured(tmp_path, monkeypatch):
-    monkeypatch.setattr("aipocket.services.scanner.build_queries", lambda **kw: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}])
+    monkeypatch.setattr(
+        "aipocket.services.scanner.build_queries",
+        lambda **kw: [{"query": "q", "cve_id": "c", "product": "p", "type": "t"}],
+    )
     monkeypatch.setattr("aipocket.core.config.settings.fofa_keys", "k")
     monkeypatch.setattr("aipocket.core.config.settings.shodan_keys", "")
     monkeypatch.setattr("aipocket.core.config.settings.gpt_key", "")
@@ -161,7 +237,9 @@ def _scan_mocks(monkeypatch, tmp_path, *, fofa_hits, shodan_hits):
     monkeypatch.setattr("aipocket.core.config.settings.gpt_key", "")
     monkeypatch.setattr("aipocket.core.config.settings.gpt_base_url", "")
     monkeypatch.setattr("aipocket.core.config.settings.results_dir", str(tmp_path))
-    monkeypatch.setattr("aipocket.services.scanner.FofaClient", lambda: _make_mock_client(fofa_hits))
+    monkeypatch.setattr(
+        "aipocket.services.scanner.FofaClient", lambda: _make_mock_client(fofa_hits)
+    )
     monkeypatch.setattr(
         "aipocket.clients.shodan.ShodanClient", lambda: _make_mock_client(shodan_hits)
     )
@@ -178,8 +256,16 @@ async def test_dedup_second_run_skips_cached_valid_credential(tmp_path, monkeypa
     monkeypatch.setattr("aipocket.services.scanner.get_dedup_store", lambda: _returning(store))
 
     hits = [
-        {"host": "https://a.com", "ip": "1.1.1.1", "port": "443",
-         "header": f"Bearer {FOFA_KEY}", "banner": "", "title": "", "product": "", "cert": ""}
+        {
+            "host": "https://a.com",
+            "ip": "1.1.1.1",
+            "port": "443",
+            "header": f"Bearer {FOFA_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
     ]
     _scan_mocks(monkeypatch, tmp_path, fofa_hits=hits, shodan_hits=[])
 
@@ -187,7 +273,9 @@ async def test_dedup_second_run_skips_cached_valid_credential(tmp_path, monkeypa
 
     async def counting_validate(creds):
         validate_calls.append(list(creds))
-        return [ValidationResult(credential=c, valid=True, status_code=200, tier="tier5") for c in creds]
+        return [
+            ValidationResult(credential=c, valid=True, status_code=200, tier="tier5") for c in creds
+        ]
 
     monkeypatch.setattr("aipocket.services.scanner.validate_all", counting_validate)
 
@@ -209,13 +297,23 @@ async def test_dedup_recently_failed_cred_skipped_same_run(tmp_path, monkeypatch
     store = RedisDedupStore(fakeredis.FakeAsyncRedis(decode_responses=True))
     # Pre-seed the cred as recently failed. apiurl matches what the extractor
     # derives from the host (it populates apiurl from host when none in header).
-    cred = Credential(apikey="sk-proj-abc123def456ghi789", apiurl="https://a.com", host="https://a.com")
+    cred = Credential(
+        apikey="sk-proj-abc123def456ghi789", apiurl="https://a.com", host="https://a.com"
+    )
     await store.mark_failed(cred)
     monkeypatch.setattr("aipocket.services.scanner.get_dedup_store", lambda: _returning(store))
 
     hits = [
-        {"host": "https://a.com", "ip": "1.1.1.1", "port": "443",
-         "header": f"Bearer {FOFA_KEY}", "banner": "", "title": "", "product": "", "cert": ""}
+        {
+            "host": "https://a.com",
+            "ip": "1.1.1.1",
+            "port": "443",
+            "header": f"Bearer {FOFA_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
     ]
     _scan_mocks(monkeypatch, tmp_path, fofa_hits=hits, shodan_hits=[])
 
@@ -235,8 +333,16 @@ async def test_dedup_recently_failed_cred_skipped_same_run(tmp_path, monkeypatch
 
 async def test_scanner_passes_forged_key_verdicts_to_finalizer(tmp_path, monkeypatch):
     hits = [
-        {"host": "https://a.com", "ip": "1.1.1.1", "port": "443",
-         "header": f"Bearer {FOFA_KEY}", "banner": "", "title": "", "product": "", "cert": ""}
+        {
+            "host": "https://a.com",
+            "ip": "1.1.1.1",
+            "port": "443",
+            "header": f"Bearer {FOFA_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
     ]
     _scan_mocks(monkeypatch, tmp_path, fofa_hits=hits, shodan_hits=[])
     monkeypatch.setattr("aipocket.core.config.settings.shodan_keys", "")
@@ -266,4 +372,5 @@ class _returning:
     def __await__(self):
         async def _get():
             return self._store
+
         return _get().__await__()
