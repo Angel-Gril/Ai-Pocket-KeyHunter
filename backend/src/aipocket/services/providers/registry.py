@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Mapping
 from urllib.parse import urlparse
 
 from aipocket.core.models import ProviderName
@@ -246,6 +246,18 @@ class ProviderRegistry:
 
     def resolve(self, *, apiurl: str = "", apikey: str = "") -> ProviderResolution:
         domain_match = self._match_domain(apiurl)
+        key_spec = self.match_key(apikey)
+        if (
+            domain_match is not None
+            and key_spec is not None
+            and domain_match[0].name != key_spec.name
+        ):
+            ambiguous = self.get("ambiguous")
+            return ProviderResolution(
+                ambiguous,
+                "provider-conflict",
+                ambiguous.default_model_hints,
+            )
         if domain_match is not None:
             spec, suffix = domain_match
             return ProviderResolution(
@@ -253,7 +265,6 @@ class ProviderRegistry:
                 "domain-match",
                 spec.model_hints_for_domain(suffix),
             )
-        key_spec = self.match_key(apikey)
         if key_spec is not None:
             return ProviderResolution(
                 key_spec,

@@ -5,6 +5,7 @@ import pytest
 import respx
 
 from aipocket.core.models import Credential, ValidationResult
+from aipocket.services.providers import resolve_provider
 from aipocket.services.validator import (
     _extract_rate_headers,
     _infer_tier,
@@ -265,6 +266,46 @@ async def test_validate_all_runs_concurrently():
     results = await validate_all(creds)
     assert len(results) == 2
     assert all(r.valid for r in results)
+
+
+async def test_one_provider_error_does_not_abort_other_credentials(monkeypatch):
+    good = Credential(apikey="test-good-key", apiurl="https://gateway.example")
+    crashing = Credential(apikey="test-crashing-key", apiurl="https://gateway.example")
+
+    async def probe(_client, credential):
+        if credential is crashing:
+            raise RuntimeError("credential plaintext must not escape")
+        return ValidationResult(credential=credential, valid=True)
+
+    monkeypatch.setattr("aipocket.services.validator._probe", probe)
+    monkeypatch.setattr("aipocket.services.high_value_writer.try_save", lambda _result: None)
+
+    results = await validate_all([good, crashing])
+
+    assert len(results) == 2
+    assert results[0].valid is True
+    assert results[1].valid is False
+    assert results[1].error.startswith("internal-validation-error:")
+    assert crashing.apikey not in results[1].error
+
+
+@respx.mock
+async def test_domain_key_conflict_is_not_guessed_or_probed():
+    credential = Credential(
+        apiurl="https://api.openai.com/v1",
+        apikey="sk-ant-api03-" + "A" * 40,
+    )
+
+    decision = resolve_provider(apiurl=credential.apiurl, apikey=credential.apikey)
+    async with httpx.AsyncClient() as client:
+        result = await _probe(client, credential)
+
+    assert decision.provider == "ambiguous"
+    assert decision.reason == "provider-conflict"
+    assert result.valid is False
+    assert result.provider_info.provider == "ambiguous"
+    assert result.error == "provider-conflict"
+    assert len(respx.calls) == 0
 
 
 @respx.mock

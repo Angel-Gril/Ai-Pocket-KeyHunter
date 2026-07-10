@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -350,16 +351,28 @@ async def _probe_one(
     sem: asyncio.Semaphore,
     cred: Credential,
 ) -> ValidationResult:
-    async with sem:
-        result = await _probe(client, cred)
+    try:
+        async with sem:
+            result = await _probe(client, cred)
 
-    # Real-time persistence: save high-value official keys immediately.
-    # Offload to a worker thread — this is a synchronous PG write, and running it
-    # on the event loop (inside validate_all's gather) blocks every other async
-    # endpoint (e.g. /api/cve) for the duration of each insert.
-    from .high_value_writer import try_save
+        # Real-time persistence: save high-value official keys immediately.
+        # Offload to a worker thread — this is a synchronous PG write, and running it
+        # on the event loop (inside validate_all's gather) blocks every other async
+        # endpoint (e.g. /api/cve) for the duration of each insert.
+        from .high_value_writer import try_save
 
-    await asyncio.to_thread(try_save, result)
+        await asyncio.to_thread(try_save, result)
+    except Exception as exc:  # noqa: BLE001 - per-credential isolation boundary
+        fingerprint = hashlib.sha256(cred.apikey.encode()).hexdigest()[:12]
+        log.error(
+            "validation failed unexpectedly for credential fingerprint=%s",
+            fingerprint,
+        )
+        return ValidationResult(
+            credential=cred,
+            valid=False,
+            error=f"internal-validation-error:{type(exc).__name__}",
+        )
 
     return result
 
@@ -402,11 +415,15 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
         return result
 
     resolution = resolve_provider(apiurl=effective_url, apikey=cred.apikey)
-    probe_models = list(resolution.default_model_hints)
     result.provider_info = ProviderInfo(
         provider=resolution.provider,
         category=resolution.category,
     )
+    if resolution.reason == "provider-conflict":
+        result.error = resolution.reason
+        return result
+
+    probe_models = list(resolution.default_model_hints)
     # Best-effort: query /v1/models to enrich models_available for OpenAI-compatible gateways.
     available_models = await _fetch_models_list(client, cred, api_url)
     if available_models:
