@@ -1,6 +1,6 @@
 """Tests for honeypot detection — steganography and prompt injection."""
 
-import aipocket.services.honeypot as honeypot_mod
+from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 from aipocket.services.honeypot import (
     _detect_prompt_injection,
     _detect_steganography,
@@ -9,7 +9,6 @@ from aipocket.services.honeypot import (
     _reject_no_auth_hosts,
     filter_honeypots,
 )
-from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 
 
 def _make_result(snippet: str, valid: bool = True, host: str = "1.2.3.4") -> ValidationResult:
@@ -184,37 +183,26 @@ class TestFilterHoneypotsIntegration:
 
 
 class TestRejectNoAuthHosts:
-    def setup_method(self):
-        # Each test starts clean — module-level set must not leak between tests.
-        honeypot_mod.no_auth_hosts = set()
-
-    def teardown_method(self):
-        honeypot_mod.no_auth_hosts = set()
-
     def test_no_auth_host_keys_rejected(self):
-        honeypot_mod.no_auth_hosts = {"honeypot.example:8139"}
         r = _make_result("hi", host="honeypot.example:8139")
-        rejected = _reject_no_auth_hosts([r])
+        rejected = _reject_no_auth_hosts([r], {"honeypot.example:8139"})
         assert rejected == 1
         assert r.valid is False
         assert "no-auth-host" in r.error
 
     def test_real_host_preserved(self):
-        honeypot_mod.no_auth_hosts = {"honeypot.example:8139"}
         r = _make_result("hi", host="real.example.com")
-        rejected = _reject_no_auth_hosts([r])
+        rejected = _reject_no_auth_hosts([r], {"honeypot.example:8139"})
         assert rejected == 0
         assert r.valid is True
 
     def test_empty_no_auth_set_noop(self):
-        honeypot_mod.no_auth_hosts = set()
         r = _make_result("hi", host="any.example.com")
-        assert _reject_no_auth_hosts([r]) == 0
+        assert _reject_no_auth_hosts([r], set()) == 0
         assert r.valid is True
 
     def test_all_keys_on_no_auth_host_voided(self):
         """Multiple distinct keys on one no-auth host → ALL rejected."""
-        honeypot_mod.no_auth_hosts = {"hp.example"}
         # Distinct keys on the same host
         r1 = ValidationResult(
             credential=Credential(apikey="key-one-aaaaaaaaaaaa", apiurl="http://hp.example", host="hp.example"),
@@ -224,20 +212,18 @@ class TestRejectNoAuthHosts:
             credential=Credential(apikey="key-two-bbbbbbbbbbbb", apiurl="http://hp.example", host="hp.example"),
             valid=True,
         )
-        rejected = _reject_no_auth_hosts([r1, r2])
+        rejected = _reject_no_auth_hosts([r1, r2], {"hp.example"})
         assert rejected == 2
         assert r1.valid is False
         assert r2.valid is False
 
     def test_already_invalid_skipped(self):
-        honeypot_mod.no_auth_hosts = {"hp.example"}
         r = _make_result("hi", host="hp.example", valid=False)
         # Already invalid → not counted, not re-processed
-        assert _reject_no_auth_hosts([r]) == 0
+        assert _reject_no_auth_hosts([r], {"hp.example"}) == 0
 
     def test_filter_honeypots_applies_no_auth_verdict(self):
         """End-to-end: filter_honeypots voids keys on hosts in no_auth_hosts."""
-        honeypot_mod.no_auth_hosts = {"hp.example"}
         # Distinct apikeys so cross-host dedup doesn't trip on them.
         r_hp = _make_result("Clean response", host="hp.example")
         r_hp.credential = Credential(
@@ -248,7 +234,7 @@ class TestRejectNoAuthHosts:
             apikey="sk-realkey-bbbbbbbbb", apiurl="http://real.example.com", host="real.example.com",
         )
         results = [r_hp, r_real]
-        filter_honeypots(results)
+        filter_honeypots(results, no_auth_hosts={"hp.example"})
         assert results[0].valid is False  # on no-auth host
         assert results[1].valid is True   # real host untouched
 
@@ -261,42 +247,31 @@ class TestRejectNoAuthHosts:
 
 
 class TestQuarantineSuspiciousHosts:
-    def setup_method(self):
-        honeypot_mod.suspicious_hosts = set()
-
-    def teardown_method(self):
-        honeypot_mod.suspicious_hosts = set()
-
     def test_suspicious_host_marked_not_voided(self):
-        honeypot_mod.suspicious_hosts = {"shady.example"}
         r = _make_result("hi", host="shady.example")
-        marked = _quarantine_suspicious_hosts([r])
+        marked = _quarantine_suspicious_hosts([r], {"shady.example"})
         assert marked == 1
         assert r.valid is True          # NOT voided
         assert r.suspicious is True
         assert "suspicious-host" in r.suspicious_reason
 
     def test_clean_host_not_marked(self):
-        honeypot_mod.suspicious_hosts = {"shady.example"}
         r = _make_result("hi", host="real.example.com")
-        assert _quarantine_suspicious_hosts([r]) == 0
+        assert _quarantine_suspicious_hosts([r], {"shady.example"}) == 0
         assert r.suspicious is False
         assert r.valid is True
 
     def test_empty_suspicious_set_noop(self):
-        honeypot_mod.suspicious_hosts = set()
         r = _make_result("hi", host="any.example.com")
-        assert _quarantine_suspicious_hosts([r]) == 0
+        assert _quarantine_suspicious_hosts([r], set()) == 0
         assert r.suspicious is False
 
     def test_already_invalid_skipped(self):
-        honeypot_mod.suspicious_hosts = {"shady.example"}
         r = _make_result("hi", host="shady.example", valid=False)
-        assert _quarantine_suspicious_hosts([r]) == 0
+        assert _quarantine_suspicious_hosts([r], {"shady.example"}) == 0
 
     def test_filter_honeypots_applies_suspicious_verdict(self):
         """End-to-end: suspicious host → valid stays True but suspicious set."""
-        honeypot_mod.suspicious_hosts = {"shady.example"}
         r_sus = _make_result("Clean response", host="shady.example")
         r_sus.credential = Credential(
             apikey="sk-suskey-aaaaaaaaaaa", apiurl="http://shady.example",
@@ -308,7 +283,7 @@ class TestQuarantineSuspiciousHosts:
             host="real.example.com",
         )
         results = [r_sus, r_real]
-        filter_honeypots(results)
+        filter_honeypots(results, suspicious_hosts={"shady.example"})
         assert results[0].valid is True       # not voided
         assert results[0].suspicious is True  # but flagged
         assert results[1].valid is True

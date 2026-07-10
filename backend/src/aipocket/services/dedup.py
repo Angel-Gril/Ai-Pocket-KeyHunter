@@ -65,6 +65,8 @@ class DedupStore(Protocol):
     async def cache_valid(self, result: ValidationResult) -> None: ...
     async def is_recently_failed(self, cred: Credential) -> bool: ...
     async def mark_failed(self, cred: Credential) -> None: ...
+    async def mark_rejected(self, cred: Credential) -> None: ...
+    async def mark_transient(self, cred: Credential) -> None: ...
 
     # ---- balance cache ----
     async def get_cached_balance(self, cred: Credential) -> dict[str, Any] | None: ...
@@ -92,6 +94,12 @@ class NoopDedupStore:
         return False
 
     async def mark_failed(self, cred: Credential) -> None:
+        pass
+
+    async def mark_rejected(self, cred: Credential) -> None:
+        pass
+
+    async def mark_transient(self, cred: Credential) -> None:
         pass
 
     async def get_cached_balance(self, cred: Credential) -> dict[str, Any] | None:
@@ -150,6 +158,16 @@ class RedisDedupStore:
     async def mark_failed(self, cred: Credential) -> None:
         await self._r.set(
             self._k(f"cred:fail:{_cred_key(cred)}"), "1", ex=settings.dedup_fail_ttl
+        )
+
+    async def mark_rejected(self, cred: Credential) -> None:
+        await self._r.set(
+            self._k(f"cred:rejected:{_cred_key(cred)}"), "1", ex=settings.dedup_fail_ttl
+        )
+
+    async def mark_transient(self, cred: Credential) -> None:
+        await self._r.set(
+            self._k(f"cred:transient:{_cred_key(cred)}"), "1", ex=settings.dedup_fail_ttl
         )
 
     async def get_cached_balance(self, cred: Credential) -> dict[str, Any] | None:

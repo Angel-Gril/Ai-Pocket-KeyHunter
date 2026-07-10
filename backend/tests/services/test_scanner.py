@@ -233,6 +233,30 @@ async def test_dedup_recently_failed_cred_skipped_same_run(tmp_path, monkeypatch
     assert result.total_valid == 0
 
 
+async def test_scanner_passes_forged_key_verdicts_to_finalizer(tmp_path, monkeypatch):
+    hits = [
+        {"host": "https://a.com", "ip": "1.1.1.1", "port": "443",
+         "header": f"Bearer {FOFA_KEY}", "banner": "", "title": "", "product": "", "cert": ""}
+    ]
+    _scan_mocks(monkeypatch, tmp_path, fofa_hits=hits, shodan_hits=[])
+    monkeypatch.setattr("aipocket.core.config.settings.shodan_keys", "")
+    monkeypatch.setattr("aipocket.core.config.settings.scan_prober", False)
+    monkeypatch.setattr("aipocket.core.config.settings.gpt_recheck", False)
+
+    async def fake_validate(creds):
+        return [ValidationResult(credential=c, valid=True, status_code=200) for c in creds]
+
+    async def fake_verdicts(results):
+        return {results[0].credential.host}, set()
+
+    monkeypatch.setattr("aipocket.services.scanner.validate_all", fake_validate)
+    monkeypatch.setattr("aipocket.services.validator.verify_no_auth", fake_verdicts)
+
+    result = await run_scan(max_queries=1)
+
+    assert result.total_valid == 0
+
+
 class _returning:
     """Awaitable wrapper so `await get_dedup_store()` returns the cached store."""
 
@@ -243,4 +267,3 @@ class _returning:
         async def _get():
             return self._store
         return _get().__await__()
-

@@ -66,7 +66,7 @@ class TestIsAliveStatus:
         assert is_alive_status(200) is True
 
     def test_429(self):
-        assert is_alive_status(429) is True
+        assert is_alive_status(429) is False
 
     def test_401(self):
         assert is_alive_status(401) is False
@@ -81,7 +81,7 @@ class TestIsAliveStatus:
 class TestShouldSave:
     def _make_result(self, apikey: str, status_code: int | None) -> ValidationResult:
         cred = Credential(apikey=apikey, apiurl="https://api.openai.com/v1")
-        return ValidationResult(credential=cred, status_code=status_code)
+        return ValidationResult(credential=cred, status_code=status_code, valid=status_code == 200)
 
     def test_openai_proj_200(self):
         r = self._make_result("sk-proj-valid123456789", 200)
@@ -89,7 +89,7 @@ class TestShouldSave:
 
     def test_openai_proj_429(self):
         r = self._make_result("sk-proj-ratelimited123", 429)
-        assert should_save(r) is True
+        assert should_save(r) is False
 
     def test_anthropic_200(self):
         r = self._make_result("sk-ant-api03-valid12345", 200)
@@ -162,7 +162,7 @@ class TestTrySave:
         try_save(r)
 
         path = tmp_path / "high_value_keys" / "keys.jsonl"
-        assert path.exists()
+        assert not path.exists()
 
     def test_skips_non_qualifying(self, _patch_results_dir, tmp_path):
         cred = Credential(

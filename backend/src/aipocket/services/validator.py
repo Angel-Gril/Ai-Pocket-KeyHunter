@@ -328,8 +328,10 @@ async def verify_no_auth(
 
     tasks = [_probe_forged(h, u, m) for h, (u, m) in seen_hosts.items()]
     verdicts = await asyncio.gather(*tasks)
-    no_auth = {h for h, v in zip(seen_hosts, verdicts) if v == "noauth"}
-    suspicious = {h for h, v in zip(seen_hosts, verdicts) if v.startswith("suspicious")}
+    no_auth = {h for h, v in zip(seen_hosts, verdicts, strict=True) if v == "noauth"}
+    suspicious = {
+        h for h, v in zip(seen_hosts, verdicts, strict=True) if v.startswith("suspicious")
+    }
     if no_auth:
         log.info(
             "verify_no_auth: %d/%d hosts accept a forged key (no-auth honeypots)",
@@ -354,14 +356,6 @@ async def _probe_one(
     try:
         async with sem:
             result = await _probe(client, cred)
-
-        # Real-time persistence: save high-value official keys immediately.
-        # Offload to a worker thread — this is a synchronous PG write, and running it
-        # on the event loop (inside validate_all's gather) blocks every other async
-        # endpoint (e.g. /api/cve) for the duration of each insert.
-        from .high_value_writer import try_save
-
-        await asyncio.to_thread(try_save, result)
     except Exception as exc:  # noqa: BLE001 - per-credential isolation boundary
         fingerprint = hashlib.sha256(cred.apikey.encode()).hexdigest()[:12]
         log.error(

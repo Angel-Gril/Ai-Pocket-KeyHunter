@@ -332,19 +332,15 @@ async def _run_scan_inner(
         settings.validate_concurrency,
     )
     fresh_results: list[ValidationResult] = await validate_all(to_validate) if to_validate else []
-    for r in fresh_results:
-        if r.valid:
-            await dedup.cache_valid(r)
-        else:
-            await dedup.mark_failed(r.credential)
     results: list[ValidationResult] = cached_results + fresh_results
 
     # No-auth honeypot probe: for each host that has a valid result, send a
     # FORGED key. If it also validates, the endpoint ignores Authorization and
     # every key on it is fake. Runs once per host (not per key) to bound volume.
-    from . import honeypot as _honeypot
     from .validator import verify_no_auth
 
+    no_auth_urls: set[str] = set()
+    suspicious_urls: set[str] = set()
     valid_after_probe = [r for r in results if r.valid]
     if valid_after_probe:
         distinct_hosts = len({r.credential.host or r.credential.apiurl for r in valid_after_probe})
@@ -353,8 +349,6 @@ async def _run_scan_inner(
             distinct_hosts,
         )
         no_auth_urls, suspicious_urls = await verify_no_auth(results)
-        _honeypot.no_auth_hosts = no_auth_urls
-        _honeypot.suspicious_hosts = suspicious_urls
 
     # Write scan metadata + per-result JSONL lines
     scan_path: Path | None = None
@@ -380,18 +374,16 @@ async def _run_scan_inner(
 
         results = list(await recheck_all_with_gpt(results))
 
-    # Honeypot / cluster detection — reject fake positives before balance queries
-    from .honeypot import filter_honeypots
+    from .finalizer import finalize_results
 
-    results = filter_honeypots(results)
-
-    valid = [r for r in results if r.valid]
-    # Split suspicious results out BEFORE balance enrichment: they passed
-    # validation but sit on a host flagged by verify_no_auth (forged-429 /
-    # non-completion). They are quarantined to suspicious_*.jsonl and do NOT
-    # consume balance-query budget.
-    suspicious = [r for r in valid if r.suspicious]
-    valid = [r for r in valid if not r.suspicious]
+    finalized = await finalize_results(
+        results,
+        dedup=dedup,
+        no_auth_hosts=no_auth_urls,
+        suspicious_hosts=suspicious_urls,
+    )
+    valid = finalized.final_verified
+    suspicious = finalized.rate_limited_unconfirmed
     log.info(
         "Validation done: %d valid / %d total (%d suspicious quarantined)",
         len(valid),

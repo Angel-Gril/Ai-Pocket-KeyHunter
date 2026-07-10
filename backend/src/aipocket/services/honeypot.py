@@ -203,13 +203,9 @@ def _dedup_cross_host(results: list[ValidationResult]) -> int:
 #     proves no-auth.
 # ---------------------------------------------------------------------------
 
-# Hosts (apiurl) flagged as no-auth by verify_no_auth. Populated by the scanner
-# between validate_all and filter_honeypots. Module-level so the scanner can set
-# it without threading it through every call.
-no_auth_hosts: set[str] = set()
-
-
-def _reject_no_auth_hosts(results: list[ValidationResult]) -> int:
+def _reject_no_auth_hosts(
+    results: list[ValidationResult], no_auth_hosts: set[str]
+) -> int:
     """Reject all valid results on hosts confirmed to accept forged keys.
 
     ``no_auth_hosts`` holds HOST values (matched against ``credential.host``),
@@ -240,12 +236,9 @@ def _reject_no_auth_hosts(results: list[ValidationResult]) -> int:
 #     into suspicious_*.jsonl for manual review.
 # ---------------------------------------------------------------------------
 
-# Hosts (apiurl) flagged suspicious by verify_no_auth. Populated by the scanner
-# between validate_all and filter_honeypots. Module-level mirror of no_auth_hosts.
-suspicious_hosts: set[str] = set()
-
-
-def _quarantine_suspicious_hosts(results: list[ValidationResult]) -> int:
+def _quarantine_suspicious_hosts(
+    results: list[ValidationResult], suspicious_hosts: set[str]
+) -> int:
     """Mark (don't void) valid results on suspicious hosts.
 
     Sets ``r.suspicious=True`` and a reason, leaving ``valid=True``. The scanner
@@ -456,7 +449,12 @@ def _detect_prompt_injection(results: list[ValidationResult]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def filter_honeypots(results: list[ValidationResult]) -> list[ValidationResult]:
+def filter_honeypots(
+    results: list[ValidationResult],
+    *,
+    no_auth_hosts: set[str] | None = None,
+    suspicious_hosts: set[str] | None = None,
+) -> list[ValidationResult]:
     """Run all honeypot detection passes on validated results.
 
     Mutates results in-place (sets valid=False, error=reason).
@@ -491,11 +489,11 @@ def filter_honeypots(results: list[ValidationResult]) -> list[ValidationResult]:
     dedup_rejected = _dedup_cross_host(results)
 
     # Pass 6: No-auth host rejection (forged-key probe verdict from validator)
-    noauth_rejected = _reject_no_auth_hosts(results)
+    noauth_rejected = _reject_no_auth_hosts(results, no_auth_hosts or set())
 
     # Pass 7: Suspicious-host quarantine (forged-429 / non-completion verdict).
     # Marks suspicious=True but leaves valid=True; the scanner splits these out.
-    suspicious_marked = _quarantine_suspicious_hosts(results)
+    suspicious_marked = _quarantine_suspicious_hosts(results, suspicious_hosts or set())
 
     valid_after = sum(1 for r in results if r.valid)
     total_rejected = valid_before - valid_after

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from aipocket.core.config import settings
+from aipocket.core.models import Credential, ValidationResult
 from aipocket.services.dedup import (
     NoopDedupStore,
     RedisDedupStore,
@@ -10,7 +11,6 @@ from aipocket.services.dedup import (
     _host_key,
     get_dedup_store,
 )
-from aipocket.core.models import Credential, ValidationResult
 
 
 def _cred(apikey: str = "sk-test-aaa", apiurl: str = "https://h.com/v1") -> Credential:
@@ -121,6 +121,20 @@ async def test_failed_marker_round_trip(redis_store):
     assert await store.is_recently_failed(cred) is True
     # Different cred is unaffected.
     assert await store.is_recently_failed(_cred("sk-other")) is False
+
+
+async def test_rejected_and_transient_markers_use_distinct_states(redis_store):
+    store, client = redis_store
+    rejected = _cred("sk-rejected")
+    transient = _cred("sk-transient")
+
+    await store.mark_rejected(rejected)
+    await store.mark_transient(transient)
+
+    from aipocket.services.dedup import _PREFIX
+
+    assert await client.get(f"{_PREFIX}:cred:rejected:{_cred_key(rejected)}") == "1"
+    assert await client.get(f"{_PREFIX}:cred:transient:{_cred_key(transient)}") == "1"
 
 
 async def test_balance_round_trip(redis_store):
