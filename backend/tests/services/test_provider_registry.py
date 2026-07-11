@@ -173,7 +173,11 @@ def test_added_provider_domains_resolve_with_supported_protocols(
     ],
 )
 def test_provider_domains_require_a_real_dns_boundary(apiurl: str):
-    assert resolve_provider(apiurl=apiurl).provider == "unknown"
+    # Spoofed hosts must NOT match official domain suffixes; with an endpoint
+    # they classify as third-party gateway (not the spoofed brand).
+    decision = resolve_provider(apiurl=apiurl)
+    assert decision.provider == "gateway"
+    assert decision.reason == "unmatched-endpoint"
 
 
 def test_spoofed_domain_does_not_suppress_key_prefix_resolution():
@@ -189,10 +193,32 @@ def test_non_routable_sentinel_specs_are_registered():
     assert provider_registry.get("ambiguous").category == "unknown"
 
 
-def test_unknown_input_resolves_to_unknown_spec():
-    decision = resolve_provider(apiurl="https://example.test/v1", apikey="synthetic-key")
+def test_unmatched_endpoint_resolves_to_gateway():
+    """Third-party hosts (NewAPI/OneAPI/relay sites) are gateways, not unknown."""
+    decision = resolve_provider(
+        apiurl="https://apinet.cloud/v1",
+        apikey="sk-" + "a" * 40,
+    )
+    assert decision.provider == "gateway"
+    assert decision.category == "gateway"
+    assert decision.reason == "unmatched-endpoint"
+
+
+def test_unmatched_linode_style_endpoint_resolves_to_gateway():
+    decision = resolve_provider(
+        apiurl="http://74-207-234-196.ip.linodeusercontent.com:7790",
+        apikey="GOCSxxxxH1vK",
+    )
+    assert decision.provider == "gateway"
+    assert decision.reason == "unmatched-endpoint"
+
+
+def test_no_signal_resolves_to_unknown_spec():
+    """No domain and no key prefix → unknown (not gateway)."""
+    decision = resolve_provider(apikey="synthetic-key")
     assert decision.provider == "unknown"
     assert decision.category == "unknown"
+    assert decision.reason == "unmatched"
 
 
 def test_provider_spec_requires_immutable_tuple_fields():

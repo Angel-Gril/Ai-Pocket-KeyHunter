@@ -274,6 +274,16 @@ class ProviderRegistry:
                 "key-prefix-match",
                 key_spec.default_model_hints,
             )
+        # A concrete endpoint with no official domain/key match is a third-party
+        # OpenAI-compatible gateway (self-hosted NewAPI/OneAPI, reverse proxies,
+        # relay sites). Reserve ``unknown`` for no-endpoint / no-signal cases.
+        if apiurl.strip():
+            gateway = self.get("gateway")
+            return ProviderResolution(
+                gateway,
+                "unmatched-endpoint",
+                gateway.default_model_hints,
+            )
         unknown = self.get("unknown")
         return ProviderResolution(unknown, "unmatched", unknown.default_model_hints)
 
