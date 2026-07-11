@@ -414,6 +414,105 @@ def load_run_records_plain(run_id: str, kind: str) -> list[dict[str, Any]]:
     return _load_kind(run_id, kind)
 
 
+def _validate_kind(kind: str) -> str:
+    if kind not in ("valid", "suspicious"):
+        raise ApiError(f"invalid kind: {kind}", status_code=400, code="bad_request")
+    return kind
+
+
+def _list_run_ids_newest_first() -> list[str]:
+    """Run ids newest-first (lexicographic on ``run_YYYY_MM_DD_HH-MM-SS``)."""
+    if settings.pg_enabled:
+        from aipocket.core.db import get_pool
+
+        pool = get_pool()
+        with pool.connection() as conn:
+            rows = conn.execute("SELECT run_id FROM runs ORDER BY run_id DESC").fetchall()
+        return [r["run_id"] for r in rows]
+
+    root = settings.results_path
+    if not root.is_dir():
+        return []
+    return sorted(
+        (p.name for p in root.glob("run_*") if p.is_dir() and _RUN_ID_RE.match(p.name)),
+        reverse=True,
+    )
+
+
+def _attach_source(rec: dict[str, Any], run_id: str, index: int) -> dict[str, Any]:
+    """Copy a ValidationResult dict and stamp source_run_id/source_index for reveal."""
+    out = dict(rec)
+    out["source_run_id"] = run_id
+    out["source_index"] = index
+    return out
+
+
+def _dedup_by_apikey(rows: list[tuple[str, int, dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Keep first occurrence of each apikey (caller must pass newest-first order)."""
+    by_key: dict[str, dict[str, Any]] = {}
+    for run_id, index, rec in rows:
+        cred = rec.get("credential") if isinstance(rec.get("credential"), dict) else {}
+        apikey = str(cred.get("apikey") or rec.get("apikey") or "")
+        if not apikey or apikey in by_key:
+            continue
+        by_key[apikey] = _attach_source(rec, run_id, index)
+    return list(by_key.values())
+
+
+def _load_all_kind_pg(kind: str) -> list[dict[str, Any]]:
+    """Cross-run plain records from PG, newest run first, deduped by apikey."""
+    from aipocket.core.db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT run_id, seq, record
+            FROM results
+            WHERE kind = %s
+            ORDER BY run_id DESC, seq ASC
+            """,
+            (kind,),
+        ).fetchall()
+    ordered: list[tuple[str, int, dict[str, Any]]] = []
+    for r in rows:
+        rec = r["record"]
+        if not isinstance(rec, dict):
+            continue
+        ordered.append((r["run_id"], int(r["seq"]), rec))
+    return _dedup_by_apikey(ordered)
+
+
+def _load_all_kind_files(kind: str) -> list[dict[str, Any]]:
+    """Cross-run plain records from JSONL files, newest run first, deduped by apikey."""
+    ordered: list[tuple[str, int, dict[str, Any]]] = []
+    for run_id in _list_run_ids_newest_first():
+        try:
+            records = _load_kind(run_id, kind)
+        except ApiError:
+            continue
+        for i, rec in enumerate(records):
+            ordered.append((run_id, i, rec))
+    return _dedup_by_apikey(ordered)
+
+
+def load_all_records_plain(kind: str) -> list[dict[str, Any]]:
+    """All valid/suspicious keys across every run, deduped by apikey (newest wins).
+
+    Each record carries ``source_run_id`` + ``source_index`` so reveal/export can
+    recover plaintext from the originating run without a full-table scan.
+    """
+    _validate_kind(kind)
+    if settings.pg_enabled:
+        return _load_all_kind_pg(kind)
+    return _load_all_kind_files(kind)
+
+
+def load_all_records(kind: str) -> list[dict[str, Any]]:
+    """Masked cross-run aggregation (safe to return to the client)."""
+    return [_mask_record(r) for r in load_all_records_plain(kind)]
+
+
 def read_run_log(run_id: str) -> str:
     """Return a run's full log text.
 

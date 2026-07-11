@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 ScanSource = Literal["fofa", "shodan", "all"]
 ExportFormat = Literal["json", "csv"]
-ExportDataset = Literal["selected", "run", "high-value"]
+ExportDataset = Literal["selected", "run", "high-value", "all"]
 
 
 # ----------------------------------------------------------------------------
@@ -98,6 +98,8 @@ class ExportRequest(BaseModel):
     # dataset="run"      → run_id required
     # dataset="selected" → run_id + indices (preferred; server reads plaintext),
     #                      or the legacy `keys` list of explicit plaintext rows.
+    # dataset="all"      → cross-run valid/suspicious (kind); optional indices
+    #                      select a subset of the deduped aggregate list.
     run_id: str | None = None
     kind: Literal["valid", "suspicious"] = "valid"
     indices: list[int] = Field(default_factory=list)

@@ -262,6 +262,69 @@ def test_export_selected_by_indices(results_root):
     assert data[0]["apikey"] == "sk-proj-second234567"
 
 
+def test_load_all_records_dedup_newest_wins(results_root):
+    """Cross-run aggregation keeps one row per apikey from the newest run."""
+    from aipocket.api import masking, results_reader
+
+    _write_run(
+        results_root,
+        "run_2026_07_06_10-00-00",
+        [
+            _rec("sk-proj-sharedkey12345", apiurl="https://old.example"),
+            _rec("sk-proj-only-old-key99"),
+            _rec("sk-proj-sharedkey12345", apiurl="https://old-dup.example"),  # same-run dup
+        ],
+    )
+    _write_run(
+        results_root,
+        "run_2026_07_07_12-00-00",
+        [
+            _rec("sk-proj-sharedkey12345", apiurl="https://new.example"),
+            _rec("sk-proj-only-new-key88"),
+        ],
+    )
+
+    plain = results_reader.load_all_records_plain("valid")
+    keys = {(r["credential"]["apikey"], r["credential"]["apiurl"]) for r in plain}
+    assert keys == {
+        ("sk-proj-sharedkey12345", "https://new.example"),
+        ("sk-proj-only-new-key88", "https://api.openai.com"),
+        ("sk-proj-only-old-key99", "https://api.openai.com"),
+    }
+    shared = next(r for r in plain if r["credential"]["apikey"] == "sk-proj-sharedkey12345")
+    assert shared["source_run_id"] == "run_2026_07_07_12-00-00"
+    assert shared["source_index"] == 0
+
+    masked = results_reader.load_all_records("valid")
+    assert all("****" in r["credential"]["apikey"] for r in masked)
+    assert masking.mask_apikey("sk-proj-sharedkey12345") in {
+        r["credential"]["apikey"] for r in masked
+    }
+
+
+def test_export_all_dataset(results_root):
+    from aipocket.api.exporter import build_export
+    from aipocket.api.schemas import ExportRequest
+
+    _write_run(results_root, "run_2026_07_06_10-00-00", [_rec("sk-proj-exportallkey1")])
+    _write_run(
+        results_root,
+        "run_2026_07_07_12-00-00",
+        [_rec("sk-proj-exportallkey1"), _rec("sk-proj-exportallkey2")],
+    )
+    content, media, name = build_export(ExportRequest(dataset="all", format="json", kind="valid"))
+    assert media == "application/json" and name.endswith(".json")
+    data = json.loads(content)
+    assert len(data) == 2
+    assert {row["apikey"] for row in data} == {"sk-proj-exportallkey1", "sk-proj-exportallkey2"}
+
+    # Subset by indices into the deduped list
+    content2, _, _ = build_export(
+        ExportRequest(dataset="all", format="json", kind="valid", indices=[0])
+    )
+    assert len(json.loads(content2)) == 1
+
+
 # ---------------------------------------------------------------------------
 # scan_manager state machine
 # ---------------------------------------------------------------------------

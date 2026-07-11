@@ -6,7 +6,7 @@ import { clearToken, getToken } from "@/lib/auth-storage"
 
 export type ScanSource = "fofa" | "shodan" | "all"
 export type ExportFormat = "json" | "csv"
-export type ExportDataset = "selected" | "run" | "high-value"
+export type ExportDataset = "selected" | "run" | "high-value" | "all"
 export type ResultKind = "valid" | "suspicious"
 
 export interface LoginResponse {
@@ -203,7 +203,15 @@ export interface KeyRecord {
   validated_at: string
   suspicious: boolean
   suspicious_reason: string
+  /** Originating run for cross-run aggregate lists (reveal/export). */
+  source_run_id?: string
+  source_index?: number
   [key: string]: unknown
+}
+
+export interface AllKeysResponse {
+  kind: ResultKind
+  results: KeyRecord[]
 }
 
 export interface RunSummary {
@@ -401,6 +409,9 @@ export const api = {
   getHighValue: () => request<HighValueResponse>("/high-value"),
   highValueReveal: (body: { masked: string; apiurl?: string }) =>
     request<RevealResponse>("/high-value/reveal", { method: "POST", body }),
+
+  // Cross-run keys (deduped valid / suspicious)
+  getAllKeys: (kind: ResultKind) => request<AllKeysResponse>(`/keys/${kind}`),
 
   // Single-key testing
   keyModels: (body: KeyRef) => request<ModelsResponse>("/key/models", { method: "POST", body }),

@@ -3,7 +3,8 @@
 Datasets:
 * ``selected``  — the exact ``{apikey, apiurl}`` rows the user checked;
 * ``run``       — every key in a run's valid (or suspicious) file;
-* ``high-value``— the full cross-run high-value log.
+* ``high-value``— the full cross-run high-value log;
+* ``all``       — cross-run valid/suspicious aggregate (deduped by apikey).
 
 Exports always contain the FULL PLAINTEXT apikey (the point of exporting is to
 use the key). The backend does not persist these files — the stream is built in
@@ -21,7 +22,7 @@ from typing import Any
 from aipocket.services.high_value_writer import load_all
 
 from .errors import ApiError
-from .results_reader import load_run_records_plain
+from .results_reader import load_all_records_plain, load_run_records_plain
 from .schemas import ExportRequest
 
 # Column order for CSV exports — a stable superset covering all dataset shapes.
@@ -81,6 +82,12 @@ def _collect(req: ExportRequest) -> list[dict[str, Any]]:
     if req.dataset == "high-value":
         return [_flatten(r) for r in load_all()]
 
+    if req.dataset == "all":
+        recs = load_all_records_plain(req.kind)
+        if req.indices:
+            return [_flatten(recs[i]) for i in req.indices if 0 <= i < len(recs)]
+        return [_flatten(r) for r in recs]
+
     raise ApiError(f"unknown dataset: {req.dataset}", code="bad_request")
 
 
@@ -88,7 +95,10 @@ def build_export(req: ExportRequest) -> tuple[bytes, str, str]:
     """Return ``(content_bytes, media_type, filename)`` for the request."""
     rows = _collect(req)
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    stem = f"aipocket_{req.dataset}_{ts}"
+    if req.dataset == "all":
+        stem = f"aipocket_all_{req.kind}_{ts}"
+    else:
+        stem = f"aipocket_{req.dataset}_{ts}"
 
     if req.format == "json":
         content = json.dumps(rows, ensure_ascii=False, indent=2).encode("utf-8")

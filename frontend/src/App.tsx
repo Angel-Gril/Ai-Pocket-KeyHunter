@@ -4,6 +4,7 @@ import { ProtectedRoute } from "@/components/protected-route"
 import LoginPage from "@/pages/LoginPage"
 import HistoryPage from "@/pages/HistoryPage"
 import RunResultsPage from "@/pages/RunResultsPage"
+import AllKeysPage from "@/pages/AllKeysPage"
 import HighValuePage from "@/pages/HighValuePage"
 import ScanPage from "@/pages/ScanPage"
 import CvePage from "@/pages/CvePage"
@@ -18,6 +19,7 @@ export function App() {
           <Route index element={<Navigate to="/history" replace />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/runs/:runId" element={<RunResultsPage />} />
+          <Route path="/keys" element={<AllKeysPage />} />
           <Route path="/high-value" element={<HighValuePage />} />
           <Route path="/scan" element={<ScanPage />} />
           <Route path="/cve" element={<CvePage />} />

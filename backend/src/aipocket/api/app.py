@@ -82,6 +82,7 @@ def create_app() -> FastAPI:
         export,
         high_value,
         key,
+        keys,
         runs,
         scan,
         system,
@@ -90,7 +91,18 @@ def create_app() -> FastAPI:
         settings as settings_router,
     )
 
-    for module in (auth, runs, high_value, key, export, scan, cve, settings_router, system):
+    for module in (
+        auth,
+        runs,
+        high_value,
+        keys,
+        key,
+        export,
+        scan,
+        cve,
+        settings_router,
+        system,
+    ):
         app.include_router(module.router)
 
     @app.get("/api/health")

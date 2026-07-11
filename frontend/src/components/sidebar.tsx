@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import {
   Gem,
+  KeyRound,
   LayoutList,
   type LucideIcon,
   Moon,
@@ -22,6 +23,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: "/history", label: "扫描历史", icon: LayoutList },
+  { to: "/keys", label: "全部密钥", icon: KeyRound },
   { to: "/high-value", label: "高价值 Key", icon: Gem },
   { to: "/scan", label: "执行扫描", icon: Radar },
   { to: "/cve", label: "CVE 库", icon: ShieldAlert },
