@@ -214,9 +214,7 @@ def parse_advisory_from_text(
             zero_day
             and "nvd.nist.gov" not in url.lower()
             and "github.com" not in url.lower()
-            and not any(
-                token in url.lower() for token in ("security", "advisory", "vuln", "blog")
-            )
+            and not any(token in url.lower() for token in ("security", "advisory", "vuln", "blog"))
         ):
             return None
 

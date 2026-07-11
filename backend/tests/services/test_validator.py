@@ -196,11 +196,17 @@ def test_normalize_apiurl_keeps_existing_path():
 
 
 def test_normalize_apiurl_appends_to_v1():
-    assert _normalize_apiurl("https://api.example.com/v1") == "https://api.example.com/v1/chat/completions"
+    assert (
+        _normalize_apiurl("https://api.example.com/v1")
+        == "https://api.example.com/v1/chat/completions"
+    )
 
 
 def test_normalize_apiurl_replaces_v1_subpath():
-    assert _normalize_apiurl("https://api.example.com/v1/models") == "https://api.example.com/v1/chat/completions"
+    assert (
+        _normalize_apiurl("https://api.example.com/v1/models")
+        == "https://api.example.com/v1/chat/completions"
+    )
 
 
 def test_normalize_apiurl_empty():
@@ -264,7 +270,9 @@ async def test_validate_all_runs_concurrently():
     )
     creds = [
         Credential(apikey="sk-proj-keyA1234567890abcdefghijklmno", apiurl="https://api.openai.com"),
-        Credential(apikey="sk-ant-api03-keyB1234567890abcdefghijklmnop", apiurl="https://api.anthropic.com"),
+        Credential(
+            apikey="sk-ant-api03-keyB1234567890abcdefghijklmnop", apiurl="https://api.anthropic.com"
+        ),
     ]
     results = await validate_all(creds)
     assert len(results) == 2
@@ -408,23 +416,29 @@ class TestModelFamilyAndGen:
 
 
 class TestIsSevereModelMismatch:
-    @pytest.mark.parametrize("requested,actual", [
-        ("gpt-5.5", "gpt-5.4"),            # same gen, mild downgrade
-        ("claude-opus-4-8", "claude-sonnet-4-6"),  # same claude gen
-        ("deepseek-v4-pro", "deepseek-v4-flash"),  # same ds gen
-        ("glm-5.1", "glm-5.2"),            # same glm gen
-    ])
+    @pytest.mark.parametrize(
+        "requested,actual",
+        [
+            ("gpt-5.5", "gpt-5.4"),  # same gen, mild downgrade
+            ("claude-opus-4-8", "claude-sonnet-4-6"),  # same claude gen
+            ("deepseek-v4-pro", "deepseek-v4-flash"),  # same ds gen
+            ("glm-5.1", "glm-5.2"),  # same glm gen
+        ],
+    )
     def test_mild_within_family_is_not_severe(self, requested, actual):
         assert _is_severe_model_mismatch(requested, actual) is False
 
-    @pytest.mark.parametrize("requested,actual", [
-        ("gpt-5.5", "gpt-4o-mini"),        # cross-generation gpt5→gpt4
-        ("gpt-5.5", "gpt-3.5-turbo"),      # cross-generation gpt5→gpt3
-        ("gpt-5.5", "claude-sonnet-4-6"),  # cross-family gpt→claude
-        ("gpt-5.5", "deepseek-v4-flash"),  # cross-family gpt→deepseek
-        ("claude-opus-4-8", "gpt-4o-mini"),  # cross-family+gen
-        ("glm-5.1", "gpt-4o-mini"),        # cross-family glm→gpt
-    ])
+    @pytest.mark.parametrize(
+        "requested,actual",
+        [
+            ("gpt-5.5", "gpt-4o-mini"),  # cross-generation gpt5→gpt4
+            ("gpt-5.5", "gpt-3.5-turbo"),  # cross-generation gpt5→gpt3
+            ("gpt-5.5", "claude-sonnet-4-6"),  # cross-family gpt→claude
+            ("gpt-5.5", "deepseek-v4-flash"),  # cross-family gpt→deepseek
+            ("claude-opus-4-8", "gpt-4o-mini"),  # cross-family+gen
+            ("glm-5.1", "gpt-4o-mini"),  # cross-family glm→gpt
+        ],
+    )
     def test_cross_gen_or_family_is_severe(self, requested, actual):
         assert _is_severe_model_mismatch(requested, actual) is True
 
@@ -440,8 +454,11 @@ class TestIsSevereModelMismatch:
 def _vr(host: str, apiurl: str, valid: bool = True) -> ValidationResult:
     return ValidationResult(
         credential=Credential(
-            apikey="sk-realkey1234567890abcdef", apiurl=apiurl, host=host,
-            source="test", source_type="fingerprint",
+            apikey="sk-realkey1234567890abcdef",
+            apiurl=apiurl,
+            host=host,
+            source="test",
+            source_type="fingerprint",
         ),
         valid=valid,
         status_code=200,
@@ -491,9 +508,7 @@ async def test_verify_no_auth_429_marks_suspicious():
 async def test_verify_no_auth_200_but_not_completion_marks_suspicious():
     """200 returning non-completion on every retry → host is not a real gateway."""
     url = "http://weird.example/v1/chat/completions"
-    respx.post(url).mock(
-        return_value=httpx.Response(200, json={"stok": "abc", "saved": True})
-    )
+    respx.post(url).mock(return_value=httpx.Response(200, json={"stok": "abc", "saved": True}))
     results = [_vr("weird.example", "http://weird.example")]
     no_auth, suspicious = await verify_no_auth(results)
     assert no_auth == set()
@@ -583,7 +598,9 @@ async def test_verify_no_auth_probes_post_routing_apiurl():
         return_value=httpx.Response(401, json={"error": "invalid key"})
     )
     cred = Credential(
-        apikey=VALID_KEY, apiurl=LEAK_URL, host="161.97.182.228:8788",
+        apikey=VALID_KEY,
+        apiurl=LEAK_URL,
+        host="161.97.182.228:8788",
     )
     # Simulate the post-_probe state: routing already persisted.
     cred.leak_host = LEAK_URL
@@ -592,6 +609,6 @@ async def test_verify_no_auth_probes_post_routing_apiurl():
     cred.routed_to_official = True
     result = ValidationResult(credential=cred, valid=True, model_available="gpt-5.5")
     no_auth, suspicious = await verify_no_auth([result])
-    assert official_route.call_count == 1   # probed the official endpoint
-    assert no_auth == set()                  # 401 → real gateway
+    assert official_route.call_count == 1  # probed the official endpoint
+    assert no_auth == set()  # 401 → real gateway
     assert suspicious == set()

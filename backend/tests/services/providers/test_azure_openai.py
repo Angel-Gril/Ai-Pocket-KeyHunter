@@ -84,9 +84,7 @@ async def test_v1_key_auth_preserves_path_and_reads_models_without_spending() ->
 @respx.mock
 async def test_legacy_deployment_preserves_path_version_and_api_key_header() -> None:
     url = f"{RESOURCE}/openai/deployments/chat/models?api-version=2024-10-21"
-    route = respx.get(url).mock(
-        return_value=httpx.Response(200, json={"data": [{"id": "chat"}]})
-    )
+    route = respx.get(url).mock(return_value=httpx.Response(200, json={"data": [{"id": "chat"}]}))
 
     async with httpx.AsyncClient() as client:
         result = await validate_azure_openai(
@@ -164,9 +162,7 @@ async def test_validator_dispatches_azure_bundle_to_read_only_adapter() -> None:
 
 @respx.mock
 async def test_forged_probe_uses_azure_key_header_and_preserves_v1_path() -> None:
-    route = respx.post(f"{RESOURCE}/openai/v1/responses").mock(
-        return_value=httpx.Response(401)
-    )
+    route = respx.post(f"{RESOURCE}/openai/v1/responses").mock(return_value=httpx.Response(401))
 
     async with httpx.AsyncClient() as client:
         verdict = await _forged_key_probe(

@@ -32,7 +32,9 @@ class AdvisoryRecord(BaseModel):
     safe_check_profile: str = ""
     source_confidence: SourceConfidence = "medium"
     published_at: str = ""
-    updated_at: str = Field(default_factory=lambda: datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    updated_at: str = Field(
+        default_factory=lambda: datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
     sources: tuple[str, ...] = ()
     description: str = ""
     cvss: float = 0.0

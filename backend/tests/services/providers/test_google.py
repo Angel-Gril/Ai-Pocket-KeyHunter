@@ -23,11 +23,15 @@ VERTEX_MODELS = (
 
 
 def _token(*, expires_at: int) -> str:
-    payload = base64.urlsafe_b64encode(json.dumps({"exp": expires_at}).encode()).decode().rstrip("=")
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": expires_at}).encode()).decode().rstrip("=")
+    )
     return f"header.{payload}.signature"
 
 
-def _vertex(secret: str, *, kind: str = "token", project: str = "sample", location: str = "us-central1") -> Credential:
+def _vertex(
+    secret: str, *, kind: str = "token", project: str = "sample", location: str = "us-central1"
+) -> Credential:
     bundle = CredentialBundle.create(
         secret,
         credential_kind=kind,
@@ -58,8 +62,13 @@ async def test_gemini_uses_only_generativelanguage_models_endpoint() -> None:
     assert [call.request.method for call in respx.calls] == ["GET"]
 
 
-@pytest.mark.parametrize(("project", "location", "error"), [("", "us-central1", "missing-project"), ("sample", "", "missing-location")])
-async def test_vertex_requires_project_and_location(project: str, location: str, error: str) -> None:
+@pytest.mark.parametrize(
+    ("project", "location", "error"),
+    [("", "us-central1", "missing-project"), ("sample", "", "missing-location")],
+)
+async def test_vertex_requires_project_and_location(
+    project: str, location: str, error: str
+) -> None:
     async with httpx.AsyncClient() as client:
         result = await validate_vertex(client, _vertex("token", project=project, location=location))
 
@@ -85,13 +94,17 @@ async def test_vertex_classifies_authorization_failures(status: int, error: str)
 
     assert result.valid is False
     assert result.error == error
-    assert all("generativelanguage.googleapis.com" not in str(call.request.url) for call in respx.calls)
+    assert all(
+        "generativelanguage.googleapis.com" not in str(call.request.url) for call in respx.calls
+    )
 
 
 @respx.mock
 async def test_vertex_bearer_reads_models_without_inference() -> None:
     route = respx.get(VERTEX_MODELS).mock(
-        return_value=httpx.Response(200, json={"publisherModels": [{"name": "publishers/google/models/gemini-2.0-flash"}]})
+        return_value=httpx.Response(
+            200, json={"publisherModels": [{"name": "publishers/google/models/gemini-2.0-flash"}]}
+        )
     )
 
     async with httpx.AsyncClient() as client:
@@ -104,13 +117,18 @@ async def test_vertex_bearer_reads_models_without_inference() -> None:
 
 
 @respx.mock
-async def test_service_account_exchanges_restricted_scope_then_reads_vertex(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_service_account_exchanges_restricted_scope_then_reads_vertex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     credential = _vertex("private-key", kind="google_service_account")
     token_route = respx.post("https://oauth2.googleapis.com/token").mock(
         return_value=httpx.Response(200, json={"access_token": "access-token", "expires_in": 3600})
     )
     respx.get(VERTEX_MODELS).mock(return_value=httpx.Response(200, json={"publisherModels": []}))
-    monkeypatch.setattr("aipocket.services.providers.vertex._service_account_assertion", lambda _: "signed-assertion")
+    monkeypatch.setattr(
+        "aipocket.services.providers.vertex._service_account_assertion",
+        lambda _: "signed-assertion",
+    )
 
     async with httpx.AsyncClient() as client:
         result = await validate_vertex(client, credential)
@@ -119,7 +137,9 @@ async def test_service_account_exchanges_restricted_scope_then_reads_vertex(monk
     assert result.valid is True
     assert "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform.read-only" in form
     assert "cloud-platform&" not in form
-    assert all("generativelanguage.googleapis.com" not in str(call.request.url) for call in respx.calls)
+    assert all(
+        "generativelanguage.googleapis.com" not in str(call.request.url) for call in respx.calls
+    )
 
 
 @respx.mock

@@ -70,10 +70,20 @@ async def test_chat(apikey: str, apiurl: str, model: str) -> ValidationResult:
         if result.model_available and model and result.model_available != model:
             # Prefer the caller-selected model when the default probe list diverged.
             if resolution.protocol_family == "anthropic" or resolution.provider == "anthropic":
-                chat_url = _v._normalize_apiurl(apiurl) or "https://api.anthropic.com/v1/chat/completions"
+                chat_url = (
+                    _v._normalize_apiurl(apiurl) or "https://api.anthropic.com/v1/chat/completions"
+                )
                 result = await _v._probe_anthropic(client, cred, chat_url, result, [model])
-            elif resolution.provider not in {"openai", "azure_openai", "vertex", "google", "gemini"}:
+            elif resolution.provider not in {
+                "openai",
+                "azure_openai",
+                "vertex",
+                "google",
+                "gemini",
+            }:
                 chat_url = _v._normalize_apiurl(apiurl)
                 if chat_url:
-                    result = await _v._probe_chat_completions(client, cred, chat_url, result, [model])
+                    result = await _v._probe_chat_completions(
+                        client, cred, chat_url, result, [model]
+                    )
         return result

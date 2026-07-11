@@ -118,9 +118,7 @@ def should_save(result: ValidationResult) -> bool:
     if is_high_value_key(key):
         return True
     # Anthropic ordinary API / OAuth keys need scope or model evidence.
-    if key.startswith("sk-ant-") and _has_anthropic_high_value_evidence(result):
-        return True
-    return False
+    return key.startswith("sk-ant-") and _has_anthropic_high_value_evidence(result)
 
 
 def save_high_value_key(result: ValidationResult, run_id: str | None = None) -> bool:

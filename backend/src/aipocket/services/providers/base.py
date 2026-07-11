@@ -6,9 +6,7 @@ from typing import Literal
 from aipocket.core.models import ProviderCategory, ProviderName
 
 ProtocolFamily = Literal["openai_compatible", "anthropic", "gemini", "vertex"]
-SUPPORTED_PROTOCOL_FAMILIES = frozenset(
-    {"openai_compatible", "anthropic", "gemini", "vertex"}
-)
+SUPPORTED_PROTOCOL_FAMILIES = frozenset({"openai_compatible", "anthropic", "gemini", "vertex"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,9 +32,7 @@ class ProviderSpec:
         if any(not isinstance(value, tuple) for value in tuple_fields):
             raise TypeError("ProviderSpec routing and model collections must be tuples")
         if any(
-            not isinstance(route, tuple)
-            or len(route) != 2
-            or not isinstance(route[1], tuple)
+            not isinstance(route, tuple) or len(route) != 2 or not isinstance(route[1], tuple)
             for route in self.domain_model_hints
         ):
             raise TypeError("ProviderSpec domain model routes must contain tuples")

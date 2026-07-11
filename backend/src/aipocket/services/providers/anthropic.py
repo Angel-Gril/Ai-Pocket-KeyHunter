@@ -140,7 +140,9 @@ async def _validate_api_key(
                 valid=True,
                 status_code=models_response.status_code,
                 models=models,
-                error="" if messages_response.status_code in (404, 400) else "messages-probe-failed",
+                error=""
+                if messages_response.status_code in (404, 400)
+                else "messages-probe-failed",
             )
         return AnthropicValidation(
             credential_kind=AnthropicCredentialKind.API,

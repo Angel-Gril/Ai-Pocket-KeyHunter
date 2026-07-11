@@ -146,9 +146,7 @@ def _is_severe_model_mismatch(requested: str, actual: str) -> bool:
         return True
     # Same family, different generation: gpt-5.x → gpt-4.x or gpt-3.x is severe.
     # gpt-5.5 → gpt-5.4 (same gen "5") is mild.
-    if gen_req and gen_act and gen_req != gen_act:
-        return True
-    return False
+    return bool(gen_req and gen_act and gen_req != gen_act)
 
 
 async def validate_all(credentials: list[Credential]) -> list[ValidationResult]:
@@ -516,7 +514,9 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
         if validation.valid:
             apply_state(
                 result,
-                "inference_verified" if validation.inference_performed else "authentication_confirmed",
+                "inference_verified"
+                if validation.inference_performed
+                else "authentication_confirmed",
             )
         else:
             err = validation.error
@@ -579,11 +579,7 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
         validation = await validate_vertex(client, cred)
         result.status_code = validation.status_code
         result.error = validation.error
-        kind = (
-            cred.bundle.credential_kind
-            if cred.bundle is not None
-            else "token"
-        )
+        kind = cred.bundle.credential_kind if cred.bundle is not None else "token"
         result.credential_kind = kind
         result.provider_info.models_available = list(validation.models)
         result.model_available = validation.models[0] if validation.models else ""

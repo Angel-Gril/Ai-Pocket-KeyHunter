@@ -94,9 +94,7 @@ async def validate_azure_openai(
         )
     context = credential.bundle.context if credential.bundle is not None else None
     is_v1 = credential.apiurl.rstrip("/").endswith("/openai/v1")
-    if not is_v1 and (
-        context is None or not context.deployment or not context.api_version
-    ):
+    if not is_v1 and (context is None or not context.deployment or not context.api_version):
         return AzureOpenAIValidation(
             auth_kind=kind,
             valid=False,

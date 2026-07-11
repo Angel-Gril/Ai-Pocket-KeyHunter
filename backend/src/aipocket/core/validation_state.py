@@ -57,9 +57,7 @@ AUTHENTICATED_STATES: Final[frozenset[ValidationState]] = frozenset(
 
 FINAL_POSITIVE_STATES: Final[frozenset[ValidationState]] = frozenset({"final_verified"})
 
-QUARANTINE_STATES: Final[frozenset[ValidationState]] = frozenset(
-    {"rate_limited_unconfirmed"}
-)
+QUARANTINE_STATES: Final[frozenset[ValidationState]] = frozenset({"rate_limited_unconfirmed"})
 
 # Legal edges: forward success steps, optional skips for inference/scope, and failures.
 _LEGAL: Final[dict[ValidationState, frozenset[ValidationState]]] = {

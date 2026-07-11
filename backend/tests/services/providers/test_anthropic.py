@@ -39,9 +39,7 @@ def _credential(key: str, *, organization: str = "", workspace: str = "") -> Cre
         (OAUTH_TOKEN, AnthropicCredentialKind.OAUTH),
     ],
 )
-def test_classifies_anthropic_credential_kinds(
-    key: str, expected: AnthropicCredentialKind
-) -> None:
+def test_classifies_anthropic_credential_kinds(key: str, expected: AnthropicCredentialKind) -> None:
     assert classify_anthropic_credential(_credential(key)) is expected
     assert resolve_provider(apikey=key).provider == "anthropic"
 
@@ -70,7 +68,7 @@ async def test_admin_key_calls_organizations_me_with_x_api_key_only() -> None:
     assert result.scope == "org:admin"
     assert route.called
     assert route.calls[0].request.headers["x-api-key"] == ADMIN_KEY
-    assert "authorization" not in {k.lower() for k in route.calls[0].request.headers.keys()}
+    assert "authorization" not in {k.lower() for k in route.calls[0].request.headers}
     assert not messages.called
     assert [call.request.method for call in respx.calls] == ["GET"]
 
@@ -92,7 +90,7 @@ async def test_oauth_token_uses_bearer_for_organizations_me() -> None:
     assert result.organization_id == "org_oauth"
     assert result.scope == "org:admin"
     assert route.calls[0].request.headers["authorization"] == f"Bearer {OAUTH_TOKEN}"
-    assert "x-api-key" not in {k.lower() for k in route.calls[0].request.headers.keys()}
+    assert "x-api-key" not in {k.lower() for k in route.calls[0].request.headers}
 
 
 @respx.mock
