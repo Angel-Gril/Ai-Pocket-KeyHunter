@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from aipocket.core.models import ProviderName
 
 from .base import ProviderResolution, ProviderSpec
+from .gemini import is_gemini_api_key
 
 _OPENAI_MODELS = ("gpt-5.5", "gpt-5.4", "gpt-4o-mini", "gpt-3.5-turbo")
 _OAIUSERCONTENT_MODELS = ("gpt-5.5", "gpt-5.4", "gpt-4o-mini")
@@ -135,8 +136,10 @@ _PROVIDER_SPECS = (
     ProviderSpec(
         name="google",
         category="international",
-        domain_suffixes=("googleapis.com",),
-        key_prefixes=("AIza",),
+        # generativelanguage only — vertex hosts are matched by the vertex spec.
+        # Key matching uses exact Gemini API key shape via is_gemini_api_key (not bare AIza*).
+        domain_suffixes=("generativelanguage.googleapis.com",),
+        key_prefixes=(),
         protocol_family="gemini",
         default_model_hints=(
             "gemini-3.5-flash",
@@ -234,6 +237,8 @@ class ProviderRegistry:
         return match[0] if match is not None else None
 
     def match_key(self, apikey: str) -> ProviderSpec | None:
+        if is_gemini_api_key(apikey):
+            return self.get("google")
         matches = (
             (len(prefix), spec)
             for spec in self._specs
@@ -286,3 +291,13 @@ def uses_openai_adapter(*, apiurl: str = "", apikey: str = "") -> bool:
 
 def uses_azure_openai_adapter(*, apiurl: str = "", apikey: str = "") -> bool:
     return resolve_provider(apiurl=apiurl, apikey=apikey).provider == "azure_openai"
+
+
+def uses_gemini_adapter(*, apiurl: str = "", apikey: str = "") -> bool:
+    decision = resolve_provider(apiurl=apiurl, apikey=apikey)
+    return decision.provider in {"google", "gemini"} or decision.protocol_family == "gemini"
+
+
+def uses_vertex_adapter(*, apiurl: str = "", apikey: str = "") -> bool:
+    decision = resolve_provider(apiurl=apiurl, apikey=apikey)
+    return decision.provider == "vertex" or decision.protocol_family == "vertex"

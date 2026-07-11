@@ -9,7 +9,9 @@ from .registry import (
     provider_registry,
     resolve_provider,
     uses_azure_openai_adapter,
+    uses_gemini_adapter,
     uses_openai_adapter,
+    uses_vertex_adapter,
 )
 
 __all__ = [
@@ -21,5 +23,7 @@ __all__ = [
     "provider_registry",
     "resolve_provider",
     "uses_azure_openai_adapter",
+    "uses_gemini_adapter",
     "uses_openai_adapter",
+    "uses_vertex_adapter",
 ]

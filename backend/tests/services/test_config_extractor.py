@@ -183,3 +183,26 @@ def test_google_service_account_keeps_private_key_controlled() -> None:
     assert bundle.context.service_account_email == "svc@sample-project.iam.gserviceaccount.com"
     assert bundle.endpoint_candidates == ("https://aiplatform.googleapis.com",)
     assert "private-material" not in bundle.model_dump_json()
+
+
+def test_vertex_service_account_extracts_location_without_serializing_private_key() -> None:
+    content = (
+        '{"type":"service_account","project_id":"sample-project",'
+        '"client_email":"svc@sample-project.iam.gserviceaccount.com",'
+        '"location":"us-central1","private_key":"private-material"}'
+    )
+
+    bundle = extract_config_bundles(content, format_hint="json")[0]
+
+    assert bundle.context.location == "us-central1"
+    assert bundle.model_dump()["context"] == {
+        "organization": "",
+        "project": "sample-project",
+        "workspace": "",
+        "azure_resource": "",
+        "deployment": "",
+        "api_version": "",
+        "location": "us-central1",
+        "service_account_email": "svc@sample-project.iam.gserviceaccount.com",
+    }
+    assert "private-material" not in bundle.model_dump_json()

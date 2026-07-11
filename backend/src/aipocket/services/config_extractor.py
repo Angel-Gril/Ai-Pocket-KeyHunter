@@ -224,6 +224,14 @@ def _google_service_account(entries: list[_Entry]) -> CredentialBundle | None:
     values = {entry.name: entry.value for entry in entries}
     if values.get("type") != "service_account" or "private_key" not in values:
         return None
+    # Prefer explicit location fields; never serialize the private key into context.
+    location = (
+        values.get("location")
+        or values.get("LOCATION")
+        or values.get("VERTEX_LOCATION")
+        or values.get("GOOGLE_CLOUD_LOCATION")
+        or ""
+    )
     return CredentialBundle.create(
         values["private_key"],
         credential_kind="google_service_account",
@@ -231,6 +239,7 @@ def _google_service_account(entries: list[_Entry]) -> CredentialBundle | None:
         provider_hint="vertex",
         context=CredentialContext(
             project=values.get("project_id", ""),
+            location=location,
             service_account_email=values.get("client_email", ""),
         ),
         evidence=(

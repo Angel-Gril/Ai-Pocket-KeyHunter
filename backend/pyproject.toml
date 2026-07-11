@@ -20,6 +20,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "pyjwt>=2.9.0",
     "sse-starlette>=2.1.0",
+    "google-auth>=2.40.0",
 ]
 
 [project.optional-dependencies]
