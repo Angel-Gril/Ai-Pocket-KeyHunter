@@ -378,6 +378,7 @@ class TestResultsReaderPg:
                         "started_at": started,
                         "total_hosts": 5,
                         "total_credentials": 13,
+                        "total_valid": 2,
                         "raw_hits": 23,
                         "unique_targets": 17,
                         "candidates": 11,
@@ -385,6 +386,7 @@ class TestResultsReaderPg:
                         "final_verified": 3,
                         "suspicious": 2,
                         "high_value_final": 1,
+                        "sources": ["fofa", "shodan"],
                         "has_log": True,
                     }
                 ],
@@ -392,9 +394,7 @@ class TestResultsReaderPg:
                     {"run_id": "run_2026_07_06_10-00-00", "kind": "valid", "n": 2},
                     {"run_id": "run_2026_07_06_10-00-00", "kind": "suspicious", "n": 1},
                 ],
-                "FROM high_value_keys WHERE run_id IS NOT NULL": [
-                    {"run_id": "run_2026_07_06_10-00-00", "n": 1}
-                ],
+                "FROM high_value_keys": [{"run_id": "run_2026_07_06_10-00-00", "n": 1}],
                 "regexp_split_to_table": [
                     {"run_id": "run_2026_07_06_10-00-00", "backend": "fofa"},
                     {"run_id": "run_2026_07_06_10-00-00", "backend": "shodan"},
@@ -415,6 +415,55 @@ class TestResultsReaderPg:
         assert entry["final_verified"] == 3
         assert entry["suspicious"] == 2
         assert entry["high_value_final"] == 1
+        assert entry["sources"] == ["fofa", "shodan"]
+
+    def test_list_runs_falls_back_when_funnel_columns_are_zero(self, fake_pg):
+        """Pre-funnel imports: raw_hits=0 but total_hosts / results still set."""
+        import datetime as _dt
+
+        started = _dt.datetime(2026, 7, 7, 14, 57, 50)
+        fake_pg(
+            {
+                "FROM runs ORDER BY run_id DESC": [
+                    {
+                        "run_id": "run_2026_07_07_14-57-50",
+                        "started_at": started,
+                        "total_hosts": 1200,
+                        "total_credentials": 40,
+                        "total_valid": 9,
+                        "raw_hits": 0,
+                        "unique_targets": 0,
+                        "candidates": 0,
+                        "active_requests": 0,
+                        "final_verified": 0,
+                        "suspicious": 0,
+                        "high_value_final": 0,
+                        "sources": ["fofa", "shodan"],
+                        "has_log": True,
+                    }
+                ],
+                "GROUP BY run_id, kind": [
+                    {"run_id": "run_2026_07_07_14-57-50", "kind": "valid", "n": 9},
+                    {"run_id": "run_2026_07_07_14-57-50", "kind": "suspicious", "n": 9},
+                ],
+                "FROM high_value_keys": [
+                    {"run_id": "run_2026_07_07_14-57-50", "n": 2},
+                ],
+                "regexp_split_to_table": [
+                    {"run_id": "run_2026_07_07_14-57-50", "backend": "fofa"},
+                    {"run_id": "run_2026_07_07_14-57-50", "backend": "shodan"},
+                ],
+            }
+        )
+        from aipocket.api import results_reader
+
+        entry = results_reader.list_runs()[0]["runs"][0]
+        assert entry["raw_hits"] == 1200  # total_hosts fallback
+        assert entry["unique_targets"] == 1200
+        assert entry["candidates"] == 40
+        assert entry["final_verified"] == 9  # total_valid / results count
+        assert entry["suspicious"] == 9
+        assert entry["high_value_final"] == 2
         assert entry["sources"] == ["fofa", "shodan"]
 
     def test_load_kind_prefers_pg_when_run_exists(self, fake_pg):

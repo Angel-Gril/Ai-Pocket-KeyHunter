@@ -114,13 +114,28 @@ def import_run(conn, run: Path, dry_run: bool) -> tuple[int, int]:
 
     started = meta.get("started_at") or _run_id_to_iso(run_id)
 
+    # Funnel fields: prefer scan_*.jsonl metadata; fall back to host/valid counts
+    # so History never shows all-zeros for imported pre-funnel runs.
+    raw_hits = int(meta.get("raw_hits") or meta.get("raw_hits_count") or 0)
+    unique_targets = int(meta.get("unique_targets") or 0)
+    total_hosts = meta.get("total_hosts")
+    if raw_hits <= 0 and total_hosts:
+        raw_hits = int(total_hosts)
+    if unique_targets <= 0 and total_hosts:
+        unique_targets = int(total_hosts)
+    final_verified = int(meta.get("final_verified") or 0) or len(valid)
+    suspicious_n = int(meta.get("suspicious") or 0) or len(suspicious)
+    high_value_final = int(meta.get("high_value_final") or 0)
+
     with conn.transaction():
         conn.execute(
             """
             INSERT INTO runs (run_id, started_at, finished_at, state, sources,
                               hits_by_source, queries_used, total_hosts,
-                              total_credentials, total_valid, log)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              total_credentials, total_valid, raw_hits,
+                              unique_targets, candidates, active_requests,
+                              final_verified, suspicious, high_value_final, log)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (run_id) DO UPDATE SET
                 started_at = EXCLUDED.started_at,
                 sources = EXCLUDED.sources,
@@ -129,19 +144,33 @@ def import_run(conn, run: Path, dry_run: bool) -> tuple[int, int]:
                 total_hosts = EXCLUDED.total_hosts,
                 total_credentials = EXCLUDED.total_credentials,
                 total_valid = EXCLUDED.total_valid,
+                raw_hits = EXCLUDED.raw_hits,
+                unique_targets = EXCLUDED.unique_targets,
+                candidates = EXCLUDED.candidates,
+                active_requests = EXCLUDED.active_requests,
+                final_verified = EXCLUDED.final_verified,
+                suspicious = EXCLUDED.suspicious,
+                high_value_final = EXCLUDED.high_value_final,
                 log = EXCLUDED.log
             """,
             (
                 run_id,
                 started,
-                None,
-                "finished",
+                meta.get("finished_at"),
+                meta.get("state") or "finished",
                 Jsonb(meta.get("sources", [])),
                 Jsonb(meta.get("hits_by_source", {})),
                 Jsonb(meta.get("queries_used", [])),
-                meta.get("total_hosts"),
+                total_hosts,
                 meta.get("total_credentials"),
                 len(valid),
+                raw_hits,
+                unique_targets,
+                int(meta.get("candidates") or 0),
+                int(meta.get("active_requests") or 0),
+                final_verified,
+                suspicious_n,
+                high_value_final,
                 log_text,
             ),
         )

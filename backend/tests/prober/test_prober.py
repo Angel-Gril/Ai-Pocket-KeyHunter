@@ -295,6 +295,71 @@ class TestStagedProbeDispatch:
         product_probe.assert_awaited_once()
 
 
+class TestProbeBatching:
+    """Large scans must schedule hosts in waves, not one giant task list."""
+
+    @staticmethod
+    def _product_hits(n: int) -> list[dict]:
+        return [
+            {
+                "host": f"https://h{i}.example.com",
+                "title": "New API",
+                "protocol": "https",
+                "_product": "new-api",
+            }
+            for i in range(n)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_large_host_set_runs_in_multiple_batches(self, monkeypatch, caplog):
+        import logging
+
+        from aipocket.core.config import settings
+
+        monkeypatch.setattr(settings, "prober_batch_size", 2)
+        monkeypatch.setattr(settings, "prober_concurrency", 2)
+
+        hits = self._product_hits(5)
+        with (
+            patch.object(NewAPIProber, "probe", return_value=[]) as product_probe,
+            respx.mock(assert_all_called=False),
+            caplog.at_level(logging.INFO, logger="aipocket.prober.runner"),
+        ):
+            creds = await probe_hosts(hits)
+
+        assert product_probe.await_count == 5
+        assert creds == []
+
+        text = "\n".join(r.message for r in caplog.records)
+        assert "batch_size=2 → 3 batch(es)" in text
+        assert "Prober batch 1/3:" in text
+        assert "Prober batch 2/3:" in text
+        assert "Prober batch 3/3:" in text
+        assert "Prober extracted 0 credentials from 5 hosts (3 batches)" in text
+
+    @pytest.mark.asyncio
+    async def test_small_host_set_is_single_batch(self, monkeypatch, caplog):
+        import logging
+
+        from aipocket.core.config import settings
+
+        monkeypatch.setattr(settings, "prober_batch_size", 500)
+        monkeypatch.setattr(settings, "prober_concurrency", 10)
+
+        hits = self._product_hits(3)
+        with (
+            patch.object(NewAPIProber, "probe", return_value=[]) as product_probe,
+            respx.mock(assert_all_called=False),
+            caplog.at_level(logging.INFO, logger="aipocket.prober.runner"),
+        ):
+            await probe_hosts(hits)
+
+        assert product_probe.await_count == 3
+        text = "\n".join(r.message for r in caplog.records)
+        assert "batch_size=500 → 1 batch(es)" in text
+        assert "Prober batch 1/1:" in text
+
+
 class TestWeakCredentials:
     def test_has_common_defaults(self):
         pairs = {(u, p) for u, p in WEAK_CREDENTIALS}

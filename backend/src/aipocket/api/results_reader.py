@@ -187,16 +187,53 @@ def list_runs() -> list[dict[str, Any]]:
     return _list_runs_files()
 
 
+def _positive_int(*candidates: Any) -> int:
+    """First value that casts to an int > 0; else 0.
+
+    Used to paper over historical runs that predate the funnel columns
+    (``raw_hits`` / ``final_verified`` / … defaulted to 0 on ALTER TABLE).
+    """
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return n
+    return 0
+
+
+def _sources_from_jsonb(value: Any) -> list[str]:
+    """Normalize ``runs.sources`` JSONB (list / comma string) into a sorted list."""
+    if value is None:
+        return []
+    parts: list[str] = []
+    if isinstance(value, list):
+        parts = [str(v).strip() for v in value]
+    elif isinstance(value, str):
+        parts = [p.strip() for p in value.split(",")]
+    return sorted({p for p in parts if p})
+
+
 def _list_runs_pg() -> list[dict[str, Any]]:
-    """List runs from PG. Counts come from GROUP BY; high-value from the FK."""
+    """List runs from PG. Counts come from GROUP BY; high-value from the FK.
+
+    Funnel columns (``raw_hits``, ``final_verified``, …) were added after some
+    historical imports; when they are still 0 we fall back to older fields
+    (``total_hosts`` / ``results`` counts / ``high_value_keys``) so History
+    does not look empty for pre-funnel runs.
+    """
     from aipocket.core.db import get_pool
 
     pool = get_pool()
     with pool.connection() as conn:
         runs = conn.execute(
             """
-            SELECT run_id, started_at, raw_hits, unique_targets, candidates,
-                   active_requests, final_verified, suspicious, high_value_final,
+            SELECT run_id, started_at, total_hosts, total_credentials, total_valid,
+                   raw_hits, unique_targets, candidates, active_requests,
+                   final_verified, suspicious, high_value_final, sources,
                    (log IS NOT NULL AND log <> '') AS has_log
             FROM runs ORDER BY run_id DESC
             """
@@ -205,15 +242,27 @@ def _list_runs_pg() -> list[dict[str, Any]]:
         kind_counts = conn.execute(
             "SELECT run_id, kind, COUNT(*) AS n FROM results GROUP BY run_id, kind"
         ).fetchall()
-        # Distinct discovery backends per run, matching the file version's
-        # _sources_of (a credential's `backend` may be "fofa,shodan", so split).
+        # Distinct discovery backends per run (valid + suspicious — older small
+        # runs often only left suspicious rows). credential.backend may be
+        # "fofa,shodan", so split.
         src_rows = conn.execute(
             """
             SELECT DISTINCT run_id,
                    TRIM(part) AS backend
             FROM results,
-                 LATERAL regexp_split_to_table(record->'credential'->>'backend', ',') AS part
-            WHERE kind = 'valid' AND TRIM(part) <> ''
+                 LATERAL regexp_split_to_table(
+                     COALESCE(record->'credential'->>'backend', ''),
+                     ','
+                 ) AS part
+            WHERE kind IN ('valid', 'suspicious') AND TRIM(part) <> ''
+            """
+        ).fetchall()
+        hv_rows = conn.execute(
+            """
+            SELECT run_id, COUNT(*) AS n
+            FROM high_value_keys
+            WHERE run_id IS NOT NULL
+            GROUP BY run_id
             """
         ).fetchall()
 
@@ -227,25 +276,31 @@ def _list_runs_pg() -> list[dict[str, Any]]:
     src_by: dict[str, set[str]] = {}
     for r in src_rows:
         src_by.setdefault(r["run_id"], set()).add(r["backend"])
+    hv_by: dict[str, int] = {r["run_id"]: int(r["n"]) for r in hv_rows}
 
     by_day: dict[str, list[dict[str, Any]]] = {}
     for run in runs:
         rid = run["run_id"]
         started = run["started_at"]
+        valid_n = valid_by.get(rid, 0)
+        susp_n = susp_by.get(rid, 0)
+        sources = sorted(src_by.get(rid, set())) or _sources_from_jsonb(run.get("sources"))
         entry = {
             "run_id": rid,
             "started_at": started.isoformat() if started else _run_id_to_iso(rid),
-            "valid_count": valid_by.get(rid, 0),
-            "suspicious_count": susp_by.get(rid, 0),
+            "valid_count": valid_n,
+            "suspicious_count": susp_n,
             "has_log": bool(run["has_log"]),
-            "raw_hits": run["raw_hits"],
-            "unique_targets": run["unique_targets"],
-            "candidates": run["candidates"],
-            "active_requests": run["active_requests"],
-            "final_verified": run["final_verified"],
-            "suspicious": run["suspicious"],
-            "sources": sorted(src_by.get(rid, set())),
-            "high_value_final": run["high_value_final"],
+            # Prefer honest funnel columns; fall back so pre-migration rows
+            # still show something useful on History.
+            "raw_hits": _positive_int(run["raw_hits"], run["total_hosts"]),
+            "unique_targets": _positive_int(run["unique_targets"], run["total_hosts"]),
+            "candidates": _positive_int(run["candidates"], run["total_credentials"]),
+            "active_requests": _positive_int(run["active_requests"]),
+            "final_verified": _positive_int(run["final_verified"], run["total_valid"], valid_n),
+            "suspicious": _positive_int(run["suspicious"], susp_n),
+            "sources": sources,
+            "high_value_final": _positive_int(run["high_value_final"], hv_by.get(rid, 0)),
         }
         by_day.setdefault(_day_from_run_id(rid), []).append(entry)
     return [{"day": day, "runs": entries} for day, entries in by_day.items()]
