@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from aipocket.core.models import Credential
+
 from ..base import WEAK_CREDENTIALS, Prober
 
 log = logging.getLogger(__name__)
@@ -51,14 +52,16 @@ class FlowiseProber(Prober):
             creds.extend(found)
 
         # 3. Weak-password login → authenticated reads
-        token = await self._try_login(hit)
+        token = await self._try_login(hit) if self._intrusive_authorized(hit) else ""
         if token:
             for path in ("/api/v1/credentials", "/api/v1/chatflows", "/api/v1/apikeys"):
                 resp = await self._get(
                     self._url(hit, path),
                     headers={"Authorization": f"Bearer {token}"},
                 )
-                found = self._extract_from_response(resp, hit, f"flowise_authed_{path.split('/')[-1]}")
+                found = self._extract_from_response(
+                    resp, hit, f"flowise_authed_{path.split('/')[-1]}"
+                )
                 creds.extend(found)
 
         return creds
@@ -77,6 +80,11 @@ class FlowiseProber(Prober):
                 continue
             token = data.get("token") or data.get("access_token") or ""
             if token:
-                log.debug("flowise login success on %s with %s/%s", hit.get("host", ""), username, password)
+                log.debug(
+                    "flowise login success on %s with %s/%s",
+                    hit.get("host", ""),
+                    username,
+                    password,
+                )
                 return token
         return ""

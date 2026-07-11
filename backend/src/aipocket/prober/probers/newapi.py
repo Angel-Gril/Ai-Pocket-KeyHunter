@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 from aipocket.core.models import Credential
+
 from ..base import WEAK_CREDENTIALS, Prober
 
 log = logging.getLogger(__name__)
@@ -52,16 +53,20 @@ async def _probe_gateway(prober: Prober, hit: dict[str, Any], tag: str) -> list[
     # 1. Unauthenticated reads
     for path in ("/v1/models", "/api/status"):
         resp = await prober._get(prober._url(hit, path))
-        found = prober._extract_from_response(resp, hit, f"{tag}_unauth_{path.strip('/').replace('/', '_')}")
+        found = prober._extract_from_response(
+            resp, hit, f"{tag}_unauth_{path.strip('/').replace('/', '_')}"
+        )
         creds.extend(found)
 
     # 2. Weak-password login → authenticated reads
-    session = await _try_login(prober, hit)
+    session = await _try_login(prober, hit) if prober._intrusive_authorized(hit) else ""
     if session:
         headers = {"Authorization": f"Bearer {session}"}
         for path in ("/api/token/", "/api/channel/", "/api/user/self"):
             resp = await prober._get(prober._url(hit, path), headers=headers)
-            found = prober._extract_from_response(resp, hit, f"{tag}_authed_{path.strip('/').replace('/', '_')}")
+            found = prober._extract_from_response(
+                resp, hit, f"{tag}_authed_{path.strip('/').replace('/', '_')}"
+            )
             creds.extend(found)
 
     return creds

@@ -7,6 +7,7 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -132,10 +133,17 @@ class Prober(ABC):
         client: httpx.AsyncClient,
         sem: asyncio.Semaphore,
         budget: RequestBudget | None = None,
+        *,
+        max_redirects: int = 2,
+        intrusive_checks: bool = False,
+        authorized_scope: tuple[str, ...] = (),
     ):
         self._client = client
         self._sem = sem
         self._budget = budget
+        self._max_redirects = max_redirects
+        self._intrusive_checks = intrusive_checks
+        self._authorized_scope = frozenset(authorized_scope)
         if budget is not None:
             client.event_hooks["request"].append(self._account_request)
 
@@ -175,10 +183,11 @@ class Prober(ABC):
         if not url:
             return None
         kwargs.setdefault("timeout", PROBE_TIMEOUT)
-        kwargs.setdefault("follow_redirects", True)
+        kwargs["follow_redirects"] = False
         try:
             async with self._sem:
-                return await self._client.get(url, **kwargs)
+                response = await self._client.get(url, **kwargs)
+            return await self._follow_same_origin(response, kwargs)
         except BudgetExhausted:
             return None
         except Exception as e:  # noqa: BLE001 — prober must never crash on a bad host
@@ -190,7 +199,7 @@ class Prober(ABC):
         if not url:
             return None
         kwargs.setdefault("timeout", PROBE_TIMEOUT)
-        kwargs.setdefault("follow_redirects", True)
+        kwargs["follow_redirects"] = False
         try:
             async with self._sem:
                 return await self._client.post(url, **kwargs)
@@ -207,7 +216,7 @@ class Prober(ABC):
             async with (
                 httpx.AsyncClient(
                     timeout=kwargs.pop("timeout", PROBE_TIMEOUT),
-                    follow_redirects=kwargs.pop("follow_redirects", True),
+                    follow_redirects=False,
                     verify=False,
                     event_hooks={"request": [self._account_request]},
                 ) as insecure,
@@ -218,8 +227,32 @@ class Prober(ABC):
                 return await insecure.post(url, **kwargs)
         except BudgetExhausted:
             return None
-        except Exception:  # noqa: BLE001
-            return None
+
+    async def _follow_same_origin(
+        self, response: httpx.Response, kwargs: dict[str, Any]
+    ) -> httpx.Response | None:
+        origin = self._origin(str(response.request.url))
+        current = response
+        for _ in range(self._max_redirects):
+            if not current.is_redirect or "location" not in current.headers:
+                return current
+            next_url = urljoin(str(current.request.url), current.headers["location"])
+            if self._origin(next_url) != origin:
+                return None
+            try:
+                async with self._sem:
+                    current = await self._client.get(next_url, **kwargs)
+            except (BudgetExhausted, httpx.HTTPError):
+                return None
+        return None if current.is_redirect else current
+
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, int | None]:
+        parsed = urlsplit(url)
+        return parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port
+
+    def _intrusive_authorized(self, hit: dict[str, Any]) -> bool:
+        return self._intrusive_checks and self._url(hit) in self._authorized_scope
 
     def _extract_from_response(
         self,

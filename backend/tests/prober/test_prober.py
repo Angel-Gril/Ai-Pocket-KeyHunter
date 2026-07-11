@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import httpx
 import pytest
 import respx
@@ -22,7 +24,7 @@ from aipocket.prober.probers import (
     OneAPIProber,
     OpenWebUIProber,
 )
-from aipocket.prober.runner import _select_prober
+from aipocket.prober.runner import _select_prober, probe_hosts
 
 # ---------------------------------------------------------------------------
 # Key extraction
@@ -222,10 +224,75 @@ class TestNewAPIProbe:
                 return_value=httpx.Response(404)
             )
             async with httpx.AsyncClient() as client:
-                prober = NewAPIProber(client, sem)
+                prober = NewAPIProber(
+                    client,
+                    sem,
+                    intrusive_checks=True,
+                    authorized_scope=("https://newapi.example.com",),
+                )
                 creds = await prober.probe(hit)
         assert len(creds) >= 1
         assert any("sk-" in c.apikey for c in creds)
+
+    @pytest.mark.asyncio
+    async def test_normal_mode_never_attempts_weak_passwords(self):
+        hit = {"host": "https://safe.example.com", "title": "New API", "protocol": "https"}
+        import asyncio
+
+        with respx.mock(assert_all_called=False) as router:
+            login = router.post("https://safe.example.com/api/user/login").mock(
+                return_value=httpx.Response(200, json={"success": True, "data": "token"})
+            )
+            router.route().mock(return_value=httpx.Response(404))
+            async with httpx.AsyncClient(follow_redirects=False) as client:
+                await NewAPIProber(client, asyncio.Semaphore(1)).probe(hit)
+
+        assert login.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_intrusive_mode_requires_matching_authorized_scope(self):
+        hit = {"host": "https://outside.example.com", "title": "New API", "protocol": "https"}
+        import asyncio
+
+        with respx.mock(assert_all_called=False) as router:
+            login = router.post("https://outside.example.com/api/user/login").mock(
+                return_value=httpx.Response(200, json={"success": True, "data": "token"})
+            )
+            router.route().mock(return_value=httpx.Response(404))
+            async with httpx.AsyncClient(follow_redirects=False) as client:
+                await NewAPIProber(
+                    client,
+                    asyncio.Semaphore(1),
+                    intrusive_checks=True,
+                    authorized_scope=("https://authorized.example.com",),
+                ).probe(hit)
+
+        assert login.call_count == 0
+
+
+class TestStagedProbeDispatch:
+    @pytest.mark.asyncio
+    async def test_low_score_target_receives_zero_requests(self):
+        hit = {"host": "https://low.example.com", "title": "docs", "protocol": "https"}
+        with respx.mock(assert_all_called=False) as router:
+            router.route().mock(return_value=httpx.Response(200, text="unexpected"))
+            await probe_hosts([hit])
+        assert len(router.calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_high_score_target_enters_product_path(self):
+        hit = {
+            "host": "https://product.example.com",
+            "title": "New API",
+            "protocol": "https",
+            "_product": "new-api",
+        }
+        with (
+            patch.object(NewAPIProber, "probe", return_value=[]) as product_probe,
+            respx.mock(assert_all_called=False),
+        ):
+            await probe_hosts([hit])
+        product_probe.assert_awaited_once()
 
 
 class TestWeakCredentials:

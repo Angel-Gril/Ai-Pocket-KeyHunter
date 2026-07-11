@@ -23,6 +23,9 @@ from .evidence import TargetEvidence, score_target
 
 log = logging.getLogger(__name__)
 
+MEDIUM_EVIDENCE_SCORE = 50
+HIGH_EVIDENCE_SCORE = 70
+
 
 def _prober_concurrency() -> int:
     return settings.prober_concurrency
@@ -93,7 +96,11 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
         return []
 
     eligible = _eligible_targets(canonicalize_hits(hits), settings.min_probe_evidence_score)
-    hits = [target.to_hit() for target, _ in eligible]
+    hits = []
+    for target, evidence in eligible:
+        hit = target.to_hit()
+        hit["_evidence_score"] = evidence.score
+        hits.append(hit)
     if not hits:
         return []
 
@@ -103,7 +110,11 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
     assignments: list[tuple[type[Prober], dict[str, Any]]] = []
     unmatched_hits: list[dict[str, Any]] = []
     for hit in hits:
-        selected = _select_prober(hit, prober_classes)
+        selected = (
+            _select_prober(hit, prober_classes)
+            if hit["_evidence_score"] >= HIGH_EVIDENCE_SCORE
+            else None
+        )
         if selected is None:
             unmatched_hits.append(hit)
         else:
@@ -143,10 +154,16 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
             async with httpx.AsyncClient(
                 timeout=PROBE_TIMEOUT,
                 limits=httpx.Limits(max_connections=settings.max_requests_per_target),
-                follow_redirects=True,
-                max_redirects=settings.max_probe_redirects,
+                follow_redirects=False,
             ) as client:
-                p = prober_cls(client, sem, RequestBudget(settings.max_requests_per_target))
+                p = prober_cls(
+                    client,
+                    sem,
+                    RequestBudget(settings.max_requests_per_target),
+                    max_redirects=settings.max_probe_redirects,
+                    intrusive_checks=settings.intrusive_checks,
+                    authorized_scope=settings.authorized_probe_scope_list,
+                )
                 try:
                     return await p.probe(h)
                 except Exception as e:  # noqa: BLE001

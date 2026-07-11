@@ -8,10 +8,10 @@ import httpx
 import pytest
 import respx
 
-from aipocket.services.honeypot import pre_filter_credentials
 from aipocket.core.models import Credential
+from aipocket.prober.budget import RequestBudget
 from aipocket.prober.probers.generic import GenericPageProber
-
+from aipocket.services.honeypot import pre_filter_credentials
 
 # ---------------------------------------------------------------------------
 # GenericPageProber tests
@@ -31,6 +31,61 @@ class TestGenericPageProberIdentify:
 
 
 class TestGenericPageProberProbe:
+    @pytest.mark.asyncio
+    async def test_medium_evidence_uses_one_confirmation_request(self):
+        hit = {"host": "https://medium.example.com", "protocol": "https", "_evidence_score": 60}
+        sem = asyncio.Semaphore(1)
+        with respx.mock() as router:
+            confirmation = router.get("https://medium.example.com/").mock(
+                return_value=httpx.Response(200, text="confirmed target")
+            )
+            async with httpx.AsyncClient(follow_redirects=False) as client:
+                await GenericPageProber(client, sem, RequestBudget(12)).probe(hit)
+
+        assert confirmation.call_count == 1
+        assert confirmation.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cross_origin_redirect_is_rejected(self):
+        hit = {"host": "https://redirect.example.com", "protocol": "https", "_evidence_score": 60}
+        sem = asyncio.Semaphore(1)
+        with respx.mock(assert_all_called=False) as router:
+            router.get("https://redirect.example.com/").mock(
+                return_value=httpx.Response(
+                    302, headers={"location": "https://other.example.com/leak"}
+                )
+            )
+            escaped = router.get("https://other.example.com/leak").mock(
+                return_value=httpx.Response(200, text="API_KEY=sk-proj-" + "A" * 30)
+            )
+            async with httpx.AsyncClient(follow_redirects=False) as client:
+                creds = await GenericPageProber(client, sem, RequestBudget(12)).probe(hit)
+
+        assert creds == []
+        assert escaped.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_same_origin_redirects_are_bounded_and_budgeted(self):
+        hit = {"host": "https://bounded.example.com", "protocol": "https", "_evidence_score": 60}
+        sem = asyncio.Semaphore(1)
+        budget = RequestBudget(2)
+        with respx.mock(assert_all_called=False) as router:
+            router.get("https://bounded.example.com/").mock(
+                return_value=httpx.Response(302, headers={"location": "/one"})
+            )
+            router.get("https://bounded.example.com/one").mock(
+                return_value=httpx.Response(302, headers={"location": "/two"})
+            )
+            final = router.get("https://bounded.example.com/two").mock(
+                return_value=httpx.Response(200, text="API_KEY=sk-proj-" + "A" * 30)
+            )
+            async with httpx.AsyncClient(follow_redirects=False) as client:
+                creds = await GenericPageProber(client, sem, budget, max_redirects=5).probe(hit)
+
+        assert creds == []
+        assert final.call_count == 0
+        assert budget.remaining == 0
+
     @pytest.mark.asyncio
     async def test_extracts_anthropic_key_from_env(self):
         """Simulates finding an exposed .env with a Claude key."""
@@ -113,18 +168,21 @@ class TestGenericPageProberProbe:
         config_content = '{"DEEPSEEK_API_KEY": "sk-e5b48a0e80564bc8924bff1383a08c77deadbeef"}'
         with respx.mock(assert_all_called=False) as router:
             router.get("http://192.168.1.100:8080/").mock(
-                return_value=httpx.Response(200, text="<h1>Welcome</h1>",
-                                           headers={"content-type": "text/html"})
+                return_value=httpx.Response(
+                    200, text="<h1>Welcome</h1>", headers={"content-type": "text/html"}
+                )
             )
             # .env returns a real text file (triggers tier 2)
             router.get("http://192.168.1.100:8080/.env").mock(
-                return_value=httpx.Response(200, text="PORT=8080\n",
-                                           headers={"content-type": "text/plain"})
+                return_value=httpx.Response(
+                    200, text="PORT=8080\n", headers={"content-type": "text/plain"}
+                )
             )
             # /api/config is in tier 2 — contains the actual key
             router.get("http://192.168.1.100:8080/api/config").mock(
-                return_value=httpx.Response(200, text=config_content,
-                                           headers={"content-type": "application/json"})
+                return_value=httpx.Response(
+                    200, text=config_content, headers={"content-type": "application/json"}
+                )
             )
             router.route().mock(return_value=httpx.Response(404))
 
@@ -201,7 +259,9 @@ class TestGenericPageProberProbe:
         sem = asyncio.Semaphore(5)
         with respx.mock(assert_all_called=False) as router:
             router.get("https://clean.example.com/").mock(
-                return_value=httpx.Response(200, text="<html><body>Welcome to our site</body></html>")
+                return_value=httpx.Response(
+                    200, text="<html><body>Welcome to our site</body></html>"
+                )
             )
             router.route().mock(return_value=httpx.Response(404))
 
@@ -220,8 +280,11 @@ class TestGenericPageProberProbe:
 class TestPreFilterCredentials:
     def _cred(self, apikey: str, apiurl: str = "https://api.openai.com/v1") -> Credential:
         return Credential(
-            apikey=apikey, apiurl=apiurl, source="test",
-            source_type="header", host="1.2.3.4",
+            apikey=apikey,
+            apiurl=apiurl,
+            source="test",
+            source_type="header",
+            host="1.2.3.4",
         )
 
     def test_keeps_valid_openai_key(self):
@@ -271,11 +334,11 @@ class TestPreFilterCredentials:
     def test_mixed_batch(self):
         """Mix of valid and invalid keys — only valid survive."""
         creds = [
-            self._cred("sk-proj-" + "V" * 30),              # valid
-            self._cred("GOCSPX-google-oauth-bad"),            # google oauth → reject
-            self._cred("sk-ant-good-" + "G" * 30),           # valid
-            self._cred("abcdef1234567890abcdef1234567890"),   # hex32 → reject
-            self._cred("sk-example_key_placeholder_test"),    # noise → reject
+            self._cred("sk-proj-" + "V" * 30),  # valid
+            self._cred("GOCSPX-google-oauth-bad"),  # google oauth → reject
+            self._cred("sk-ant-good-" + "G" * 30),  # valid
+            self._cred("abcdef1234567890abcdef1234567890"),  # hex32 → reject
+            self._cred("sk-example_key_placeholder_test"),  # noise → reject
         ]
         result = pre_filter_credentials(creds)
         assert len(result) == 2

@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     max_requests_per_target: int = 12
     max_probe_redirects: int = 2
     min_probe_evidence_score: int = 50
+    intrusive_checks: bool = False
+    authorized_probe_scope: str = ""
 
     validate_concurrency: int = 20
     validate_timeout: float = 15.0
@@ -123,6 +125,14 @@ class Settings(BaseSettings):
     @property
     def shodan_key_list(self) -> list[str]:
         return [k for k in self.shodan_keys.split(",") if k]
+
+    @property
+    def authorized_probe_scope_list(self) -> tuple[str, ...]:
+        return tuple(
+            value.strip().rstrip("/")
+            for value in self.authorized_probe_scope.split(",")
+            if value.strip()
+        )
 
     @property
     def results_path(self) -> Path:

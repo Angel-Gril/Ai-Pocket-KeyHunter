@@ -21,20 +21,21 @@ import logging
 from typing import Any
 
 from aipocket.core.models import Credential
+
 from ..base import Prober
 
 log = logging.getLogger(__name__)
 
 # Tier 1: Always probe these (high ROI — 8 paths)
 _TIER1_PATHS: list[str] = [
-    "/",                            # index page
-    "/.env",                        # most common credential leak
-    "/.env.production",             # production secrets
-    "/docker-compose.yml",          # docker compose with secrets
+    "/",  # index page
+    "/.env",  # most common credential leak
+    "/.env.production",  # production secrets
+    "/docker-compose.yml",  # docker compose with secrets
     "/docker-compose.yaml",
-    "/config.json",                 # generic JSON config
-    "/v1/models",                   # OpenAI-compatible gateway (no auth check)
-    "/.git/config",                 # git config with tokens
+    "/config.json",  # generic JSON config
+    "/v1/models",  # OpenAI-compatible gateway (no auth check)
+    "/.git/config",  # git config with tokens
 ]
 
 # Tier 2: Only probe if tier 1 found that the server exposes real files
@@ -47,14 +48,14 @@ _TIER2_PATHS: list[str] = [
     "/config.yaml",
     "/config.yml",
     "/config.toml",
-    "/application.yml",             # Spring Boot
+    "/application.yml",  # Spring Boot
     "/application.properties",
     "/settings.json",
-    "/appsettings.json",            # .NET
+    "/appsettings.json",  # .NET
     "/api/config",
     "/api/v1/models",
-    "/debug/vars",                  # Go debug endpoint
-    "/actuator/env",                # Spring Boot actuator
+    "/debug/vars",  # Go debug endpoint
+    "/actuator/env",  # Spring Boot actuator
     "/.well-known/openai-plugin.json",  # ChatGPT plugin manifest
 ]
 
@@ -79,7 +80,10 @@ class GenericPageProber(Prober):
         seen_keys: set[str] = set()
         has_exposed_files = False
 
-        # --- Tier 1: always probe ---
+        if hit.get("_evidence_score", 100) < 70:
+            await self._probe_path(hit, "/", seen_keys)
+            return []
+
         for path in _TIER1_PATHS:
             found, is_file = await self._probe_path(hit, path, seen_keys)
             creds.extend(found)
