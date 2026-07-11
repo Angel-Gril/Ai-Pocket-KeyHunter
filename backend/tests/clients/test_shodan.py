@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import httpx
 import pytest
 import respx
@@ -7,6 +9,17 @@ import respx
 from aipocket.clients.shodan import ShodanClient, map_match
 
 BASE = "https://api.shodan.test"
+
+
+@pytest.fixture(autouse=True)
+def _no_sleep(monkeypatch):
+    """Backoff/throttle sleeps must not slow the unit suite."""
+    monkeypatch.setattr(time, "sleep", lambda *_a, **_k: None)
+
+
+def _client(keys: list[str] | None = None, **kw) -> ShodanClient:
+    # min_interval=0 keeps unit tests fast (production default enforces ≥1s).
+    return ShodanClient(keys=keys or ["k1"], base_url=BASE, min_interval=0, **kw)
 
 
 def _match(ip: str, port: int, **kw):
@@ -35,7 +48,7 @@ def test_search_single_page():
             200, json={"total": 2, "matches": [_match("1.1.1.1", 4000), _match("2.2.2.2", 4000)]}
         )
     )
-    with ShodanClient(keys=["k1"], base_url=BASE) as c:
+    with _client() as c:
         results = c.search("http.title:LiteLLM", pages=1)
     assert len(results) == 2
     # normalized into FOFA-shape fields the extractor consumes
@@ -55,7 +68,7 @@ def test_search_paginates_and_stops_on_short_page():
         httpx.Response(200, json={"total": 101, "matches": full}),
         httpx.Response(200, json={"total": 101, "matches": [_match("9.9.9.9", 4000)]}),
     ]
-    with ShodanClient(keys=["k1"], base_url=BASE) as c:
+    with _client() as c:
         results = c.search("http.title:LiteLLM", pages=5)
     assert len(results) == 101
 
@@ -65,7 +78,7 @@ def test_search_stops_on_empty_matches():
     respx.get(f"{BASE}/shodan/host/search").mock(
         return_value=httpx.Response(200, json={"total": 0, "matches": []})
     )
-    with ShodanClient(keys=["k1"], base_url=BASE) as c:
+    with _client() as c:
         assert c.search("nothing", pages=3) == []
 
 
@@ -76,10 +89,43 @@ def test_search_rotates_keys_on_401():
         httpx.Response(401, text="invalid key"),
         httpx.Response(200, json={"total": 1, "matches": [_match("1.1.1.1", 4000)]}),
     ]
-    with ShodanClient(keys=["bad", "good"], base_url=BASE) as c:
+    with _client(["bad", "good"]) as c:
         results = c.search("http.title:LiteLLM", pages=1)
     assert len(results) == 1
     assert "bad" in c._dead
+
+
+@respx.mock
+def test_search_retries_429_on_same_live_key_after_dead_key():
+    """Dead key must not consume the only retry slot for the live key."""
+    route = respx.get(f"{BASE}/shodan/host/search")
+    route.side_effect = [
+        httpx.Response(401, text="invalid key"),
+        httpx.Response(429, json={"error": "Rate limit reached"}),
+        httpx.Response(429, json={"error": "Rate limit reached"}),
+        httpx.Response(200, json={"total": 1, "matches": [_match("1.1.1.1", 4000)]}),
+    ]
+    with _client(["bad", "good"]) as c:
+        results = c.search("http.title:LiteLLM", pages=1)
+    assert len(results) == 1
+    assert "bad" in c._dead
+    assert "good" not in c._dead
+
+
+@respx.mock
+def test_search_marks_credits_exhausted_separately_from_invalid():
+    route = respx.get(f"{BASE}/shodan/host/search")
+    route.side_effect = [
+        httpx.Response(
+            401,
+            text='{"error": "Insufficient query credits, please upgrade your API plan"}',
+        ),
+        httpx.Response(200, json={"total": 1, "matches": [_match("1.1.1.1", 4000)]}),
+    ]
+    with _client(["broke", "rich"]) as c:
+        results = c.search("http.title:LiteLLM", pages=1)
+    assert len(results) == 1
+    assert "broke" in c._dead
 
 
 @respx.mock
@@ -89,7 +135,7 @@ def test_search_handles_network_error_then_success():
         httpx.ConnectError("boom"),
         httpx.Response(200, json={"total": 1, "matches": [_match("1.1.1.1", 4000)]}),
     ]
-    with ShodanClient(keys=["k1", "k2"], base_url=BASE) as c:
+    with _client(["k1", "k2"]) as c:
         results = c.search("http.title:LiteLLM", pages=1)
     assert len(results) == 1
 
@@ -99,7 +145,7 @@ def test_search_non_json_returns_empty():
     respx.get(f"{BASE}/shodan/host/search").mock(
         return_value=httpx.Response(200, text="<html>nope")
     )
-    with ShodanClient(keys=["k1", "k2"], base_url=BASE) as c:
+    with _client(["k1", "k2"]) as c:
         assert c.search("http.title:LiteLLM", pages=1) == []
 
 
@@ -108,7 +154,7 @@ def test_count_returns_total_without_consuming_credits():
     respx.get(f"{BASE}/shodan/host/count").mock(
         return_value=httpx.Response(200, json={"total": 4242, "matches": []})
     )
-    with ShodanClient(keys=["k1"], base_url=BASE) as c:
+    with _client() as c:
         assert c.count("http.title:LiteLLM") == 4242
 
 
@@ -117,7 +163,7 @@ def test_info_returns_plan_and_credits():
     respx.get(f"{BASE}/api-info").mock(
         return_value=httpx.Response(200, json={"plan": "edu", "query_credits": 192907})
     )
-    with ShodanClient(keys=["k1"], base_url=BASE) as c:
+    with _client() as c:
         info = c.info()
     # info() now aggregates across all keys (each key's quota reported separately)
     assert info["total_query_credits"] == 192907
@@ -134,7 +180,7 @@ def test_info_aggregates_across_multiple_keys():
         httpx.Response(200, json={"plan": "dev", "query_credits": 62}),
         httpx.Response(200, json={"plan": "edu", "query_credits": 192907}),
     ]
-    with ShodanClient(keys=["k1", "k2"], base_url=BASE) as c:
+    with _client(["k1", "k2"]) as c:
         info = c.info()
     assert info["n_keys"] == 2
     assert info["total_query_credits"] == 62 + 192907
@@ -144,10 +190,24 @@ def test_info_aggregates_across_multiple_keys():
 
 
 @respx.mock
+def test_info_marks_zero_credit_keys_dead():
+    route = respx.get(f"{BASE}/api-info")
+    route.side_effect = [
+        httpx.Response(200, json={"plan": "dev", "query_credits": 0}),
+        httpx.Response(200, json={"plan": "edu", "query_credits": 100}),
+    ]
+    with _client(["empty", "ok"]) as c:
+        info = c.info()
+        assert info["total_query_credits"] == 100
+        assert "empty" in c._dead
+        assert "ok" not in c._dead
+
+
+@respx.mock
 def test_count_returns_none_when_endpoint_fails():
     # count() returns None (not 0) on API failure so callers don't skip live queries.
     respx.get(f"{BASE}/shodan/host/count").mock(return_value=httpx.Response(500, text="boom"))
-    with ShodanClient(keys=["k1"], base_url=BASE) as c:
+    with _client() as c:
         assert c.count("http.title:LiteLLM") is None
 
 
@@ -155,7 +215,7 @@ def test_count_returns_none_when_endpoint_fails():
 def test_count_returns_zero_when_truly_empty():
     # count() returns 0 only when Shodan explicitly reports zero — safe to skip.
     respx.get(f"{BASE}/shodan/host/count").mock(return_value=httpx.Response(200, json={"total": 0}))
-    with ShodanClient(keys=["k1"], base_url=BASE) as c:
+    with _client() as c:
         assert c.count("nothing") == 0
 
 
@@ -165,7 +225,7 @@ def test_no_keys_raises():
 
 
 def test_context_manager():
-    c = ShodanClient(keys=["k1"], base_url=BASE)
+    c = _client()
     with c as ctx:
         assert ctx is c
     assert c._client.is_closed

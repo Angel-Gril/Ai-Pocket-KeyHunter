@@ -15,17 +15,20 @@ Shodan REST API reference:
 Query credit billing (important, the user has 200k/month, 1 credit = 100 results):
     - 1 credit is deducted when the query contains any filter
     - 1 credit per 100 results past the 1st page
+
+Rate limit: ~1 request/second per key (membership plans vary). We enforce a
+global min interval and multi-round retries so a transient 429 does not kill
+the whole search when another key (or a later retry) would succeed.
 """
 
 from __future__ import annotations
 
-import itertools
 import logging
-import time
 from typing import Any
 
 import httpx
 
+from aipocket.clients.key_pool import KeyPool, rate_limit_backoff
 from aipocket.core.config import settings
 
 log = logging.getLogger(__name__)
@@ -106,6 +109,18 @@ def map_match(m: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_credits_exhausted(status_code: int, body: str) -> bool:
+    if status_code not in (401, 403):
+        return False
+    low = body.lower()
+    return (
+        "insufficient query credits" in low
+        or "query credits" in low
+        or "monthly limit" in low
+        or "upgrade your api plan" in low
+    )
+
+
 class ShodanClient:
     """Minimal Shodan REST client with multi-key rotation, mirroring FofaClient."""
 
@@ -114,6 +129,9 @@ class ShodanClient:
         keys: list[str] | None = None,
         base_url: str | None = None,
         timeout: float | None = None,
+        *,
+        min_interval: float | None = None,
+        max_rounds: int = 3,
     ):
         if keys is None:
             keys = settings.shodan_key_list
@@ -122,9 +140,24 @@ class ShodanClient:
         self.keys = keys
         self.base_url = (base_url or settings.shodan_base_url).rstrip("/")
         self.timeout = timeout or settings.shodan_timeout
-        self._key_cycle = itertools.cycle(self.keys)
-        self._dead: set[str] = set()
+        # Default ≥1s to match Shodan's common free/member rate limit message.
+        # Tests may pass min_interval=0 to disable sleeping.
+        if min_interval is None:
+            interval = max(float(settings.shodan_page_delay), 1.0)
+        else:
+            interval = max(float(min_interval), 0.0)
+        self._pool = KeyPool(
+            keys,
+            min_interval=interval,
+            label="shodan key",
+            max_rounds=max_rounds,
+        )
         self._client = httpx.Client(timeout=self.timeout, follow_redirects=True)
+
+    @property
+    def _dead(self) -> set[str]:
+        """Compatibility for callers/tests that inspect ``client._dead``."""
+        return self._pool.dead
 
     def info(self) -> dict[str, Any]:
         """Per-key /api-info aggregated across ALL keys (best-effort).
@@ -141,12 +174,16 @@ class ShodanClient:
               "n_keys": int, "n_dead": int,
             }
         Empty dict if every key failed. Invalid (401/403) keys are marked dead.
+        Keys with zero query_credits are still reported but skipped for future
+        search/count traffic (count is free, but a 0-credit key often 401s on
+        search and burns rotation slots).
         """
         url = f"{self.base_url}/api-info"
         per_key: list[dict[str, Any]] = []
         for key in self.keys:
-            if key in self._dead:
+            if key in self._pool.dead:
                 continue
+            self._pool.throttle()
             try:
                 r = self._client.get(url, params={"key": key})
             except httpx.HTTPError as e:
@@ -158,11 +195,19 @@ class ShodanClient:
                 except ValueError:
                     continue
                 data["_key_masked"] = f"{key[:6]}…{key[-4:]}"
+                credits = int(data.get("query_credits", 0) or 0)
+                data["query_credits"] = credits
                 per_key.append(data)
+                if credits <= 0:
+                    # Keep key out of search/count rotation for this client lifetime.
+                    self._pool.mark_dead(key, "query_credits=0 (skip for this run)")
                 continue
             if r.status_code in (401, 403):
-                log.warning("  shodan key %s… invalid (HTTP %d)", key[:6], r.status_code)
-                self._dead.add(key)
+                body = r.text[:300]
+                if _is_credits_exhausted(r.status_code, body):
+                    self._pool.mark_dead(key, f"credits exhausted ({body[:120]})")
+                else:
+                    self._pool.mark_dead(key, f"invalid (HTTP {r.status_code})")
         if not per_key:
             return {}
         total = sum(int(k.get("query_credits", 0) or 0) for k in per_key)
@@ -170,7 +215,7 @@ class ShodanClient:
             "keys": per_key,
             "total_query_credits": total,
             "n_keys": len(self.keys),
-            "n_dead": len(self._dead),
+            "n_dead": len(self._pool.dead),
         }
 
     def count(self, query: str) -> int | None:
@@ -218,24 +263,32 @@ class ShodanClient:
 
             if len(matches) < 100:
                 break
-            # Shodan rate-limits the search API (~1 req/sec). Back off between pages.
-            time.sleep(settings.shodan_page_delay)
+            # Interval between pages is enforced by KeyPool.throttle on the next
+            # request; no extra sleep needed here.
 
         return all_results
 
     def _request(self, path: str, params: dict[str, Any]) -> dict[str, Any] | None:
         url = f"{self.base_url}{path}"
         last_err = ""
-        for _ in range(len(self.keys)):
-            key = next(self._key_cycle)
-            if key in self._dead:
-                continue
+        rate_limit_hits = 0
+        max_attempts = self._pool.max_attempts()
+
+        for attempt in range(1, max_attempts + 1):
+            key = self._pool.pick()
+            if key is None:
+                last_err = last_err or "no live keys"
+                break
+
+            self._pool.throttle()
             req_params = {**params, "key": key}
             try:
                 r = self._client.get(url, params=req_params)
             except httpx.HTTPError as e:
                 last_err = f"network: {e}"
                 log.warning("  shodan key %s… network error: %s", key[:6], e)
+                # Short cooldown so we don't spin on a broken network path.
+                self._pool.cooldown(key, 0.5)
                 continue
 
             if r.status_code == 200:
@@ -246,20 +299,41 @@ class ShodanClient:
                     log.warning("  shodan key %s… %s", key[:6], last_err)
                     continue
 
-            last_err = f"HTTP {r.status_code}: {r.text[:200]}"
+            body = r.text[:300]
+            last_err = f"HTTP {r.status_code}: {body[:200]}"
+
             if r.status_code in (401, 403):
-                # Invalid / disabled key — stop using it, try the next one.
-                log.error("  shodan key %s… invalid key (%s)", key[:6], last_err)
-                self._dead.add(key)
+                if _is_credits_exhausted(r.status_code, body):
+                    self._pool.mark_dead(
+                        key, f"credits exhausted (HTTP {r.status_code}: {body[:120]})"
+                    )
+                else:
+                    self._pool.mark_dead(key, f"invalid key ({last_err})")
                 continue
+
             if r.status_code == 429:
-                # Rate limited — this key is fine, just slow down and retry next.
-                log.warning("  shodan key %s… rate limited, backing off", key[:6])
-                time.sleep(max(settings.shodan_page_delay, 1.0))
+                rate_limit_hits += 1
+                delay = rate_limit_backoff(
+                    rate_limit_hits,
+                    base=max(self._pool.min_interval, 1.0),
+                )
+                log.warning(
+                    "  shodan key %s… rate limited, backing off %.1fs (attempt %d/%d)",
+                    key[:6],
+                    delay,
+                    attempt,
+                    max_attempts,
+                )
+                self._pool.cooldown(key, delay)
                 continue
+
+            # Hard client errors (malformed query etc.) — don't burn all keys.
+            if 400 <= r.status_code < 500:
+                log.warning("  shodan key %s… %s", key[:6], last_err)
+                return None
+
             log.warning("  shodan key %s… %s", key[:6], last_err)
-            # For other errors (e.g. 400 malformed query) don't burn all keys.
-            return None
+            self._pool.cooldown(key, 1.0)
 
         log.error("  shodan all keys failed for %s: %s", path, last_err)
         return None

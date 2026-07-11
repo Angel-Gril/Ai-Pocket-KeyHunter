@@ -597,6 +597,29 @@ def _fetch_fofa(
     all_hits: list[dict] = []
     queries_used: list[QueryUsage] = []
     with FofaClient() as fofa:
+        try:
+            info = fofa.info()
+            if info:
+                log.info(
+                    "  FOFA keys=%d dead=%d remain_api_query=%s remain_api_data=%s",
+                    info.get("n_keys"),
+                    info.get("n_dead"),
+                    info.get("total_remain_api_query"),
+                    info.get("total_remain_api_data"),
+                )
+                for k in info.get("keys", [])[:5]:
+                    log.info(
+                        "    key %s vip=%s remain_api_query=%s fofa_point=%s",
+                        k.get("_key_masked"),
+                        k.get("vip_level"),
+                        k.get("remain_api_query"),
+                        k.get("fofa_point"),
+                    )
+                if len(info.get("keys", [])) > 5:
+                    log.info("    … %d more keys", len(info["keys"]) - 5)
+        except Exception:  # noqa: BLE001 - info is best-effort
+            pass
+
         for i, q in enumerate(queries, 1):
             log.info("[FOFA %d/%d] %s | %s", i, len(queries), q["cve_id"], q["query"][:80])
             queries_used.append(QueryUsage(q["query"]))

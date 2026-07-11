@@ -1,18 +1,35 @@
 from __future__ import annotations
 
 import base64
-import itertools
 import logging
-import time
 from typing import Any
 
 import httpx
 
+from aipocket.clients.key_pool import KeyPool, rate_limit_backoff
 from aipocket.core.config import settings
 
 log = logging.getLogger(__name__)
 
 DEFAULT_FIELDS = "host,ip,port,protocol,title,header,banner,server,product,link,domain,cert"
+
+# FOFA / fofoapi often return HTTP 200 with error payload in body.
+_QUOTA_MARKERS = (
+    "已用完",
+    "账号无效",
+    "F点不足",
+    "f点不足",
+    "额度不足",
+    "请求次数已用完",
+    "无权限",
+)
+_INVALID_KEY_MARKERS = (
+    "key 不存在",
+    "key不存在",
+    "[-700]",  # common FOFA invalid-key code text
+    "api key error",
+    "invalid key",
+)
 
 
 def _rows_to_dicts(rows: list[Any], field_names: list[str]) -> list[dict[str, Any]]:
@@ -31,12 +48,34 @@ def _rows_to_dicts(rows: list[Any], field_names: list[str]) -> list[dict[str, An
     return out
 
 
+def _errmsg_of(data: dict[str, Any], raw_text: str) -> str:
+    for k in ("errmsg", "message", "msg", "error"):
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, bool):
+            continue
+    return raw_text[:200]
+
+
+def _is_quota_error(text: str) -> bool:
+    return any(m in text for m in _QUOTA_MARKERS)
+
+
+def _is_invalid_key(text: str) -> bool:
+    low = text.lower()
+    return any(m.lower() in low for m in _INVALID_KEY_MARKERS)
+
+
 class FofaClient:
     def __init__(
         self,
         keys: list[str] | None = None,
         base_url: str | None = None,
         timeout: float | None = None,
+        *,
+        min_interval: float | None = None,
+        max_rounds: int = 3,
     ):
         if keys is None:
             keys = settings.keys
@@ -45,9 +84,77 @@ class FofaClient:
         self.keys = keys
         self.base_url = (base_url or settings.fofa_base_url).rstrip("/")
         self.timeout = timeout or settings.fofa_timeout
-        self._key_cycle = itertools.cycle(self.keys)
-        self._dead: set[str] = set()
+        # Tests may pass min_interval=0 to disable sleeping.
+        if min_interval is None:
+            interval = max(float(settings.fofa_page_delay), 0.0)
+        else:
+            interval = max(float(min_interval), 0.0)
+        self._pool = KeyPool(
+            keys,
+            min_interval=interval,
+            label="fofa key",
+            max_rounds=max_rounds,
+        )
         self._client = httpx.Client(timeout=self.timeout, follow_redirects=True)
+
+    @property
+    def _dead(self) -> set[str]:
+        """Compatibility for callers/tests that inspect ``client._dead``."""
+        return self._pool.dead
+
+    def info(self) -> dict[str, Any]:
+        """Per-key ``/api/v1/info/my`` aggregation (best-effort, no search cost).
+
+        Returns::
+            {
+              "keys": [{...api fields..., "_key_masked": "..."}, ...],
+              "total_remain_api_query": int,
+              "total_remain_api_data": int,
+              "n_keys": int, "n_dead": int,
+            }
+        """
+        url = f"{self.base_url}/api/v1/info/my"
+        per_key: list[dict[str, Any]] = []
+        for key in self.keys:
+            if key in self._pool.dead:
+                continue
+            self._pool.throttle()
+            try:
+                r = self._client.get(url, params={"key": key})
+            except httpx.HTTPError as e:
+                log.warning("  fofa key %s… info network error: %s", key[:6], e)
+                continue
+            if r.status_code != 200:
+                if r.status_code in (401, 403):
+                    self._pool.mark_dead(key, f"info HTTP {r.status_code}")
+                continue
+            try:
+                data = r.json()
+            except ValueError:
+                continue
+            if data.get("error") is True:
+                msg = _errmsg_of(data, r.text)
+                if _is_quota_error(msg) or _is_invalid_key(msg):
+                    self._pool.mark_dead(key, msg)
+                continue
+            data["_key_masked"] = f"{key[:6]}…{key[-4:]}"
+            per_key.append(data)
+            # Soft skip keys with no remaining query budget.
+            remain_q = data.get("remain_api_query")
+            try:
+                if remain_q is not None and int(remain_q) <= 0:
+                    self._pool.mark_dead(key, "remain_api_query=0 (skip for this run)")
+            except (TypeError, ValueError):
+                pass
+        if not per_key:
+            return {}
+        return {
+            "keys": per_key,
+            "total_remain_api_query": sum(int(k.get("remain_api_query", 0) or 0) for k in per_key),
+            "total_remain_api_data": sum(int(k.get("remain_api_data", 0) or 0) for k in per_key),
+            "n_keys": len(self.keys),
+            "n_dead": len(self._pool.dead),
+        }
 
     def search(
         self,
@@ -82,7 +189,7 @@ class FofaClient:
             if len(all_results) >= 10000:
                 log.warning("  hit 10000 cap, stopping")
                 break
-            time.sleep(0.3)
+            # Inter-page spacing is handled by KeyPool.throttle on next request.
 
         return all_results
 
@@ -91,10 +198,16 @@ class FofaClient:
     ) -> dict[str, Any] | None:
         url = f"{self.base_url}/api/v1/search/all"
         last_err = ""
-        for _ in range(len(self.keys)):
-            key = next(self._key_cycle)
-            if key in self._dead:
-                continue
+        rate_limit_hits = 0
+        max_attempts = self._pool.max_attempts()
+
+        for attempt in range(1, max_attempts + 1):
+            key = self._pool.pick()
+            if key is None:
+                last_err = last_err or "no live keys"
+                break
+
+            self._pool.throttle()
             params = {
                 "qbase64": qbase64,
                 "key": key,
@@ -106,36 +219,72 @@ class FofaClient:
                 r = self._client.get(url, params=params)
             except httpx.HTTPError as e:
                 last_err = f"network: {e}"
-                log.warning("  key %s… network error: %s", key[:6], e)
+                log.warning("  fofa key %s… network error: %s", key[:6], e)
+                self._pool.cooldown(key, 0.5)
+                continue
+
+            if r.status_code == 429:
+                rate_limit_hits += 1
+                delay = rate_limit_backoff(
+                    rate_limit_hits,
+                    base=max(self._pool.min_interval, 0.5),
+                )
+                last_err = f"HTTP 429: {r.text[:200]}"
+                log.warning(
+                    "  fofa key %s… rate limited, backing off %.1fs (attempt %d/%d)",
+                    key[:6],
+                    delay,
+                    attempt,
+                    max_attempts,
+                )
+                self._pool.cooldown(key, delay)
                 continue
 
             if r.status_code != 200:
                 last_err = f"HTTP {r.status_code}: {r.text[:200]}"
-                log.warning("  key %s… %s", key[:6], last_err)
+                log.warning("  fofa key %s… %s", key[:6], last_err)
+                if r.status_code in (401, 403):
+                    self._pool.mark_dead(key, last_err)
+                else:
+                    self._pool.cooldown(key, 0.5)
                 continue
 
             try:
                 data = r.json()
             except ValueError:
                 last_err = f"non-json: {r.text[:200]}"
-                log.warning("  key %s… %s", key[:6], last_err)
+                log.warning("  fofa key %s… %s", key[:6], last_err)
                 continue
 
-            body_text = r.text
-            if "已用完" in body_text or "账号无效" in body_text:
-                last_err = "quota exhausted or invalid account"
-                log.error("  key %s… %s — STOP this key", key[:6], last_err)
-                self._dead.add(key)
+            # FOFA commonly returns HTTP 200 + {"error": true, "errmsg": "..."}
+            if data.get("error") is True:
+                msg = _errmsg_of(data, r.text)
+                last_err = msg
+                if _is_quota_error(msg):
+                    self._pool.mark_dead(key, f"quota exhausted: {msg[:120]}")
+                    continue
+                if _is_invalid_key(msg):
+                    self._pool.mark_dead(key, f"invalid key: {msg[:120]}")
+                    continue
+                # Transient / unknown API error — try next live key.
+                log.warning("  fofa key %s… api error: %s", key[:6], msg[:160])
+                self._pool.cooldown(key, 0.5)
                 continue
-            if "key 不存在" in body_text or "key不存在" in body_text:
+
+            # Some gateways still embed Chinese errors without error=true.
+            body_text = r.text
+            if _is_quota_error(body_text):
+                last_err = "quota exhausted or invalid account"
+                self._pool.mark_dead(key, last_err)
+                continue
+            if _is_invalid_key(body_text):
                 last_err = "key not found (wrong key)"
-                log.error("  key %s… %s", key[:6], last_err)
-                self._dead.add(key)
+                self._pool.mark_dead(key, last_err)
                 continue
 
             return data
 
-        log.error("  all keys failed for page %d: %s", page, last_err)
+        log.error("  fofa all keys failed for page %d: %s", page, last_err)
         return None
 
     def close(self):
