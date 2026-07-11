@@ -17,8 +17,10 @@ from aipocket.services.validator import (
     verify_no_auth,
 )
 
-BASE = "https://api.openai.com"
-VALID_KEY = "sk-proj-validkey1234567890abcdefghijklmno"
+# Gateway probe fixtures use a non-official key prefix so tests exercise the
+# OpenAI-compatible chat path rather than the enterprise OpenAI adapter.
+BASE = "https://gateway.example.com"
+VALID_KEY = "sk-gateway-validkey1234567890abcdefghijklmno"
 CHAT_URL = f"{BASE}/v1/chat/completions"
 MODELS_URL = f"{BASE}/v1/models"
 
@@ -249,13 +251,16 @@ def test_extract_rate_headers_case_insensitive():
 
 @respx.mock
 async def test_validate_all_runs_concurrently():
-    respx.get("https://api.openai.com/v1/models").mock(return_value=httpx.Response(404))
-    respx.get("https://api.anthropic.com/v1/models").mock(return_value=httpx.Response(404))
-    respx.post("https://api.openai.com/v1/chat/completions").mock(
-        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "gpt-5"}]})
+    )
+    respx.get("https://api.anthropic.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "claude-sonnet-4-6"}]})
     )
     respx.post("https://api.anthropic.com/v1/messages").mock(
-        return_value=httpx.Response(200, json={"content": [{"text": "hi"}], "type": "message"})
+        return_value=httpx.Response(
+            200, json={"id": "msg_1", "type": "message", "content": [{"text": "hi"}]}
+        )
     )
     creds = [
         Credential(apikey="sk-proj-keyA1234567890abcdefghijklmno", apiurl="https://api.openai.com"),
@@ -264,6 +269,7 @@ async def test_validate_all_runs_concurrently():
     results = await validate_all(creds)
     assert len(results) == 2
     assert all(r.valid for r in results)
+    assert {r.provider_info.provider for r in results} == {"openai", "anthropic"}
 
 
 async def test_one_provider_error_does_not_abort_other_credentials(monkeypatch):
@@ -528,13 +534,13 @@ LEAK_URL = "http://161.97.182.228:8788"  # a leaking blog, not an OpenAI gateway
 async def test_probe_persists_routing_override_to_official():
     """sk-proj- key scraped from a blog → validated against api.openai.com;
     cred.apiurl/host updated, leak_host preserves the blog URL."""
-    _mock_models_empty()
-    respx.post(CHAT_URL).mock(
-        return_value=httpx.Response(429, json={"error": "rate limited"})
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "gpt-5"}]})
     )
-    cred = Credential(apikey=VALID_KEY, apiurl=LEAK_URL, host="161.97.182.228:8788")
+    proj_key = "sk-proj-validkey1234567890abcdefghijklmno"
+    cred = Credential(apikey=proj_key, apiurl=LEAK_URL, host="161.97.182.228:8788")
     async with httpx.AsyncClient() as client:
-        await _probe(client, cred)
+        result = await _probe(client, cred)
     assert cred.routed_to_official is True
     assert cred.apiurl == "https://api.openai.com/v1"
     assert cred.host == "api.openai.com"
@@ -542,21 +548,27 @@ async def test_probe_persists_routing_override_to_official():
     # ip/port described the leak host, not the official gateway → cleared
     assert cred.ip == ""
     assert cred.port == ""
+    assert result.provider_info.provider == "openai"
+    assert result.valid is True
 
 
 @respx.mock
 async def test_probe_no_override_when_apiurl_is_already_gateway():
     """If apiurl is already a known provider gateway, no override happens."""
-    _mock_models_empty()
-    respx.post(CHAT_URL).mock(
-        return_value=httpx.Response(429, json={"error": "rate limited"})
+    respx.get("https://api.openai.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "gpt-5"}]})
     )
-    cred = Credential(apikey=VALID_KEY, apiurl=BASE, host="api.openai.com")
+    proj_key = "sk-proj-validkey1234567890abcdefghijklmno"
+    cred = Credential(
+        apikey=proj_key,
+        apiurl="https://api.openai.com/v1",
+        host="api.openai.com",
+    )
     async with httpx.AsyncClient() as client:
         await _probe(client, cred)
     assert cred.routed_to_official is False
     assert cred.leak_host == ""
-    assert cred.apiurl == BASE
+    assert cred.apiurl == "https://api.openai.com/v1"
 
 
 @respx.mock

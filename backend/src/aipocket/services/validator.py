@@ -18,7 +18,9 @@ from aipocket.services.providers.azure_openai import (
     AzureInferencePolicy,
     validate_azure_openai,
 )
+from aipocket.services.providers.gemini import validate_gemini
 from aipocket.services.providers.openai import InferencePolicy, validate_openai
+from aipocket.services.providers.vertex import validate_vertex
 
 log = logging.getLogger(__name__)
 
@@ -420,12 +422,29 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
                 cred.leak_host,
             )
 
-    api_url = _normalize_apiurl(effective_url)
-    if not api_url:
-        result.error = "no apiurl"
-        return result
-
     resolution = resolve_provider(apiurl=effective_url, apikey=cred.apikey)
+    # Prefer explicit bundle provider when registry only sees an unmatched token/key.
+    if (
+        resolution.provider in {"unknown", "gateway"}
+        and cred.bundle is not None
+        and cred.bundle.provider_hint
+        and cred.bundle.provider_hint not in {"unknown", "gateway", "ambiguous"}
+    ):
+        try:
+            hinted = provider_registry.get(cred.bundle.provider_hint)  # type: ignore[arg-type]
+            from aipocket.services.providers.base import ProviderResolution
+
+            resolution = ProviderResolution(
+                hinted,
+                "bundle-provider-hint",
+                hinted.default_model_hints,
+            )
+            if not effective_url and cred.bundle.endpoint_candidates:
+                effective_url = cred.bundle.endpoint_candidates[0]
+                cred.apiurl = effective_url
+        except KeyError:
+            pass
+
     result.provider_info = ProviderInfo(
         provider=resolution.provider,
         category=resolution.category,
@@ -435,7 +454,21 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
         apply_state(result, "provider_conflict")
         return result
 
-    if resolution.provider == "openai" and cred.bundle is not None:
+    # Official adapters do not require a pre-normalized chat/completions URL.
+    adapter_providers = {
+        "openai",
+        "azure_openai",
+        "anthropic",
+        "google",
+        "gemini",
+        "vertex",
+    }
+    api_url = _normalize_apiurl(effective_url)
+    if not api_url and resolution.provider not in adapter_providers:
+        result.error = "no apiurl"
+        return result
+
+    if resolution.provider == "openai":
         validation = await validate_openai(client, cred, InferencePolicy.READ_ONLY)
         result.status_code = validation.status_code
         result.error = validation.error
@@ -469,7 +502,7 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             apply_state(result, "auth_rejected")
         return result
 
-    if resolution.provider == "azure_openai" and cred.bundle is not None:
+    if resolution.provider == "azure_openai":
         validation = await validate_azure_openai(
             client,
             cred,
@@ -527,6 +560,47 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             apply_state(result, target)
         else:
             apply_state(result, "auth_rejected")
+        return result
+
+    if resolution.provider in {"google", "gemini"}:
+        validation = await validate_gemini(client, cred)
+        result.status_code = validation.status_code
+        result.error = validation.error
+        result.credential_kind = "api_key"
+        result.provider_info.models_available = list(validation.models)
+        result.model_available = validation.models[0] if validation.models else ""
+        if validation.valid:
+            apply_state(result, "authentication_confirmed")
+        else:
+            apply_state(result, "auth_rejected")
+        return result
+
+    if resolution.provider == "vertex":
+        validation = await validate_vertex(client, cred)
+        result.status_code = validation.status_code
+        result.error = validation.error
+        kind = (
+            cred.bundle.credential_kind
+            if cred.bundle is not None
+            else "token"
+        )
+        result.credential_kind = kind
+        result.provider_info.models_available = list(validation.models)
+        result.model_available = validation.models[0] if validation.models else ""
+        if validation.valid:
+            apply_state(result, "authentication_confirmed")
+        else:
+            err = validation.error
+            state = (
+                "unsupported_context"
+                if err.startswith("missing-")
+                else "auth_rejected"
+                if err in {"unauthorized", "forbidden", "expired-token"}
+                else "transient_error"
+                if err in {"token-exchange-failed", "assertion-failed", "models-read-failed"}
+                else "auth_rejected"
+            )
+            apply_state(result, state)
         return result
 
     probe_models = list(resolution.default_model_hints)
