@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     scan_fast: bool = False
     scan_prober: bool = True
     prober_concurrency: int = 50
+    max_requests_per_target: int = 12
+    max_probe_redirects: int = 2
+    min_probe_evidence_score: int = 50
 
     validate_concurrency: int = 20
     validate_timeout: float = 15.0
@@ -87,9 +90,9 @@ class Settings(BaseSettings):
     # back to the original no-dedup behavior.
     dedup_enabled: bool = True
     dedup_redis_url: str = "redis://localhost:6379/0"
-    dedup_host_ttl: int = 604800    # 7d — host already probed + GPT-extracted
-    dedup_cred_ttl: int = 259200    # 3d — successful ValidationResult cached
-    dedup_fail_ttl: int = 21600     # 6h — failed cred, retried after this
+    dedup_host_ttl: int = 604800  # 7d — host already probed + GPT-extracted
+    dedup_cred_ttl: int = 259200  # 3d — successful ValidationResult cached
+    dedup_fail_ttl: int = 21600  # 6h — failed cred, retried after this
     dedup_balance_ttl: int = 86400  # 1d — balance query result cached
 
     # ===== PostgreSQL (persistent source of truth) =====

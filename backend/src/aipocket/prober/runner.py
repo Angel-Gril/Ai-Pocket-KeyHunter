@@ -15,8 +15,11 @@ import httpx
 
 from aipocket.core.config import settings
 from aipocket.core.models import Credential
+from aipocket.core.targets import DiscoveryTarget, canonicalize_hits
 
 from .base import PROBE_TIMEOUT, Prober
+from .budget import RequestBudget
+from .evidence import TargetEvidence, score_target
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +75,13 @@ def _select_prober(hit: dict[str, Any], prober_classes: list[type[Prober]]) -> t
     return None
 
 
+def _eligible_targets(
+    targets: list[DiscoveryTarget], minimum_score: int
+) -> list[tuple[DiscoveryTarget, TargetEvidence]]:
+    scored = [(target, score_target(target)) for target in targets]
+    return [(target, evidence) for target, evidence in scored if evidence.score >= minimum_score]
+
+
 async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
     """Probe all hits for exposed credentials.
 
@@ -79,6 +89,11 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
     run concurrently (bounded by a semaphore). Returns de-duplicated
     credentials tagged ``source_type="fingerprint"``.
     """
+    if not hits:
+        return []
+
+    eligible = _eligible_targets(canonicalize_hits(hits), settings.min_probe_evidence_score)
+    hits = [target.to_hit() for target, _ in eligible]
     if not hits:
         return []
 
@@ -115,39 +130,42 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
     concurrency = _prober_concurrency()
     log.info("Prober concurrency: %d", concurrency)
     sem = asyncio.Semaphore(concurrency)
-    limits = httpx.Limits(max_connections=concurrency * 2)
-
     all_creds: list[Credential] = []
-    async with httpx.AsyncClient(
-        timeout=PROBE_TIMEOUT, limits=limits, follow_redirects=True
-    ) as client:
-        tasks: list[asyncio.Task[list[Credential]]] = []
-        for cls, hit in assignments:
-            prober = cls(client, sem)
-            host_label = hit.get("host", "?")[:40]
+    tasks: list[asyncio.Task[list[Credential]]] = []
+    for cls, hit in assignments:
+        host_label = hit.get("host", "?")[:40]
 
-            async def _run(
-                p: Prober = prober, h: dict[str, Any] = hit, hl: str = host_label
-            ) -> list[Credential]:
+        async def _run(
+            prober_cls: type[Prober] = cls,
+            h: dict[str, Any] = hit,
+            hl: str = host_label,
+        ) -> list[Credential]:
+            async with httpx.AsyncClient(
+                timeout=PROBE_TIMEOUT,
+                limits=httpx.Limits(max_connections=settings.max_requests_per_target),
+                follow_redirects=True,
+                max_redirects=settings.max_probe_redirects,
+            ) as client:
+                p = prober_cls(client, sem, RequestBudget(settings.max_requests_per_target))
                 try:
                     return await p.probe(h)
                 except Exception as e:  # noqa: BLE001
                     log.debug("prober %s on %s crashed: %s", p.product_name, hl, type(e).__name__)
                     return []
 
-            tasks.append(asyncio.ensure_future(_run()))
+        tasks.append(asyncio.ensure_future(_run()))
 
-        # Drive completion via as_completed so we can emit periodic INFO progress.
-        # gather would block until every task finishes, leaving the web UI's log
-        # buffer silent for the whole probing phase (3.5w+ hosts at concurrency 50
-        # can take 20+ min). Logging roughly every 500 finished hosts keeps the
-        # Scan page visibly alive without flooding it.
-        progress_step = max(500, len(assignments) // 20) or 1
-        results: list[list[Credential]] = []
-        for done, coro in enumerate(asyncio.as_completed(tasks), start=1):
-            results.append(await coro)
-            if done % progress_step == 0 or done == len(assignments):
-                log.info("Prober progress: %d / %d hosts", done, len(assignments))
+    # Drive completion via as_completed so we can emit periodic INFO progress.
+    # gather would block until every task finishes, leaving the web UI's log
+    # buffer silent for the whole probing phase (3.5w+ hosts at concurrency 50
+    # can take 20+ min). Logging roughly every 500 finished hosts keeps the
+    # Scan page visibly alive without flooding it.
+    progress_step = max(500, len(assignments) // 20) or 1
+    results: list[list[Credential]] = []
+    for done, coro in enumerate(asyncio.as_completed(tasks), start=1):
+        results.append(await coro)
+        if done % progress_step == 0 or done == len(assignments):
+            log.info("Prober progress: %d / %d hosts", done, len(assignments))
 
     seen: set[tuple[str, str]] = set()
     for batch in results:

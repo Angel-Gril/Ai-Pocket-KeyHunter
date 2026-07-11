@@ -14,6 +14,8 @@ from aipocket.core.key_patterns import KEY_PATTERNS as _PROBE_KEY_PATTERNS_BASE
 from aipocket.core.key_patterns import is_noise as _is_noise
 from aipocket.core.models import Credential
 
+from .budget import BudgetExhausted, RequestBudget
+
 log = logging.getLogger(__name__)
 
 
@@ -30,7 +32,10 @@ def _is_tls_verify_error(exc: BaseException) -> bool:
         msg = " ".join(filter(None, [msg, type(cur).__name__, str(cur)]))
         cur = cur.__cause__ or cur.__context__
     low = msg.lower()
-    return "certificate" in low and ("verify" in low or "mismatch" in low or "self-signed" in low or "expired" in low)
+    return "certificate" in low and (
+        "verify" in low or "mismatch" in low or "self-signed" in low or "expired" in low
+    )
+
 
 # ---------------------------------------------------------------------------
 # Default weak credentials to try on products that ship with defaults.
@@ -105,7 +110,13 @@ def extract_keys_from_text(
 # appended.
 # ---------------------------------------------------------------------------
 _PROBE_KEY_PATTERNS = _PROBE_KEY_PATTERNS_BASE + [
-    ("generic_bearer", re.compile(r'(?:api[_-]?key|apikey|bearer|token|secret|authorization)["\']?\s*[:=]\s*["\']?([A-Za-z0-9_\-]{32,})["\']?', re.I)),
+    (
+        "generic_bearer",
+        re.compile(
+            r'(?:api[_-]?key|apikey|bearer|token|secret|authorization)["\']?\s*[:=]\s*["\']?([A-Za-z0-9_\-]{32,})["\']?',
+            re.I,
+        ),
+    ),
 ]
 
 
@@ -116,9 +127,21 @@ class Prober(ABC):
     #: by :meth:`identify`.
     product_name: str = ""
 
-    def __init__(self, client: httpx.AsyncClient, sem: asyncio.Semaphore):
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        budget: RequestBudget | None = None,
+    ):
         self._client = client
         self._sem = sem
+        self._budget = budget
+        if budget is not None:
+            client.event_hooks["request"].append(self._account_request)
+
+    async def _account_request(self, request: httpx.Request) -> None:
+        if self._budget is not None:
+            self._budget.consume()
 
     @classmethod
     @abstractmethod
@@ -156,6 +179,8 @@ class Prober(ABC):
         try:
             async with self._sem:
                 return await self._client.get(url, **kwargs)
+        except BudgetExhausted:
+            return None
         except Exception as e:  # noqa: BLE001 — prober must never crash on a bad host
             if _is_tls_verify_error(e):
                 return await self._insecure_retry("GET", url, **kwargs)
@@ -169,6 +194,8 @@ class Prober(ABC):
         try:
             async with self._sem:
                 return await self._client.post(url, **kwargs)
+        except BudgetExhausted:
+            return None
         except Exception as e:  # noqa: BLE001
             if _is_tls_verify_error(e):
                 return await self._insecure_retry("POST", url, **kwargs)
@@ -177,19 +204,28 @@ class Prober(ABC):
     async def _insecure_retry(self, method: str, url: str, **kwargs: Any) -> httpx.Response | None:
         """Retry a request with verify=False in a throwaway client (TLS-broken hosts)."""
         try:
-            async with httpx.AsyncClient(
-                timeout=kwargs.pop("timeout", PROBE_TIMEOUT),
-                follow_redirects=kwargs.pop("follow_redirects", True),
-                verify=False,
-            ) as insecure, self._sem:
+            async with (
+                httpx.AsyncClient(
+                    timeout=kwargs.pop("timeout", PROBE_TIMEOUT),
+                    follow_redirects=kwargs.pop("follow_redirects", True),
+                    verify=False,
+                    event_hooks={"request": [self._account_request]},
+                ) as insecure,
+                self._sem,
+            ):
                 if method == "GET":
                     return await insecure.get(url, **kwargs)
                 return await insecure.post(url, **kwargs)
+        except BudgetExhausted:
+            return None
         except Exception:  # noqa: BLE001
             return None
 
     def _extract_from_response(
-        self, resp: httpx.Response | None, hit: dict[str, Any], tag: str,
+        self,
+        resp: httpx.Response | None,
+        hit: dict[str, Any],
+        tag: str,
     ) -> list[Credential]:
         if resp is None or resp.status_code != 200:
             return []
