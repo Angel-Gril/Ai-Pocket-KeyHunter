@@ -6,7 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from aipocket.core.models import Credential, ValidationResult
-from aipocket.services.scanner import _trim_hits, run_scan
+from aipocket.core.targets import canonicalize_hits
+from aipocket.services.scanner import _fetch_fofa, _fetch_shodan, _trim_hits, run_scan
 
 FOFA_KEY = "Bearer sk-proj-abc123def456ghi789"
 
@@ -18,6 +19,52 @@ def _make_mock_client(hits):
     mock.__enter__ = MagicMock(return_value=mock)
     mock.__exit__ = MagicMock(return_value=False)
     return mock
+
+
+def test_fofa_fetch_preserves_complete_query_provenance(monkeypatch):
+    query = {
+        "query": "product=example",
+        "cve_id": "CVE-1",
+        "product": "example",
+        "type": "product",
+        "advisory_ids": ["CVE-1", "CVE-2"],
+        "product_hints": ["example", "example-ai"],
+    }
+    monkeypatch.setattr("aipocket.services.scanner.build_queries", lambda **kw: [query])
+    monkeypatch.setattr(
+        "aipocket.services.scanner.FofaClient",
+        lambda: _make_mock_client([{"host": "example.com", "protocol": "https"}]),
+    )
+
+    hits, _ = _fetch_fofa(max_queries=1)
+    target = canonicalize_hits(hits)[0]
+
+    assert target.advisory_ids == frozenset({"CVE-1", "CVE-2"})
+    assert target.product_hints == frozenset({"example", "example-ai"})
+
+
+def test_shodan_fetch_preserves_complete_query_provenance(monkeypatch):
+    query = {
+        "query": 'http.title:"example"',
+        "cve_id": "CVE-1",
+        "product": "example",
+        "type": "product",
+        "advisory_ids": ["CVE-1", "CVE-2"],
+        "product_hints": ["example", "example-ai"],
+    }
+    client = _make_mock_client([{"host": "example.com", "protocol": "https"}])
+    client.info.return_value = {}
+    client.count.return_value = 1
+    monkeypatch.setattr(
+        "aipocket.services.shodan_queries.build_shodan_queries", lambda **kw: [query]
+    )
+    monkeypatch.setattr("aipocket.clients.shodan.ShodanClient", lambda: client)
+
+    hits, _ = _fetch_shodan(max_queries=1)
+    target = canonicalize_hits(hits)[0]
+
+    assert target.advisory_ids == frozenset({"CVE-1", "CVE-2"})
+    assert target.product_hints == frozenset({"example", "example-ai"})
 
 
 @pytest.mark.asyncio

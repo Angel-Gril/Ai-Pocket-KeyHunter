@@ -484,6 +484,8 @@ def _fetch_fofa(
                     if isinstance(h, dict):
                         h.setdefault("_cve", q["cve_id"])
                         h.setdefault("_product", q["product"])
+                        h.setdefault("_cves", q.get("advisory_ids", []))
+                        h.setdefault("_product_hints", q.get("product_hints", []))
                 all_hits.extend(hits)
                 queries_used.append(q["query"])
             log.info("  FOFA accumulated %d hits", len(all_hits))
@@ -550,6 +552,8 @@ def _fetch_shodan(
                     if isinstance(h, dict):
                         h.setdefault("_cve", q["cve_id"])
                         h.setdefault("_product", q["product"])
+                        h.setdefault("_cves", q.get("advisory_ids", []))
+                        h.setdefault("_product_hints", q.get("product_hints", []))
                 all_hits.extend(hits)
                 queries_used.append(q["query"])
             log.info("  Shodan accumulated %d hits", len(all_hits))
