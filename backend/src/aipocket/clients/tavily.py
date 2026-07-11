@@ -99,29 +99,45 @@ def _extract_products(text: str) -> str:
 
 
 def _parse_cve_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse Tavily hits into legacy CVE dicts via the unified advisory model.
+
+    Accepts CVE (any still-relevant year), GHSA, Huntr, and credible
+    unnumbered disclosures. Rejects uncorroborated 0-day claims.
+    """
+    from aipocket.clients.advisories import parse_search_result
+
     url = result.get("url", "")
     title = result.get("title", "")
     content = result.get("content", "")
     combined = f"{title} {content}"
 
+    # Prefer the unified advisory parser (broader ID vocabulary).
+    advisory = parse_search_result(result)
+    if advisory is not None:
+        legacy = advisory.to_legacy_cve_dict()
+        cvss_match = CVSS_RE.search(combined)
+        if cvss_match:
+            legacy["cvss"] = float(cvss_match.group(1))
+        # Fill product from legacy extractor if advisory product is a slug form.
+        product = _extract_products(combined)
+        if product:
+            legacy["product"] = product
+        return legacy
+
+    # Fallback: original CVE-only path without year hard-gate (still require product).
     cve_matches = CVE_RE.findall(combined)
     if not cve_matches:
         return None
 
     cve_id = cve_matches[0].upper()
-    if not (cve_id.startswith("CVE-2026") or cve_id.startswith("CVE-2025")):
-        return None
-
     product = _extract_products(combined)
     if not product:
         return None
 
     cvss_match = CVSS_RE.search(combined)
     cvss = float(cvss_match.group(1)) if cvss_match else 0.0
-
     cve_type = _classify_type(combined)
 
-    # Filter garbage: skip descriptions that are clearly page boilerplate
     description = content[:500].strip().replace("\n", " ")
     garbage_signals = [
         "cookie", "opens in a new window", "opens in a new tab",
@@ -130,9 +146,7 @@ def _parse_cve_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
     ]
     desc_lower = description.lower()
     if any(sig in desc_lower for sig in garbage_signals):
-        # Fall back to title which is usually cleaner
         description = title
-    # Trim to reasonable length
     description = description[:300]
     if not description:
         description = title

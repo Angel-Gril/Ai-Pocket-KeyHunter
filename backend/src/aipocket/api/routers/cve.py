@@ -16,10 +16,15 @@ router = APIRouter(prefix="/api/cve", tags=["cve"], dependencies=[Depends(get_cu
 
 @router.get("")
 async def get_cve() -> dict:
-    """Return the current AI CVE list (sources/cve_2026_ai.json)."""
+    """Return the current AI advisory list (CVE/GHSA/Huntr/disclosures).
+
+    Response keeps the legacy ``cves`` key for the UI while also returning
+    ``advisories`` with the same records for newer clients.
+    """
     from aipocket.services.queries import load_cves
 
-    return {"cves": await asyncio.to_thread(load_cves)}
+    records = await asyncio.to_thread(load_cves)
+    return {"cves": records, "advisories": records}
 
 
 @router.post("/sync", response_model=CveSyncResponse)

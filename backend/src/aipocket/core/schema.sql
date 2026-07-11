@@ -81,8 +81,18 @@ CREATE TABLE IF NOT EXISTS high_value_keys (
     record   JSONB NOT NULL
 );
 
--- CVE list. CVE records are loose dicts, stored whole as JSONB.
+-- Advisory / CVE list. IDs may be CVE-*, GHSA-*, HUNTR-*, or DISCLOSURE-*.
+-- Records are loose dicts (legacy CVE shape + advisory fields), stored as JSONB.
 CREATE TABLE IF NOT EXISTS cves (
-    id     TEXT PRIMARY KEY,                   -- CVE-YYYY-NNNN
+    id     TEXT PRIMARY KEY,                   -- advisory_id (CVE/GHSA/Huntr/disclosure)
     record JSONB NOT NULL
 );
+
+-- Optional normalized advisories table (populated by newer ingestion paths).
+CREATE TABLE IF NOT EXISTS advisories (
+    advisory_id TEXT PRIMARY KEY,
+    product     TEXT NOT NULL DEFAULT '',
+    record      JSONB NOT NULL,
+    updated_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_advisories_product ON advisories (product);
