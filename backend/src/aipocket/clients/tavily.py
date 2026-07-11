@@ -34,6 +34,11 @@ KNOWN_AI_PRODUCTS = [
     "praisonai",
     "praison",  # PraisonAI Gateway
     "gitlab ai gateway",
+    "sub2api",
+    "cliproxyapi",
+    "cli proxy api",
+    "fakeoai",
+    "all-api-hub",
     # --- P1: AI Platforms (stores provider keys in config/DB) ---
     "dify",
     "flowise",
@@ -53,6 +58,9 @@ KNOWN_AI_PRODUCTS = [
     "cherry-studio",
     "chat-ollama",
     "chatbox",
+    "claude code",
+    "codex cli",
+    "openai codex",
     # --- Chinese AI platforms (direct key targets) ---
     "deepseek",
     "chatglm",
@@ -149,6 +157,20 @@ SEARCH_QUERIES = [
     # Authoritative sources (narrowed to key-relevant)
     "site:huntr.dev AI LLM api key leak 2026",
     "site:nvd.nist.gov litellm one-api dify flowise 2026",
+    # --- Relay-station / 中转站 forks (new-api ecosystem + subscription proxies) ---
+    "sub2api CLIProxyAPI relay proxy API key token leak CVE 2026",
+    "new-api one-api sub2api token dump admin unauthorized CVE 2026",
+    "fakeoai openai reverse proxy credential leak vulnerability 2026",
+    # --- Official-provider SDK / client key leaks ---
+    "Cursor editor AI API key token leak CVE 2026",
+    "OpenAI Anthropic SDK api key logged plaintext credential CVE",
+    "Azure OpenAI Vertex AI credential exposure leak CVE 2026",
+    # --- Provider-key integrations / wrappers (beyond LiteLLM/LangChain) ---
+    "AI SDK proxy OpenRouter Anthropic OpenAI key exfiltration CVE 2026",
+    # --- Advisory databases (site-scoped, key-relevant) ---
+    "site:github.com/advisories LLM AI api key credential 2026",
+    "site:huntr.dev AI proxy relay api key leak 2026",
+    "site:nvd.nist.gov sub2api cliproxyapi new-api credential 2026",
 ]
 
 
