@@ -81,10 +81,9 @@ class FlowiseProber(Prober):
             token = data.get("token") or data.get("access_token") or ""
             if token:
                 log.debug(
-                    "flowise login success on %s with %s/%s",
+                    "flowise login success on %s with user %s",
                     hit.get("host", ""),
                     username,
-                    password,
                 )
                 return token
         return ""
