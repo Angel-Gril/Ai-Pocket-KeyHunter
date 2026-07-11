@@ -16,6 +16,13 @@ from .dedup import DedupStore, get_dedup_store
 from .extractor import extract_credentials
 from .queries import build_queries
 from .query_metrics import QueryMetricsCollector
+from .query_planner import (
+    PlannerConfig,
+    QueryCandidate,
+    candidate_lane,
+    load_query_history,
+    plan_queries,
+)
 from .validator import validate_all
 from .writer import (
     append_scan_result,
@@ -521,8 +528,23 @@ def _fetch_fofa(
 ) -> tuple[list[dict], list[QueryUsage]]:
     """Run the FOFA backend: build queries, paginate each, tag hits with _cve/_product."""
     queries = build_queries(skip_direct=skip_direct)
-    if max_queries:
-        queries = queries[:max_queries]
+    planned = plan_queries(
+        tuple(
+            QueryCandidate(
+                query=query["query"],
+                lane=candidate_lane(query),
+                stable_order=index,
+            )
+            for index, query in enumerate(queries)
+        ),
+        load_query_history("fofa"),
+        PlannerConfig(
+            max_queries=max_queries,
+            exploration_ratio=settings.query_exploration_ratio,
+        ),
+    )
+    selected = {candidate.query for candidate in planned}
+    queries = [query for query in queries if query["query"] in selected]
     log.info("Built %d FOFA queries from CVE map", len(queries))
 
     all_hits: list[dict] = []
@@ -554,15 +576,35 @@ def _fetch_shodan(
 
     from .shodan_queries import build_shodan_queries
 
-    queries = build_shodan_queries(skip_direct=skip_direct)
-    if max_queries:
-        queries = queries[:max_queries]
-    log.info("Built %d Shodan queries from CVE map", len(queries))
-
-    # Report remaining credit budget so the 200k/month plan isn't blown silently.
     all_hits: list[dict] = []
     queries_used: list[QueryUsage] = []
     with ShodanClient() as shodan:
+        queries = build_shodan_queries(
+            skip_direct=skip_direct,
+            count=shodan.count,
+            max_pages=settings.shodan_max_pages,
+            request_budget=settings.query_request_budget,
+            credit_budget=settings.shodan_credit_budget,
+        )
+        planned = plan_queries(
+            tuple(
+                QueryCandidate(
+                    query=query["query"],
+                    lane=candidate_lane(query),
+                    stable_order=index,
+                )
+                for index, query in enumerate(queries)
+            ),
+            load_query_history("shodan"),
+            PlannerConfig(
+                max_queries=max_queries,
+                exploration_ratio=settings.query_exploration_ratio,
+            ),
+        )
+        selected = {candidate.query for candidate in planned}
+        queries = [query for query in queries if query["query"] in selected]
+        log.info("Built %d Shodan queries from CVE map", len(queries))
+
         try:
             info = shodan.info()
             if info:

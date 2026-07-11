@@ -60,8 +60,16 @@ def test_product_queries_cover_all_prober_products():
     # Prober-supported products → the SHODAN_PRODUCT_QUERIES key naming used in
     # queries._normalize_product. These are the products the prober can route.
     prober_products = {
-        "Dify", "LiteLLM", "OpenWebUI", "New-API", "One-API",
-        "LobeChat", "LibreChat", "FastGPT", "Flowise", "Langflow",
+        "Dify",
+        "LiteLLM",
+        "OpenWebUI",
+        "New-API",
+        "One-API",
+        "LobeChat",
+        "LibreChat",
+        "FastGPT",
+        "Flowise",
+        "Langflow",
     }
     # Every prober-supported product must have at least one query (non-empty list).
     missing = {p for p in prober_products if not SHODAN_PRODUCT_QUERIES.get(p)}
@@ -77,14 +85,26 @@ def test_shard_constants_well_formed():
     assert set(SHODAN_PRODUCT_QUERIES) >= SHARD_PRODUCTS
 
 
-def test_shard_products_expand_into_country_facets(real_cves):
-    """A SHARD_PRODUCT fans out into one query per country facet."""
-    qs = build_shodan_queries(real_cves)
+def test_shard_products_select_counted_facets_until_coverage_and_credit_budget(real_cves):
+    counts = {"US": 600, "CN": 300, "DE": 100, "JP": 50}
+
+    def count(query: str) -> int:
+        if "country:" not in query:
+            return 1000
+        return next(
+            (total for country, total in counts.items() if f"country:{country}" in query), 0
+        )
+
+    qs = build_shodan_queries(
+        real_cves,
+        count=count,
+        max_pages=5,
+        request_budget=900,
+        credit_budget=2,
+    )
     # LiteLLM is a SHARD_PRODUCT whose base query is 'http.title:"LiteLLM" port:4000'
     litellm = [q for q in qs if q["product"] and "LiteLLM" in q["product"]]
-    assert len(litellm) == len(SHARD_COUNTRIES)
-    for c in SHARD_COUNTRIES:
-        assert any(f"country:{c}" in q["query"] for q in litellm)
+    assert [q["query"].rsplit("country:", 1)[-1] for q in litellm] == ["US", "CN"]
     # all shards share the parent's cve_id (so hits are tagged correctly)
     base_cve = litellm[0]["cve_id"]
     assert all(q["cve_id"] == base_cve for q in litellm)
@@ -106,7 +126,19 @@ def test_non_shard_products_not_faceted():
         matched = [q for q in qs if product_name in q["product"]]
         assert matched, f"{product_name} should have a query"
         for q in matched:
-            assert "country:" not in q["query"], f"{product_name} unexpectedly faceted: {q['query']}"
+            assert "country:" not in q["query"], (
+                f"{product_name} unexpectedly faceted: {q['query']}"
+            )
+
+
+def test_unknown_shodan_count_keeps_unsharded_query():
+    cves = [{"id": "CVE-X", "cvss": 9.0, "product": "LiteLLM", "type": "认证绕过"}]
+
+    queries = build_shodan_queries(cves, count=lambda _query: None)
+
+    product_queries = [query for query in queries if query["lane"] == "product"]
+    assert len(product_queries) == 1
+    assert "country:" not in product_queries[0]["query"]
 
 
 def test_duplicate_shodan_queries_union_provenance():

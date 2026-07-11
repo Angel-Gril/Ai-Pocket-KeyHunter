@@ -94,3 +94,11 @@ def test_build_queries_orders_by_priority(real_cves):
     types = [q["type"] for q in qs]
     priority_values = [VULN_TYPE_PRIORITIES.get(t, 9) for t in types]
     assert priority_values == sorted(priority_values)
+
+
+def test_build_queries_labels_direct_product_and_provider_lanes(sample_cves):
+    queries = build_queries(sample_cves)
+
+    lanes = {query["lane"] for query in queries}
+
+    assert lanes == {"direct", "product", "provider"}

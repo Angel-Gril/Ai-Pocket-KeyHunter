@@ -159,6 +159,8 @@ CREDENTIAL_QUERIES: list[str] = [
     'body="DANGEROUSLY_DISABLE_AUTH" && body="sk-"',
 ]
 
+_PROVIDER_QUERY_MARKERS = ("ANTHROPIC", "DEEPSEEK", "MOONSHOT", "sk-ant")
+
 
 def load_cves(path: Path | None = None) -> list[dict[str, Any]]:
     """Load the CVE map.
@@ -263,14 +265,17 @@ def build_queries(
         if q in by_query:
             continue
         by_query[q] = {
-                "query": q,
-                "cve_id": "DIRECT-CRED-LEAK",
-                "advisory_ids": ["DIRECT-CRED-LEAK"],
-                "product_hints": ["generic"],
-                "product": "generic",
-                "type": "API key泄露",
-                "cvss": "",
-            }
+            "query": q,
+            "cve_id": "DIRECT-CRED-LEAK",
+            "advisory_ids": ["DIRECT-CRED-LEAK"],
+            "product_hints": ["generic"],
+            "product": "generic",
+            "type": "API key泄露",
+            "cvss": "",
+            "lane": "provider"
+            if any(marker in q for marker in _PROVIDER_QUERY_MARKERS)
+            else "direct",
+        }
 
     sorted_cves = sorted(
         cves, key=lambda c: (VULN_TYPE_PRIORITIES.get(c.get("type", ""), 9), -c.get("cvss", 0))
@@ -301,14 +306,15 @@ def build_queries(
                     entry["product_hints"].append(product)
                 continue
             by_query[q] = {
-                    "query": q,
-                    "cve_id": cve["id"],
-                    "advisory_ids": [cve["id"]],
-                    "product_hints": [product],
-                    "product": product,
-                    "type": cve_type,
-                    "cvss": str(cve.get("cvss", "")),
-                }
+                "query": q,
+                "cve_id": cve["id"],
+                "advisory_ids": [cve["id"]],
+                "product_hints": [product],
+                "product": product,
+                "type": cve_type,
+                "cvss": str(cve.get("cvss", "")),
+                "lane": "product",
+            }
 
     return list(by_query.values())
 

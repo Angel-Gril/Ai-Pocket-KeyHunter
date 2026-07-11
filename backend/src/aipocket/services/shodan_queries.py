@@ -20,6 +20,7 @@ crawled body (`http.html`), so credential-leak queries target both.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from .queries import (
@@ -166,7 +167,15 @@ SHARD_PRODUCTS: set[str] = {"New-API", "OpenWebUI", "LibreChat", "LiteLLM", "Dif
 # cover the bulk; the long tail of low-deployment countries is a deliberate cut.
 
 
-def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direct: bool = False) -> list[dict[str, Any]]:
+def build_shodan_queries(
+    cves: list[dict[str, Any]] | None = None,
+    *,
+    skip_direct: bool = False,
+    count: Callable[[str], int | None] | None = None,
+    max_pages: int = 10,
+    request_budget: int = 1000,
+    credit_budget: int = 8,
+) -> list[dict[str, Any]]:
     """Build the full list of Shodan queries to run.
 
     Returns a list of dicts with the same keys as FOFA's build_queries():
@@ -190,6 +199,9 @@ def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direc
             "product": "generic",
             "type": "API key泄露",
             "cvss": "",
+            "lane": "provider"
+            if any(marker in q for marker in ("ANTHROPIC", "DEEPSEEK", "MOONSHOT", "sk-ant"))
+            else "direct",
         }
 
     # 2. Product-fingerprint queries derived from the CVE map, ordered by priority.
@@ -216,11 +228,28 @@ def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direc
         # country facet so each shard can paginate past the 100/page wall
         # independently. Low-volume products run a single query each.
         for tmpl in templates:
-            facets = (
-                [f"{tmpl} country:{c}" for c in SHARD_COUNTRIES]
-                if base_product in SHARD_PRODUCTS
-                else [tmpl]
-            )
+            facets = [tmpl]
+            if base_product in SHARD_PRODUCTS:
+                if count is None:
+                    facets = [f"{tmpl} country:{country}" for country in SHARD_COUNTRIES]
+                else:
+                    base_count = count(tmpl)
+                    if base_count is not None and base_count > max_pages * 100:
+                        counted = [
+                            (country, count(f"{tmpl} country:{country}"))
+                            for country in SHARD_COUNTRIES
+                        ]
+                        ranked = sorted(
+                            ((country, total) for country, total in counted if total),
+                            key=lambda item: (-item[1], SHARD_COUNTRIES.index(item[0])),
+                        )
+                        covered = 0
+                        facets = []
+                        for country, total in ranked[:credit_budget]:
+                            facets.append(f"{tmpl} country:{country}")
+                            covered += min(total, max_pages * 100)
+                            if covered >= min(base_count, request_budget):
+                                break
             for q in facets:
                 if q in by_query:
                     entry = by_query[q]
@@ -237,6 +266,7 @@ def build_shodan_queries(cves: list[dict[str, Any]] | None = None, *, skip_direc
                     "product": product,
                     "type": cve_type,
                     "cvss": str(cve.get("cvss", "")),
+                    "lane": "product",
                 }
 
     return list(by_query.values())
