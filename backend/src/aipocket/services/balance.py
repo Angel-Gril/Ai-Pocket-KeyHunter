@@ -60,6 +60,10 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
         base = "https://" + base
 
     probes = [
+        # OpenRouter first: sk-or-v1 keys always hit the official host, and
+        # domain-matched openrouter.ai bases must not fall through to generic
+        # gateway probes that would burn requests and return unsupported.
+        ("openrouter", _probe_openrouter, base),
         ("litellm", _probe_litellm, base),
         ("oneapi", _probe_oneapi, base),
         ("newapi", _probe_newapi, base),
@@ -81,6 +85,90 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
             result["gateway"] = gateway
             return result
     return {"gateway": "unsupported", "balance_usd": ""}
+
+
+async def _probe_openrouter(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    """Probe OpenRouter key credits via GET /api/v1/auth/key (+ /credits fallback).
+
+    ``query_balance`` strips a trailing ``/v1`` so *base* is typically
+    ``https://openrouter.ai/api``.  ``sk-or-v1-`` keys always query the official
+    host (balance lives on the account, not a proxy). Domain-matched bases that
+    already point at openrouter.ai are also accepted.
+    """
+    is_or_key = key.startswith("sk-or-v1-")
+    is_or_host = "openrouter.ai" in base
+    if not is_or_key and not is_or_host:
+        return {}
+
+    # Force official API for prefix-matched keys so proxy/leaked hosts still
+    # resolve real account credits.
+    probe_base = "https://openrouter.ai/api" if is_or_key else base.rstrip("/")
+
+    data = await _safe_get(client, f"{probe_base}/v1/auth/key", key)
+    if data is None:
+        return {}
+    d = data.get("data")
+    if not isinstance(d, dict):
+        return {}
+
+    usage = float(d.get("usage") or 0)
+    limit = d.get("limit")
+    limit_remaining = d.get("limit_remaining")
+    is_free_tier = bool(d.get("is_free_tier"))
+
+    balance: float | None = None
+    source = "key"
+
+    if limit_remaining is not None:
+        # Per-key spend cap remaining (preferred when set).
+        balance = float(limit_remaining)
+    elif limit is not None:
+        balance = max(float(limit) - usage, 0.0)
+    else:
+        # Unlimited key: fall back to account-level remaining credits.
+        credits = await _safe_get(client, f"{probe_base}/v1/credits", key)
+        cd = credits.get("data") if isinstance(credits, dict) else None
+        if isinstance(cd, dict) and (
+            cd.get("total_credits") is not None or cd.get("total_usage") is not None
+        ):
+            total_credits = float(cd.get("total_credits") or 0)
+            total_usage = float(cd.get("total_usage") or 0)
+            balance = max(total_credits - total_usage, 0.0)
+            source = "credits"
+            return {
+                "balance_usd": round(balance, 4),
+                "usage": round(total_usage, 4),
+                "total_credits": round(total_credits, 4),
+                "is_free_tier": is_free_tier,
+                "source": source,
+                "raw": {"key": d, "credits": cd},
+            }
+        # Key authenticated but no spend limit and credits endpoint unavailable.
+        # Free-tier keys effectively have $0 prepaid balance.
+        if is_free_tier:
+            balance = 0.0
+            source = "free_tier"
+        else:
+            # Still mark as openrouter so callers don't keep re-probing forever;
+            # leave balance empty rather than invent a number.
+            return {
+                "balance_usd": "",
+                "usage": round(usage, 4),
+                "limit": limit,
+                "is_free_tier": is_free_tier,
+                "source": "key_no_limit",
+                "raw": d,
+            }
+
+    return {
+        "balance_usd": round(balance, 4) if balance is not None else "",
+        "usage": round(usage, 4),
+        "limit": limit,
+        "limit_remaining": limit_remaining,
+        "is_free_tier": is_free_tier,
+        "source": source,
+        "raw": d,
+    }
 
 
 async def _probe_oneapi(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
