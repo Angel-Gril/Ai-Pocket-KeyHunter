@@ -48,8 +48,11 @@ class TestIsHighValueKey:
     def test_openai_svcacct(self):
         assert is_high_value_key("sk-svcacct-abc123xyz456def789") is True
 
-    def test_anthropic(self):
-        assert is_high_value_key("sk-ant-api03-foobar123456") is True
+    def test_anthropic_api_prefix_alone_is_not_high_value(self):
+        assert is_high_value_key("sk-ant-api03-foobar123456") is False
+
+    def test_anthropic_admin_prefix(self):
+        assert is_high_value_key("sk-ant-admin-" + "A" * 40) is True
 
     def test_regular_sk(self):
         assert is_high_value_key("sk-random1234567890") is False
@@ -91,8 +94,28 @@ class TestShouldSave:
         r = self._make_result("sk-proj-ratelimited123", 429)
         assert should_save(r) is False
 
-    def test_anthropic_200(self):
+    def test_anthropic_api_200_without_evidence_is_not_saved(self):
         r = self._make_result("sk-ant-api03-valid12345", 200)
+        assert should_save(r) is False
+
+    def test_anthropic_admin_200_is_saved(self):
+        r = self._make_result("sk-ant-admin-" + "A" * 40, 200)
+        assert should_save(r) is True
+
+    def test_anthropic_api_with_high_value_model_is_saved(self):
+        from aipocket.core.models import ProviderInfo
+
+        cred = Credential(apikey="sk-ant-api03-valid12345", apiurl="https://api.anthropic.com/v1")
+        r = ValidationResult(
+            credential=cred,
+            status_code=200,
+            valid=True,
+            model_available="claude-sonnet-4-6",
+            provider_info=ProviderInfo(
+                provider="anthropic",
+                models_verified=["claude-sonnet-4-6"],
+            ),
+        )
         assert should_save(r) is True
 
     def test_openai_proj_401(self):

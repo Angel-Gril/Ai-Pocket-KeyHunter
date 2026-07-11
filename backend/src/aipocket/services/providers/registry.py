@@ -45,7 +45,7 @@ _PROVIDER_SPECS = (
         name="anthropic",
         category="international",
         domain_suffixes=("anthropic.com",),
-        key_prefixes=("sk-ant-api", "sk-ant-oat", "sk-ant-sid"),
+        key_prefixes=("sk-ant-admin", "sk-ant-api", "sk-ant-oat", "sk-ant-sid"),
         protocol_family="anthropic",
         default_model_hints=_ANTHROPIC_MODELS,
         official_api_url="https://api.anthropic.com/v1",
@@ -301,3 +301,8 @@ def uses_gemini_adapter(*, apiurl: str = "", apikey: str = "") -> bool:
 def uses_vertex_adapter(*, apiurl: str = "", apikey: str = "") -> bool:
     decision = resolve_provider(apiurl=apiurl, apikey=apikey)
     return decision.provider == "vertex" or decision.protocol_family == "vertex"
+
+
+def uses_anthropic_adapter(*, apiurl: str = "", apikey: str = "") -> bool:
+    decision = resolve_provider(apiurl=apiurl, apikey=apikey)
+    return decision.provider == "anthropic" or decision.protocol_family == "anthropic"

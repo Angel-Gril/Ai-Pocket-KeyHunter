@@ -22,12 +22,30 @@ from aipocket.core.models import ValidationResult
 
 log = logging.getLogger(__name__)
 
-# Key prefixes that qualify as "high-value official" keys.
+# Prefixes that qualify as high-value candidates from key shape alone.
+# Broad Anthropic ``sk-ant-`` is intentionally excluded — ordinary API keys
+# require confirmed org/admin scope or verified high-value model access.
 HIGH_VALUE_PREFIXES = (
     "sk-proj-",  # OpenAI project keys
     "sk-admin-",  # OpenAI admin keys
     "sk-svcacct-",  # OpenAI service account keys
-    "sk-ant-",  # Anthropic (Claude) keys
+    "sk-ant-admin",  # Anthropic Admin API keys (org scope)
+)
+
+# Models that elevate a validated Anthropic API key to high-value.
+_ANTHROPIC_HIGH_VALUE_MODELS = frozenset(
+    {
+        "claude-sonnet-4-6",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-fable-5",
+        "anthropic/claude-sonnet-4",
+        "anthropic/claude-opus-4",
+        "anthropic/claude-opus-4.1",
+        "anthropic/claude-sonnet-4.5",
+    }
 )
 
 ALIVE_STATUS_CODES = {200}
@@ -52,7 +70,11 @@ def _output_path() -> Path:
 
 
 def is_high_value_key(apikey: str) -> bool:
-    """Return True if the key matches a high-value official prefix."""
+    """Return True if the key matches a high-value official prefix.
+
+    Ordinary Anthropic API keys (``sk-ant-api…``) are not high-value by prefix
+    alone — use :func:`should_save` which also checks org scope / model evidence.
+    """
     return any(apikey.startswith(prefix) for prefix in HIGH_VALUE_PREFIXES)
 
 
@@ -61,11 +83,27 @@ def is_alive_status(status_code: int | None) -> bool:
     return status_code in ALIVE_STATUS_CODES
 
 
+def _has_anthropic_high_value_evidence(result: ValidationResult) -> bool:
+    """Admin/org scope confirmation or verified high-value model access."""
+    if result.tier == "org:admin":
+        return True
+    models = set(result.provider_info.models_verified)
+    if result.model_available:
+        models.add(result.model_available)
+    return bool(models & _ANTHROPIC_HIGH_VALUE_MODELS)
+
+
 def should_save(result: ValidationResult) -> bool:
     """Determine whether this validation result should be saved as high-value."""
+    if not result.valid or result.suspicious or not is_alive_status(result.status_code):
+        return False
     key = result.credential.apikey
-    status = result.status_code
-    return result.valid and not result.suspicious and is_high_value_key(key) and is_alive_status(status)
+    if is_high_value_key(key):
+        return True
+    # Anthropic ordinary API / OAuth keys need scope or model evidence.
+    if key.startswith("sk-ant-") and _has_anthropic_high_value_evidence(result):
+        return True
+    return False
 
 
 def save_high_value_key(result: ValidationResult, run_id: str | None = None) -> bool:

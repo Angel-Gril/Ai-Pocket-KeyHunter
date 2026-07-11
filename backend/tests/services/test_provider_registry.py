@@ -89,6 +89,7 @@ CURRENT_PREFIX_ROUTES = {
     "sk-proj-" + "a" * 32: "openai",
     "sk-admin-" + "a" * 32: "openai",
     "sk-svcacct-" + "a" * 32: "openai",
+    "sk-ant-admin-" + "A" * 32: "anthropic",
     "sk-ant-api-" + "A" * 32: "anthropic",
     "sk-ant-oat-" + "A" * 32: "anthropic",
     "sk-ant-sid-" + "A" * 32: "anthropic",

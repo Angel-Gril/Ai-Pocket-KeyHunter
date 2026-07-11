@@ -12,6 +12,7 @@ import httpx
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 from aipocket.services.providers import provider_registry, resolve_provider
+from aipocket.services.providers.anthropic import validate_anthropic
 from aipocket.services.providers.azure_openai import (
     AzureInferencePolicy,
     validate_azure_openai,
@@ -460,6 +461,24 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
         result.error = validation.error
         result.provider_info.models_available = list(validation.models)
         result.model_available = validation.models[0] if validation.models else ""
+        return result
+
+    if resolution.provider == "anthropic":
+        validation = await validate_anthropic(client, cred)
+        result.valid = validation.valid
+        result.status_code = validation.status_code
+        result.error = validation.error
+        result.tier = validation.scope
+        result.provider_info.models_available = list(validation.models)
+        result.provider_info.models_verified = (
+            [validation.verified_model] if validation.verified_model else []
+        )
+        result.model_available = validation.verified_model or (
+            validation.models[0] if validation.models else ""
+        )
+        if validation.organization_id:
+            # Stable org identity only — never member or key listings.
+            result.response_snippet = f"organization_id={validation.organization_id}"
         return result
 
     probe_models = list(resolution.default_model_hints)
