@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from aipocket.core.metrics import QueryMetric
+from aipocket.services.shadow_eval import plan_with_shadow
 
 
 class QueryLane(StrEnum):
@@ -26,6 +27,13 @@ class PlannerConfig:
     exploration_ratio: float = 0.2
     minimum_samples: int = 10
     seed: int = 0
+    shadow_mode: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedQueries:
+    selected: tuple[QueryCandidate, ...]
+    shadow_selected: tuple[QueryCandidate, ...]
 
 
 def plan_queries(
@@ -34,13 +42,22 @@ def plan_queries(
     config: PlannerConfig,
 ) -> tuple[QueryCandidate, ...]:
     """Select a stable exploitation/exploration mix while preserving lane coverage."""
+    return plan_queries_detailed(candidates, history, config).selected
+
+
+def plan_queries_detailed(
+    candidates: tuple[QueryCandidate, ...],
+    history: tuple[QueryMetric, ...],
+    config: PlannerConfig,
+) -> PlannedQueries:
+    """Like :func:`plan_queries` but also records shadow new-versus-old decisions."""
     if not candidates:
-        return ()
+        return PlannedQueries((), ())
     limit = (
         len(candidates) if config.max_queries is None else min(config.max_queries, len(candidates))
     )
     if limit <= 0:
-        return ()
+        return PlannedQueries((), ())
 
     totals: dict[str, tuple[int, int]] = {}
     for metric in history:
@@ -71,7 +88,21 @@ def plan_queries(
     exploration_pool = remaining[exploitation_slots:]
     rng = random.Random(config.seed)
     selected.extend(rng.sample(exploration_pool, min(exploration_slots, len(exploration_pool))))
-    return tuple(selected[:limit])
+    candidate_plan = tuple(selected[:limit])
+
+    # Shadow records the candidate plan without changing production until accepted.
+    production_ids = tuple(item.query for item in candidate_plan)
+    # In pure first-run planning production == candidate; callers may pass history-driven
+    # baselines later. Shadow helper still records the pair.
+    effective_ids, shadow_ids = plan_with_shadow(
+        production_selection=production_ids,
+        candidate_selection=production_ids,
+        shadow_mode=config.shadow_mode,
+    )
+    by_query = {item.query: item for item in candidates}
+    effective = tuple(by_query[q] for q in effective_ids if q in by_query)
+    shadow = tuple(by_query[q] for q in shadow_ids if q in by_query)
+    return PlannedQueries(selected=effective, shadow_selected=shadow)
 
 
 def load_query_history(source: str) -> tuple[QueryMetric, ...]:

@@ -66,6 +66,9 @@ def _select_prober(hit: dict[str, Any], prober_classes: list[type[Prober]]) -> t
         for value in (hit.get("_product_hints") or [hit.get("_product", "")])
         if value
     }
+    # Advisory-gated safe recipes may attach product coverage only for known fingerprints.
+    for value in hit.get("_safe_recipe_products") or []:
+        hints.add(str(value).lower().replace("_", "-"))
     for cls in prober_classes:
         if cls.product_name.lower() in hints:
             return cls
@@ -76,6 +79,20 @@ def _select_prober(hit: dict[str, Any], prober_classes: list[type[Prober]]) -> t
         except Exception:  # noqa: BLE001 — identify must never crash the run
             continue
     return None
+
+
+def attach_safe_recipe_products(
+    hits: list[dict[str, Any]], products: frozenset[str]
+) -> list[dict[str, Any]]:
+    """Annotate hits with advisory-approved product fingerprints (no exploit payloads)."""
+    if not products:
+        return hits
+    annotated: list[dict[str, Any]] = []
+    for hit in hits:
+        copy = dict(hit)
+        copy["_safe_recipe_products"] = sorted(products)
+        annotated.append(copy)
+    return annotated
 
 
 def _eligible_targets(
