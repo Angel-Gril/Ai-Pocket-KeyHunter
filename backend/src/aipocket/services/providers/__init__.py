@@ -4,7 +4,7 @@ from .base import (
     ProviderResolution,
     ProviderSpec,
 )
-from .registry import ProviderRegistry, provider_registry, resolve_provider
+from .registry import ProviderRegistry, provider_registry, resolve_provider, uses_openai_adapter
 
 __all__ = [
     "SUPPORTED_PROTOCOL_FAMILIES",
@@ -14,4 +14,5 @@ __all__ = [
     "ProviderSpec",
     "provider_registry",
     "resolve_provider",
+    "uses_openai_adapter",
 ]

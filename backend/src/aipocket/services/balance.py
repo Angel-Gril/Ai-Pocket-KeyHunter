@@ -9,6 +9,8 @@ from rich.table import Table
 
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ValidationResult
+from aipocket.services.providers import uses_openai_adapter
+from aipocket.services.providers.openai import InferencePolicy, validate_openai
 
 if TYPE_CHECKING:
     from .dedup import DedupStore
@@ -39,7 +41,16 @@ async def _safe_get(
         return None
     return data if isinstance(data, dict) else None
 
+
 async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str, Any]:
+    if cred.bundle is not None and uses_openai_adapter(apiurl=cred.apiurl, apikey=cred.apikey):
+        validation = await validate_openai(client, cred, InferencePolicy.READ_ONLY)
+        return {
+            "gateway": "openai",
+            "balance_usd": "",
+            "tier": validation.limit_profile.tier.value,
+            "limit_profile": validation.limit_profile.model_dump(mode="json"),
+        }
     base = cred.apiurl.rstrip("/")
     if base.endswith("/v1/chat/completions"):
         base = base[: -len("/v1/chat/completions")]
@@ -241,6 +252,7 @@ async def _probe_nexus_usage(client: httpx.AsyncClient, base: str, key: str) -> 
         return {"balance_usd": round(bal, 4), "raw": data}
     return {}
 
+
 async def enrich_results(
     results: list[ValidationResult],
     dedup: DedupStore | None = None,
@@ -248,6 +260,7 @@ async def enrich_results(
     sem = asyncio.Semaphore(settings.validate_concurrency)
     timeout = httpx.Timeout(settings.validate_timeout)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+
         async def _one(r: ValidationResult) -> ValidationResult:
             if not r.valid:
                 return r
@@ -262,7 +275,9 @@ async def enrich_results(
                     if cached.get("tier"):
                         r.tier = r.tier or cached["tier"]
                     r.rate_limit_headers["balance_detail"] = str(cached)
-                    r.provider_info.balance_provider = cached.get("gateway", "") or r.provider_info.balance_provider
+                    r.provider_info.balance_provider = (
+                        cached.get("gateway", "") or r.provider_info.balance_provider
+                    )
                     return r
             try:
                 async with sem:

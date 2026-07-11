@@ -12,6 +12,7 @@ import httpx
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 from aipocket.services.providers import provider_registry, resolve_provider
+from aipocket.services.providers.openai import InferencePolicy, validate_openai
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +89,6 @@ HIGH_VALUE_MODELS = [
 ]
 
 
-
 # "Generation" major version per model family — used to distinguish a plausible
 # within-family downgrade (gpt-5.5 → gpt-5.4) from a honeypot cross-generation
 # swap (gpt-5.5 → gpt-4o-mini / gpt-3.5-turbo). Maps a model family prefix to
@@ -141,7 +141,6 @@ def _is_severe_model_mismatch(requested: str, actual: str) -> bool:
     if gen_req and gen_act and gen_req != gen_act:
         return True
     return False
-
 
 
 async def validate_all(credentials: list[Credential]) -> list[ValidationResult]:
@@ -371,8 +370,6 @@ async def _probe_one(
     return result
 
 
-
-
 async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResult:
     result = ValidationResult(credential=cred, validated_at=datetime.now(UTC).isoformat())
 
@@ -415,6 +412,26 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
     )
     if resolution.reason == "provider-conflict":
         result.error = resolution.reason
+        return result
+
+    if resolution.provider == "openai" and cred.bundle is not None:
+        validation = await validate_openai(client, cred, InferencePolicy.READ_ONLY)
+        result.valid = validation.valid
+        result.status_code = validation.status_code
+        result.error = validation.error
+        result.tier = validation.limit_profile.tier.value
+        result.provider_info.models_available = list(validation.models)
+        result.provider_info.models_verified = (
+            [validation.verified_model] if validation.verified_model else []
+        )
+        result.model_available = validation.verified_model or (
+            validation.models[0] if validation.models else ""
+        )
+        for limit in validation.limit_profile.models:
+            if limit.rpm is not None:
+                result.rate_limit_headers[f"{limit.model}:rpm"] = str(limit.rpm)
+            if limit.tpm is not None:
+                result.rate_limit_headers[f"{limit.model}:tpm"] = str(limit.tpm)
         return result
 
     probe_models = list(resolution.default_model_hints)

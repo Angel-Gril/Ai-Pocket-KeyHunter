@@ -192,9 +192,7 @@ def _is_domain_suffix(host: str, suffix: str) -> bool:
     suffix = suffix.lower().rstrip(".")
     if host == suffix or host.endswith(f".{suffix}"):
         return True
-    return suffix == "aiplatform.googleapis.com" and host.endswith(
-        f"-{suffix}"
-    )
+    return suffix == "aiplatform.googleapis.com" and host.endswith(f"-{suffix}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,3 +278,7 @@ provider_registry = ProviderRegistry(_PROVIDER_SPECS)
 
 def resolve_provider(*, apiurl: str = "", apikey: str = "") -> ProviderResolution:
     return provider_registry.resolve(apiurl=apiurl, apikey=apikey)
+
+
+def uses_openai_adapter(*, apiurl: str = "", apikey: str = "") -> bool:
+    return resolve_provider(apiurl=apiurl, apikey=apikey).provider == "openai"
