@@ -238,9 +238,8 @@ async def _run_scan_inner(
         pre_filtered_count - len(creds),
     )
 
-    # Active probing — probe all hosts. Signal-based ordering ensures high-value
-    # targets (those with key patterns in banner/header) are probed first, but
-    # ALL hosts are probed (no cap — precision queries already limit the set).
+    # Active probing — order high-signal targets first; the runner then applies
+    # evidence gates and a per-target request budget before issuing requests.
     from aipocket.prober import probe_hosts
 
     probed_creds: list[Credential] = []

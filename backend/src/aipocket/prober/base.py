@@ -16,6 +16,7 @@ from aipocket.core.key_patterns import is_noise as _is_noise
 from aipocket.core.models import Credential
 
 from .budget import BudgetExhausted, RequestBudget
+from .security import normalized_origin, scope_authorizes_origin
 
 log = logging.getLogger(__name__)
 
@@ -231,13 +232,20 @@ class Prober(ABC):
     async def _follow_same_origin(
         self, response: httpx.Response, kwargs: dict[str, Any]
     ) -> httpx.Response | None:
-        origin = self._origin(str(response.request.url))
+        origin = normalized_origin(str(response.request.url))
         current = response
         for _ in range(self._max_redirects):
             if not current.is_redirect or "location" not in current.headers:
                 return current
-            next_url = urljoin(str(current.request.url), current.headers["location"])
-            if self._origin(next_url) != origin:
+            location = current.headers["location"]
+            try:
+                location_parts = urlsplit(location)
+            except ValueError:
+                return None
+            if location_parts.scheme and normalized_origin(location) is None:
+                return None
+            next_url = urljoin(str(current.request.url), location)
+            if normalized_origin(next_url) != origin:
                 return None
             try:
                 async with self._sem:
@@ -246,13 +254,13 @@ class Prober(ABC):
                 return None
         return None if current.is_redirect else current
 
-    @staticmethod
-    def _origin(url: str) -> tuple[str, str, int | None]:
-        parsed = urlsplit(url)
-        return parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port
-
     def _intrusive_authorized(self, hit: dict[str, Any]) -> bool:
-        return self._intrusive_checks and self._url(hit) in self._authorized_scope
+        target_origin = normalized_origin(self._url(hit))
+        if not self._intrusive_checks or target_origin is None:
+            return False
+        return any(
+            scope_authorizes_origin(scope, target_origin) for scope in self._authorized_scope
+        )
 
     def _extract_from_response(
         self,

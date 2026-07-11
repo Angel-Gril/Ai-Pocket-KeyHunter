@@ -39,11 +39,12 @@ class TestGenericPageProberProbe:
             confirmation = router.get("https://medium.example.com/").mock(
                 return_value=httpx.Response(200, text="confirmed target")
             )
+            budget = RequestBudget(12)
             async with httpx.AsyncClient(follow_redirects=False) as client:
-                await GenericPageProber(client, sem, RequestBudget(12)).probe(hit)
+                await GenericPageProber(client, sem, budget).probe(hit)
 
         assert confirmation.call_count == 1
-        assert confirmation.call_count == 1
+        assert budget.remaining == 11
 
     @pytest.mark.asyncio
     async def test_cross_origin_redirect_is_rejected(self):
