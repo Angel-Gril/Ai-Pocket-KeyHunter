@@ -47,12 +47,19 @@ def _merge_credentials(
     """Merge *new* credentials into *existing* in-place, deduplicating by (apikey, apiurl).
     Returns the updated seen-set."""
     if seen is None:
-        seen = {(c.apikey, c.apiurl) for c in existing}
+        seen = {_credential_identity(c) for c in existing}
     for c in new:
-        if (c.apikey, c.apiurl) not in seen:
+        identity = _credential_identity(c)
+        if identity not in seen:
             existing.append(c)
-            seen.add((c.apikey, c.apiurl))
+            seen.add(identity)
     return seen
+
+
+def _credential_identity(credential: Credential) -> tuple[str, str]:
+    if credential.bundle is not None:
+        return credential.bundle.secret_fingerprint, credential.apiurl
+    return credential.apikey, credential.apiurl
 
 
 async def run_scan(
@@ -217,7 +224,7 @@ async def _run_scan_inner(
                 query_metrics.increment(source, query, **{metric: 1})
 
     record_credentials("candidates", creds)
-    seen = {(c.apikey, c.apiurl) for c in creds}
+    seen = {_credential_identity(c) for c in creds}
     log.info("Extracted %d candidate credentials (regex)", len(creds))
 
     # ------------------------------------------------------------------

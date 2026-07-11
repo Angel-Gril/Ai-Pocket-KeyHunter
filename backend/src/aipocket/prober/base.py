@@ -14,6 +14,7 @@ import httpx
 from aipocket.core.key_patterns import KEY_PATTERNS as _PROBE_KEY_PATTERNS_BASE
 from aipocket.core.key_patterns import is_noise as _is_noise
 from aipocket.core.models import Credential
+from aipocket.services.config_extractor import extract_config_bundles
 
 from .budget import BudgetExhausted, RequestBudget
 from .security import normalized_origin, scope_authorizes_origin
@@ -82,6 +83,24 @@ def extract_keys_from_text(
     """
     creds: list[Credential] = []
     seen: set[str] = set()
+
+    for bundle in extract_config_bundles(text):
+        value = bundle.secret_value.reveal()
+        if value in seen:
+            continue
+        seen.add(value)
+        creds.append(
+            Credential(
+                apikey=value,
+                apiurl=bundle.endpoint_candidates[0]
+                if len(bundle.endpoint_candidates) == 1
+                else "",
+                source=f"{source_label}:{bundle.provider_hint}",
+                source_type="fingerprint",
+                host=host,
+                bundle=bundle,
+            )
+        )
 
     for label, pat in _PROBE_KEY_PATTERNS:
         for m in pat.finditer(text):

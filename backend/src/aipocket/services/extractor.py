@@ -8,44 +8,125 @@ from aipocket.core.key_patterns import KEY_PATTERNS
 from aipocket.core.key_patterns import is_noise as _is_noise_key
 from aipocket.core.models import Credential
 
+from .config_extractor import extract_config_bundles
+
 log = logging.getLogger(__name__)
 
 APIKEY_PATTERNS: list[tuple[str, re.Pattern[str]]] = KEY_PATTERNS + [
     # Context-anchored: catches self-hosted gateway custom tokens (any format)
     # by requiring a key-indicating keyword nearby.
-    ("generic", re.compile(r'\b(?:api[_-]?key|apikey|bearer|token|secret|authorization|access[_-]?token|sk)["\'\'\s:=]+([A-Za-z0-9_\-\.]{6,})\b', re.I)),
+    (
+        "generic",
+        re.compile(
+            r'\b(?:api[_-]?key|apikey|bearer|token|secret|authorization|access[_-]?token|sk)["\'\'\s:=]+([A-Za-z0-9_\-\.]{6,})\b',
+            re.I,
+        ),
+    ),
 ]
 
-HTTP_HEADER_NAMES = frozenset({
-    "access-control-allow-methods", "access-control-allow-headers",
-    "access-control-allow-origin", "access-control-allow-credentials",
-    "access-control-expose-headers", "access-control-max-age",
-    "access-control-request-method", "access-control-request-headers",
-    "content-type", "content-length", "content-encoding", "content-language",
-    "content-security-policy", "content-disposition", "content-range",
-    "cache-control", "connection", "keep-alive", "accept", "accept-encoding",
-    "accept-language", "accept-ranges", "authorization", "cookie", "set-cookie",
-    "host", "origin", "referer", "user-agent", "server", "date", "etag",
-    "last-modified", "location", "vary", "transfer-encoding", "upgrade",
-    "x-requested-with", "x-forwarded-for", "x-forwarded-proto",
-    "x-content-type-options", "x-frame-options", "x-xss-protection",
-    "strict-transport-security", "referrer-policy", "permissions-policy",
-    "pragma", "expires", "age", "allow", "via", "warning", "dnt", "te",
-    "trailer", "expect", "from", "if-match", "if-none-match", "if-modified-since",
-    "if-unmodified-since", "if-range", "range", "www-authenticate",
-    "proxy-authenticate", "proxy-authorization", "x-powered-by",
-})
+HTTP_HEADER_NAMES = frozenset(
+    {
+        "access-control-allow-methods",
+        "access-control-allow-headers",
+        "access-control-allow-origin",
+        "access-control-allow-credentials",
+        "access-control-expose-headers",
+        "access-control-max-age",
+        "access-control-request-method",
+        "access-control-request-headers",
+        "content-type",
+        "content-length",
+        "content-encoding",
+        "content-language",
+        "content-security-policy",
+        "content-disposition",
+        "content-range",
+        "cache-control",
+        "connection",
+        "keep-alive",
+        "accept",
+        "accept-encoding",
+        "accept-language",
+        "accept-ranges",
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "host",
+        "origin",
+        "referer",
+        "user-agent",
+        "server",
+        "date",
+        "etag",
+        "last-modified",
+        "location",
+        "vary",
+        "transfer-encoding",
+        "upgrade",
+        "x-requested-with",
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "x-content-type-options",
+        "x-frame-options",
+        "x-xss-protection",
+        "strict-transport-security",
+        "referrer-policy",
+        "permissions-policy",
+        "pragma",
+        "expires",
+        "age",
+        "allow",
+        "via",
+        "warning",
+        "dnt",
+        "te",
+        "trailer",
+        "expect",
+        "from",
+        "if-match",
+        "if-none-match",
+        "if-modified-since",
+        "if-unmodified-since",
+        "if-range",
+        "range",
+        "www-authenticate",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "x-powered-by",
+    }
+)
 
-MIME_TYPES = frozenset({"application/json", "text/html", "text/plain", "text/css",
-    "application/javascript", "text/javascript", "image/png", "image/jpeg",
-    "image/gif", "image/svg+xml", "application/xml", "text/xml",
-    "application/octet-stream", "multipart/form-data", "application/x-www-form-urlencoded"})
+MIME_TYPES = frozenset(
+    {
+        "application/json",
+        "text/html",
+        "text/plain",
+        "text/css",
+        "application/javascript",
+        "text/javascript",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/svg+xml",
+        "application/xml",
+        "text/xml",
+        "application/octet-stream",
+        "multipart/form-data",
+        "application/x-www-form-urlencoded",
+    }
+)
 
 URL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("openai_url", re.compile(r"\b(?:https?://[a-z0-9.\-]*openai\.com(?:/v1)?)\b", re.I)),
     ("anthropic_url", re.compile(r"\b(?:https?://[a-z0-9.\-]*anthropic\.com(?:/v1)?)\b", re.I)),
-    ("generic_apiurl", re.compile(r'\b(?:api[_-]?url|base[_-]?url|api[_-]?base|endpoint)[":\s=\']*?(https?://[^\s"\'<>]+)', re.I)),
-    ("bare_v1", re.compile(r'\b(https?://[a-z0-9.\-]+(?::\d+)?/v1)\b', re.I)),
+    (
+        "generic_apiurl",
+        re.compile(
+            r'\b(?:api[_-]?url|base[_-]?url|api[_-]?base|endpoint)[":\s=\']*?(https?://[^\s"\'<>]+)',
+            re.I,
+        ),
+    ),
+    ("bare_v1", re.compile(r"\b(https?://[a-z0-9.\-]+(?::\d+)?/v1)\b", re.I)),
 ]
 
 DETECTION_ENDPOINT_HINTS = {
@@ -66,11 +147,18 @@ def extract_credentials(hits: list[dict[str, Any]]) -> list[Credential]:
 
     fofa_total = sum(1 for h in hits if h.get("_source") == "fofa")
     shodan_total = sum(1 for h in hits if h.get("_source") == "shodan")
-    fofa_with_content = sum(1 for h in hits if h.get("_source") == "fofa" and (h.get("header") or h.get("banner")))
-    shodan_with_content = sum(1 for h in hits if h.get("_source") == "shodan" and (h.get("header") or h.get("banner")))
+    fofa_with_content = sum(
+        1 for h in hits if h.get("_source") == "fofa" and (h.get("header") or h.get("banner"))
+    )
+    shodan_with_content = sum(
+        1 for h in hits if h.get("_source") == "shodan" and (h.get("header") or h.get("banner"))
+    )
     log.info(
         "Extract: fofa=%d (%d with header/banner), shodan=%d (%d with header/banner)",
-        fofa_total, fofa_with_content, shodan_total, shodan_with_content,
+        fofa_total,
+        fofa_with_content,
+        shodan_total,
+        shodan_with_content,
     )
 
     for hit in hits:
@@ -98,7 +186,8 @@ def extract_credentials(hits: list[dict[str, Any]]) -> list[Credential]:
                     )
                 continue
             cred.backend = backend
-            cred.apiurl = cred.apiurl or base_url
+            if not cred.apiurl and cred.bundle is None:
+                cred.apiurl = base_url
             cred.host = host
             cred.ip = ip
             cred.port = port
@@ -113,7 +202,7 @@ def _scan_blob(hit: dict[str, Any]) -> dict[str, Any]:
     credentials: list[Credential] = []
     api_urls: set[str] = set()
 
-    for field in ("header", "banner", "cert", "title"):
+    for field in ("header", "banner"):
         blob = hit.get(field, "")
         if not blob:
             continue
@@ -136,6 +225,25 @@ def _scan_text(
     if not text:
         return
 
+    structured = extract_config_bundles(text, format_hint="")
+    structured_keys = {bundle.secret_value.reveal() for bundle in structured}
+    for bundle in structured:
+        key = bundle.secret_value.reveal()
+        if len(key) < 15 or _is_false_positive(key):
+            continue
+        out_creds.append(
+            Credential(
+                apikey=key,
+                apiurl=bundle.endpoint_candidates[0]
+                if len(bundle.endpoint_candidates) == 1
+                else "",
+                source=bundle.provider_hint,
+                source_type="header" if field == "header" else "banner",
+                host=hit.get("host", ""),
+                bundle=bundle,
+            )
+        )
+
     matched_keys: dict[str, str] = {}
     for label, pat in APIKEY_PATTERNS:
         for m in pat.finditer(text):
@@ -144,6 +252,8 @@ def _scan_text(
             if len(val) < 15:
                 continue
             if _is_false_positive(val):
+                continue
+            if val in structured_keys:
                 continue
             matched_keys.setdefault(val, label)
 
@@ -190,11 +300,13 @@ def _infer_base_url(hit: dict[str, Any], api_urls: set[str]) -> str:
     return host.rstrip("/")
 
 
-_FALSE_POSITIVE_EXACT = frozenset({
-    "sk-replace_with_your_api_key",
-    "sk-fake-key-1234567890abcdef",
-    "sk-your_api_key_here",
-})
+_FALSE_POSITIVE_EXACT = frozenset(
+    {
+        "sk-replace_with_your_api_key",
+        "sk-fake-key-1234567890abcdef",
+        "sk-your_api_key_here",
+    }
+)
 
 
 def _is_false_positive(val: str) -> bool:

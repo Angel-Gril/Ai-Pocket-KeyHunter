@@ -5,19 +5,35 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from aipocket.core.credentials import CredentialBundle
+
 SourceType = Literal["header", "banner", "body", "fingerprint"]
 
 # Canonical provider vocabulary shared by validation and provider routing.
 ProviderName = Literal[
-    "openai", "anthropic", "deepseek", "kimi", "glm", "qwen",
-    "siliconflow", "google", "groq", "openrouter", "azure_openai",
-    "vertex", "gemini", "gateway", "ambiguous", "unknown",
+    "openai",
+    "anthropic",
+    "deepseek",
+    "kimi",
+    "glm",
+    "qwen",
+    "siliconflow",
+    "google",
+    "groq",
+    "openrouter",
+    "azure_openai",
+    "vertex",
+    "gemini",
+    "gateway",
+    "ambiguous",
+    "unknown",
 ]
 ProviderCategory = Literal["international", "domestic", "gateway", "unknown"]
 
 
 class ProviderInfo(BaseModel):
     """Provider classification + model availability for a validated credential."""
+
     provider: ProviderName = "unknown"
     category: ProviderCategory = "unknown"
     # Models listed by GET /v1/models (or equivalent)
@@ -46,6 +62,7 @@ class Credential(BaseModel):
     leak_host: str = ""
     # True when provider-registry routing selected an official validation endpoint.
     routed_to_official: bool = False
+    bundle: CredentialBundle | None = Field(default=None, exclude=True)
 
 
 class ValidationResult(BaseModel):

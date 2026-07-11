@@ -8,17 +8,19 @@ ANTHROPIC_KEY = "sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901"
 
 
 def test_extract_openai_key_from_header():
-    hits = [{
-        "host": "https://ai.example.com",
-        "ip": "1.2.3.4",
-        "port": "443",
-        "header": f"Authorization: Bearer {OPENAI_KEY}\r\nServer: nginx",
-        "banner": "",
-        "title": "",
-        "product": "LiteLLM",
-        "cert": "",
-        "_source": "fofa",
-    }]
+    hits = [
+        {
+            "host": "https://ai.example.com",
+            "ip": "1.2.3.4",
+            "port": "443",
+            "header": f"Authorization: Bearer {OPENAI_KEY}\r\nServer: nginx",
+            "banner": "",
+            "title": "",
+            "product": "LiteLLM",
+            "cert": "",
+            "_source": "fofa",
+        }
+    ]
     creds = extract_credentials(hits)
     assert len(creds) == 1
     assert creds[0].apikey == OPENAI_KEY
@@ -29,16 +31,18 @@ def test_extract_openai_key_from_header():
 
 
 def test_extract_anthropic_key_from_banner():
-    hits = [{
-        "host": "https://claude-proxy.xyz",
-        "ip": "2.2.2.2",
-        "port": "8443",
-        "header": "",
-        "banner": f"x-api-key: {ANTHROPIC_KEY}",
-        "title": "",
-        "product": "",
-        "cert": "",
-    }]
+    hits = [
+        {
+            "host": "https://claude-proxy.xyz",
+            "ip": "2.2.2.2",
+            "port": "8443",
+            "header": "",
+            "banner": f"x-api-key: {ANTHROPIC_KEY}",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
+    ]
     creds = extract_credentials(hits)
     found = [c for c in creds if c.apikey == ANTHROPIC_KEY]
     assert len(found) == 1
@@ -49,31 +53,35 @@ def test_extract_generic_apikey_pattern():
     # Use a realistic-looking key (non-sequential alpha, non-placeholder)
     key = "sk-Rv8mXp3nKq7wLtYc2bFjHdZs9UgAoE4x6NiWlCkBP"
     text = f'api_key: "{key}"'
-    hits = [{
-        "host": "https://x.com",
-        "ip": "",
-        "port": "",
-        "header": text,
-        "banner": "",
-        "title": "",
-        "product": "",
-        "cert": "",
-    }]
+    hits = [
+        {
+            "host": "https://x.com",
+            "ip": "",
+            "port": "",
+            "header": text,
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
+    ]
     creds = extract_credentials(hits)
     assert any(c.apikey == key for c in creds)
 
 
 def test_extract_apiurl_from_header():
-    hits = [{
-        "host": "https://gateway.example.com",
-        "ip": "3.3.3.3",
-        "port": "443",
-        "header": f"X-OpenAI-Base: https://api.openai.com/v1\r\nAuth: Bearer {OPENAI_KEY}",
-        "banner": "",
-        "title": "",
-        "product": "",
-        "cert": "",
-    }]
+    hits = [
+        {
+            "host": "https://gateway.example.com",
+            "ip": "3.3.3.3",
+            "port": "443",
+            "header": f"X-OpenAI-Base: https://api.openai.com/v1\r\nAuth: Bearer {OPENAI_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
+    ]
     creds = extract_credentials(hits)
     assert len(creds) >= 1
     assert any("openai.com" in c.apiurl for c in creds)
@@ -81,8 +89,26 @@ def test_extract_apiurl_from_header():
 
 def test_extract_dedupes_same_key_same_url():
     hits = [
-        {"host": "https://a.com", "ip": "1.1.1.1", "port": "443", "header": f"Bearer {OPENAI_KEY}", "banner": "", "title": "", "product": "", "cert": ""},
-        {"host": "https://a.com", "ip": "1.1.1.1", "port": "443", "header": f"Bearer {OPENAI_KEY}", "banner": "", "title": "", "product": "", "cert": ""},
+        {
+            "host": "https://a.com",
+            "ip": "1.1.1.1",
+            "port": "443",
+            "header": f"Bearer {OPENAI_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        },
+        {
+            "host": "https://a.com",
+            "ip": "1.1.1.1",
+            "port": "443",
+            "header": f"Bearer {OPENAI_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        },
     ]
     creds = extract_credentials(hits)
     assert len(creds) == 1
@@ -90,8 +116,26 @@ def test_extract_dedupes_same_key_same_url():
 
 def test_extract_different_hosts_keeps_both():
     hits = [
-        {"host": "https://a.com", "ip": "1.1.1.1", "port": "443", "header": f"Bearer {OPENAI_KEY}", "banner": "", "title": "", "product": "", "cert": ""},
-        {"host": "https://b.com", "ip": "2.2.2.2", "port": "443", "header": f"Bearer {OPENAI_KEY}", "banner": "", "title": "", "product": "", "cert": ""},
+        {
+            "host": "https://a.com",
+            "ip": "1.1.1.1",
+            "port": "443",
+            "header": f"Bearer {OPENAI_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        },
+        {
+            "host": "https://b.com",
+            "ip": "2.2.2.2",
+            "port": "443",
+            "header": f"Bearer {OPENAI_KEY}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        },
     ]
     creds = extract_credentials(hits)
     assert len(creds) == 2
@@ -99,7 +143,23 @@ def test_extract_different_hosts_keeps_both():
 
 def test_extract_no_credentials_empty_hits():
     assert extract_credentials([]) == []
-    assert extract_credentials([{"host": "", "ip": "", "port": "", "header": "", "banner": "", "title": "", "product": "", "cert": ""}]) == []
+    assert (
+        extract_credentials(
+            [
+                {
+                    "host": "",
+                    "ip": "",
+                    "port": "",
+                    "header": "",
+                    "banner": "",
+                    "title": "",
+                    "product": "",
+                    "cert": "",
+                }
+            ]
+        )
+        == []
+    )
 
 
 def test_extract_merges_backend_when_same_key_from_two_sources():
@@ -115,7 +175,14 @@ def test_extract_merges_backend_when_same_key_from_two_sources():
 
 
 def test_scan_blob_finds_url_in_link():
-    hit = {"host": "https://api.test.com", "link": "https://api.test.com/v1", "header": "", "banner": "", "title": "", "cert": ""}
+    hit = {
+        "host": "https://api.test.com",
+        "link": "https://api.test.com/v1",
+        "header": "",
+        "banner": "",
+        "title": "",
+        "cert": "",
+    }
     result = _scan_blob(hit)
     assert "https://api.test.com/v1" in result["api_urls"]
 
@@ -127,7 +194,13 @@ def test_infer_base_url_prefers_v1_url():
 
 
 def test_infer_base_url_uses_fingerprint_suffix():
-    hit = {"host": "gw.litellm.io", "protocol": "https", "title": "LiteLLM Proxy", "header": "", "banner": ""}
+    hit = {
+        "host": "gw.litellm.io",
+        "protocol": "https",
+        "title": "LiteLLM Proxy",
+        "header": "",
+        "banner": "",
+    }
     assert infer_url(hit, set()) == "https://gw.litellm.io/v1"
 
 
@@ -142,7 +215,18 @@ def test_infer_base_url_empty_host():
 
 def test_google_key_pattern():
     google_key = "AIzaSy" + "B" * 35
-    hits = [{"host": "https://g.com", "ip": "", "port": "", "header": f"key: {google_key}", "banner": "", "title": "", "product": "", "cert": ""}]
+    hits = [
+        {
+            "host": "https://g.com",
+            "ip": "",
+            "port": "",
+            "header": f"key: {google_key}",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
+    ]
     creds = extract_credentials(hits)
     assert any(c.apikey == google_key for c in creds)
 
@@ -156,8 +240,18 @@ def test_rejects_http_header_name_as_apikey():
         "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
         "Content-Type: text/html; charset=UTF-8\r\n"
     )
-    hits = [{"host": "https://x.com", "ip": "1.2.3.4", "port": "443",
-             "header": header_blob, "banner": "", "title": "", "product": "", "cert": ""}]
+    hits = [
+        {
+            "host": "https://x.com",
+            "ip": "1.2.3.4",
+            "port": "443",
+            "header": header_blob,
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
+    ]
     creds = extract_credentials(hits)
     for c in creds:
         assert c.apikey != "Access-Control-Allow-Methods"
@@ -166,7 +260,55 @@ def test_rejects_http_header_name_as_apikey():
 
 
 def test_rejects_mime_type_as_apikey():
-    hits = [{"host": "https://x.com", "ip": "", "port": "",
-             "header": 'Authorization: Bearer application/json', "banner": "", "title": "", "product": "", "cert": ""}]
+    hits = [
+        {
+            "host": "https://x.com",
+            "ip": "",
+            "port": "",
+            "header": "Authorization: Bearer application/json",
+            "banner": "",
+            "title": "",
+            "product": "",
+            "cert": "",
+        }
+    ]
     creds = extract_credentials(hits)
     assert not any(c.apikey == "application/json" for c in creds)
+
+
+def test_structured_banner_pairs_each_key_with_its_object_endpoint():
+    hits = [
+        {
+            "host": "https://leak.example",
+            "header": "",
+            "banner": (
+                f'{{"first":{{"api_key":"{OPENAI_KEY}","base_url":"https://z.example/v1"}},'
+                f'"second":{{"api_key":"{ANTHROPIC_KEY}","base_url":"https://a.example/v1"}}}}'
+            ),
+            "title": "",
+            "cert": "",
+        }
+    ]
+
+    creds = extract_credentials(hits)
+
+    assert {(credential.apikey, credential.apiurl) for credential in creds} == {
+        (OPENAI_KEY, "https://z.example/v1"),
+        (ANTHROPIC_KEY, "https://a.example/v1"),
+    }
+
+
+def test_title_and_certificate_urls_cannot_hijack_banner_key_endpoint():
+    hits = [
+        {
+            "host": "https://leak.example",
+            "header": "",
+            "banner": f"OPENAI_API_KEY={OPENAI_KEY}",
+            "title": "Dashboard https://attacker-title.example/v1",
+            "cert": "https://attacker-cert.example/v1",
+        }
+    ]
+
+    creds = extract_credentials(hits)
+
+    assert creds[0].apiurl == "https://api.openai.com/v1"
