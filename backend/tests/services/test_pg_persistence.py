@@ -178,7 +178,7 @@ class TestPersistRunPg:
         assert "ON CONFLICT (run_id) DO UPDATE" in run_stmts[0][0]
         run_params = run_stmts[0][1]
         assert run_params[0] == "run_2026_01_01_00-00-00"
-        assert run_params[-1] == 2  # total_valid == len(valid)
+        assert run_params[9] == 2  # total_valid == len(valid)
 
         # Old rows for the run are deleted first (idempotent re-persist).
         assert pool.sql_containing("DELETE FROM results WHERE run_id")
@@ -377,6 +377,14 @@ class TestResultsReaderPg:
                         "run_id": "run_2026_07_06_10-00-00",
                         "started_at": started,
                         "total_hosts": 5,
+                        "total_credentials": 13,
+                        "raw_hits": 23,
+                        "unique_targets": 17,
+                        "candidates": 11,
+                        "active_requests": 7,
+                        "final_verified": 3,
+                        "suspicious": 2,
+                        "high_value_final": 1,
                         "has_log": True,
                     }
                 ],
@@ -400,12 +408,12 @@ class TestResultsReaderPg:
         entry = days[0]["runs"][0]
         assert entry["valid_count"] == 2
         assert entry["suspicious_count"] == 1
-        assert entry["raw_hits"] == 5
-        assert entry["unique_targets"] == 5
-        assert entry["candidates"] == 0
-        assert entry["active_requests"] == 0
-        assert entry["final_verified"] == 2
-        assert entry["suspicious"] == 1
+        assert entry["raw_hits"] == 23
+        assert entry["unique_targets"] == 17
+        assert entry["candidates"] == 11
+        assert entry["active_requests"] == 7
+        assert entry["final_verified"] == 3
+        assert entry["suspicious"] == 2
         assert entry["high_value_final"] == 1
         assert entry["sources"] == ["fofa", "shodan"]
 

@@ -88,8 +88,10 @@ def persist_run_pg(
             """
             INSERT INTO runs (run_id, started_at, finished_at, state, sources,
                               hits_by_source, queries_used, total_hosts,
-                              total_credentials, total_valid)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              total_credentials, total_valid, raw_hits,
+                              unique_targets, candidates, active_requests,
+                              final_verified, suspicious, high_value_final)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (run_id) DO UPDATE SET
                 finished_at = EXCLUDED.finished_at,
                 state = EXCLUDED.state,
@@ -98,7 +100,14 @@ def persist_run_pg(
                 queries_used = EXCLUDED.queries_used,
                 total_hosts = EXCLUDED.total_hosts,
                 total_credentials = EXCLUDED.total_credentials,
-                total_valid = EXCLUDED.total_valid
+                total_valid = EXCLUDED.total_valid,
+                raw_hits = EXCLUDED.raw_hits,
+                unique_targets = EXCLUDED.unique_targets,
+                candidates = EXCLUDED.candidates,
+                active_requests = EXCLUDED.active_requests,
+                final_verified = EXCLUDED.final_verified,
+                suspicious = EXCLUDED.suspicious,
+                high_value_final = EXCLUDED.high_value_final
             """,
             (
                 run_id,
@@ -111,6 +120,13 @@ def persist_run_pg(
                 metadata.get("total_hosts"),
                 metadata.get("total_credentials"),
                 len(valid),
+                metadata.get("raw_hits", 0),
+                metadata.get("unique_targets", 0),
+                metadata.get("candidates", 0),
+                metadata.get("active_requests", 0),
+                metadata.get("final_verified", 0),
+                metadata.get("suspicious", 0),
+                metadata.get("high_value_final", 0),
             ),
         )
         # Replace this run's result rows so a re-persist is idempotent.

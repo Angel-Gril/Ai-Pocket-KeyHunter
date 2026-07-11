@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from aipocket.core.config import settings
+
 from .errors import ApiError
 from .masking import mask_apikey
 
@@ -194,7 +195,8 @@ def _list_runs_pg() -> list[dict[str, Any]]:
     with pool.connection() as conn:
         runs = conn.execute(
             """
-            SELECT run_id, started_at, total_hosts, total_credentials,
+            SELECT run_id, started_at, raw_hits, unique_targets, candidates,
+                   active_requests, final_verified, suspicious, high_value_final,
                    (log IS NOT NULL AND log <> '') AS has_log
             FROM runs ORDER BY run_id DESC
             """
@@ -202,9 +204,6 @@ def _list_runs_pg() -> list[dict[str, Any]]:
         # Per-run valid/suspicious counts in one pass.
         kind_counts = conn.execute(
             "SELECT run_id, kind, COUNT(*) AS n FROM results GROUP BY run_id, kind"
-        ).fetchall()
-        hv_counts = conn.execute(
-            "SELECT run_id, COUNT(*) AS n FROM high_value_keys WHERE run_id IS NOT NULL GROUP BY run_id"
         ).fetchall()
         # Distinct discovery backends per run, matching the file version's
         # _sources_of (a credential's `backend` may be "fofa,shodan", so split).
@@ -225,7 +224,6 @@ def _list_runs_pg() -> list[dict[str, Any]]:
             valid_by[r["run_id"]] = r["n"]
         elif r["kind"] == "suspicious":
             susp_by[r["run_id"]] = r["n"]
-    hv_by = {r["run_id"]: r["n"] for r in hv_counts}
     src_by: dict[str, set[str]] = {}
     for r in src_rows:
         src_by.setdefault(r["run_id"], set()).add(r["backend"])
@@ -240,14 +238,14 @@ def _list_runs_pg() -> list[dict[str, Any]]:
             "valid_count": valid_by.get(rid, 0),
             "suspicious_count": susp_by.get(rid, 0),
             "has_log": bool(run["has_log"]),
-            "raw_hits": run["total_hosts"] or 0,
-            "unique_targets": run["total_hosts"] or 0,
-            "candidates": run.get("total_credentials", 0) or 0,
-            "active_requests": run.get("total_credentials", 0) or 0,
-            "final_verified": valid_by.get(rid, 0),
-            "suspicious": susp_by.get(rid, 0),
+            "raw_hits": run["raw_hits"],
+            "unique_targets": run["unique_targets"],
+            "candidates": run["candidates"],
+            "active_requests": run["active_requests"],
+            "final_verified": run["final_verified"],
+            "suspicious": run["suspicious"],
             "sources": sorted(src_by.get(rid, set())),
-            "high_value_final": hv_by.get(rid, 0),
+            "high_value_final": run["high_value_final"],
         }
         by_day.setdefault(_day_from_run_id(rid), []).append(entry)
     return [{"day": day, "runs": entries} for day, entries in by_day.items()]
@@ -280,7 +278,6 @@ def _list_runs_files() -> list[dict[str, Any]]:
         valid_files = list(run.glob("valid_*.jsonl"))
         susp_files = list(run.glob("suspicious_*.jsonl"))
         metadata = _scan_metadata(run)
-        candidates = int(metadata.get("total_credentials", 0))
         entry = {
             "run_id": run.name,
             "started_at": run_started,
@@ -288,13 +285,15 @@ def _list_runs_files() -> list[dict[str, Any]]:
             "suspicious_count": sum(_count_lines(f) for f in susp_files),
             "has_log": (run / "run.log").exists(),
             "raw_hits": int(metadata.get("raw_hits", 0)),
-            "unique_targets": int(metadata.get("unique_targets", metadata.get("total_hosts", 0))),
-            "candidates": candidates,
-            "active_requests": int(metadata.get("active_requests", candidates)),
-            "final_verified": sum(_count_lines(f) for f in valid_files),
-            "suspicious": sum(_count_lines(f) for f in susp_files),
+            "unique_targets": int(metadata.get("unique_targets", 0)),
+            "candidates": int(metadata.get("candidates", 0)),
+            "active_requests": int(metadata.get("active_requests", 0)),
+            "final_verified": int(metadata.get("final_verified", 0)),
+            "suspicious": int(metadata.get("suspicious", 0)),
             "sources": _sources_of(valid_files),
-            "high_value_final": hv_counts.get(run_started, 0),
+            "high_value_final": int(
+                metadata.get("high_value_final", hv_counts.get(run_started, 0))
+            ),
         }
         by_day.setdefault(_day_from_run_id(run.name), []).append(entry)
 
@@ -375,9 +374,7 @@ def read_run_log(run_id: str) -> str:
 
         pool = get_pool()
         with pool.connection() as conn:
-            row = conn.execute(
-                "SELECT log FROM runs WHERE run_id = %s", (run_id,)
-            ).fetchone()
+            row = conn.execute("SELECT log FROM runs WHERE run_id = %s", (run_id,)).fetchone()
         if row is not None and row["log"]:
             return row["log"]
         # Run row exists but log not persisted yet (still running / interrupted):

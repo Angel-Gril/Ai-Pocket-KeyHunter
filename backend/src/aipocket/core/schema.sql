@@ -22,8 +22,22 @@ CREATE TABLE IF NOT EXISTS runs (
     total_hosts       INTEGER,
     total_credentials INTEGER,
     total_valid       INTEGER,
+    raw_hits         INTEGER NOT NULL DEFAULT 0,
+    unique_targets   INTEGER NOT NULL DEFAULT 0,
+    candidates       INTEGER NOT NULL DEFAULT 0,
+    active_requests  INTEGER NOT NULL DEFAULT 0,
+    final_verified   INTEGER NOT NULL DEFAULT 0,
+    suspicious       INTEGER NOT NULL DEFAULT 0,
+    high_value_final INTEGER NOT NULL DEFAULT 0,
     log               TEXT                     -- run.log full text, written when the run ends
 );
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS raw_hits INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS unique_targets INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS candidates INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS active_requests INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS final_verified INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS suspicious INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS high_value_final INTEGER NOT NULL DEFAULT 0;
 
 -- One row per valid/suspicious ValidationResult. `seq` (0-based within
 -- (run_id, kind)) replaces the old JSONL file line index used by reveal/export.
