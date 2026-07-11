@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from aipocket.core.config import settings
+from aipocket.core.metrics import QueryMetric
 from aipocket.core.models import ScanRunResult, ValidationResult
 
 log = logging.getLogger(__name__)
@@ -23,9 +24,7 @@ def _sanitize_json_text(text: str) -> str:
 
 def _jsonl_line(obj: Any) -> str:
     """Serialize one object to a sanitized JSONL line (with trailing newline)."""
-    return _sanitize_json_text(
-        json.dumps(obj, ensure_ascii=False, default=str)
-    ) + "\n"
+    return _sanitize_json_text(json.dumps(obj, ensure_ascii=False, default=str)) + "\n"
 
 
 def _run_dir_name(when: datetime | None = None) -> str:
@@ -70,6 +69,7 @@ def persist_run_pg(
     metadata: dict,
     valid: list[ValidationResult],
     suspicious: list[ValidationResult],
+    query_metrics: list[QueryMetric] | None = None,
 ) -> None:
     """Write one run's metadata + valid/suspicious results in a SINGLE transaction.
 
@@ -115,9 +115,7 @@ def persist_run_pg(
         )
         # Replace this run's result rows so a re-persist is idempotent.
         conn.execute("DELETE FROM results WHERE run_id = %s", (run_id,))
-        rows = [
-            (run_id, *_result_row(r, "valid", i)) for i, r in enumerate(valid)
-        ] + [
+        rows = [(run_id, *_result_row(r, "valid", i)) for i, r in enumerate(valid)] + [
             (run_id, *_result_row(r, "suspicious", i)) for i, r in enumerate(suspicious)
         ]
         if rows:
@@ -129,9 +127,41 @@ def persist_run_pg(
                     """,
                     rows,
                 )
-    log.info(
-        "PG run persisted: %s (%d valid, %d suspicious)", run_id, len(valid), len(suspicious)
-    )
+        for metric in query_metrics or []:
+            funnel = metric.funnel
+            conn.execute(
+                """
+                INSERT INTO query_metrics (
+                    run_id, source, query, raw_hits, unique_targets,
+                    active_requests, candidates, auth_confirmed, final_verified,
+                    noauth_rejected, query_credits
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (run_id, source, query) DO UPDATE SET
+                    raw_hits = EXCLUDED.raw_hits,
+                    unique_targets = EXCLUDED.unique_targets,
+                    active_requests = EXCLUDED.active_requests,
+                    candidates = EXCLUDED.candidates,
+                    auth_confirmed = EXCLUDED.auth_confirmed,
+                    final_verified = EXCLUDED.final_verified,
+                    noauth_rejected = EXCLUDED.noauth_rejected,
+                    query_credits = EXCLUDED.query_credits
+                """,
+                (
+                    run_id,
+                    metric.source,
+                    metric.query,
+                    funnel.raw_hits,
+                    funnel.unique_targets,
+                    funnel.active_requests,
+                    funnel.candidates,
+                    funnel.auth_confirmed,
+                    funnel.final_verified,
+                    funnel.noauth_rejected,
+                    funnel.query_credits,
+                ),
+            )
+    log.info("PG run persisted: %s (%d valid, %d suspicious)", run_id, len(valid), len(suspicious))
 
 
 def update_run_log_pg(run_id: str, log_text: str) -> None:
@@ -236,9 +266,7 @@ def load_latest() -> list[dict] | None:
 
         pool = get_pool()
         with pool.connection() as conn:
-            row = conn.execute(
-                "SELECT run_id FROM runs ORDER BY run_id DESC LIMIT 1"
-            ).fetchone()
+            row = conn.execute("SELECT run_id FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
             if row is None:
                 log.warning("No runs in PG")
                 return None

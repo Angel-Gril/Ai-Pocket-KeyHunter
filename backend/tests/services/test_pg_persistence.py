@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from aipocket.core.metrics import QueryFunnel, QueryMetric
 from aipocket.core.models import Credential, ValidationResult
 
 
@@ -200,6 +201,40 @@ class TestPersistRunPg:
         assert pool.sql_containing("INSERT INTO runs")
         # No result rows → no executemany call.
         assert pool.executemany_rows == []
+
+    def test_query_metrics_are_replaced_atomically_without_additive_retry(self, fake_pg):
+        pool = fake_pg()
+        from aipocket.services.writer import persist_run_pg
+
+        metrics = [
+            QueryMetric(
+                source="fofa",
+                query="product=example",
+                funnel=QueryFunnel(raw_hits=4, unique_targets=3, final_verified=1),
+            )
+        ]
+
+        persist_run_pg("run_metrics", {"started_at": "2026-01-01T00:00:00Z"}, [], [], metrics)
+        persist_run_pg("run_metrics", {"started_at": "2026-01-01T00:00:00Z"}, [], [], metrics)
+
+        upserts = pool.sql_containing("INSERT INTO query_metrics")
+        assert len(upserts) == 2
+        assert "ON CONFLICT (run_id, source, query) DO UPDATE" in upserts[0][0]
+        assert "raw_hits = EXCLUDED.raw_hits" in upserts[0][0]
+        assert "+ EXCLUDED.raw_hits" not in upserts[0][0]
+        assert upserts[0][1] == (
+            "run_metrics",
+            "fofa",
+            "product=example",
+            4,
+            3,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+        )
 
 
 # ---------------------------------------------------------------------------

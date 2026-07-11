@@ -41,6 +41,23 @@ CREATE TABLE IF NOT EXISTS results (
 );
 CREATE INDEX IF NOT EXISTS idx_results_run_kind ON results (run_id, kind, seq);
 
+CREATE TABLE IF NOT EXISTS query_metrics (
+    run_id           TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    source           TEXT NOT NULL,
+    query            TEXT NOT NULL,
+    raw_hits         INTEGER NOT NULL DEFAULT 0,
+    unique_targets   INTEGER NOT NULL DEFAULT 0,
+    active_requests  INTEGER NOT NULL DEFAULT 0,
+    candidates       INTEGER NOT NULL DEFAULT 0,
+    auth_confirmed   INTEGER NOT NULL DEFAULT 0,
+    final_verified   INTEGER NOT NULL DEFAULT 0,
+    noauth_rejected  INTEGER NOT NULL DEFAULT 0,
+    query_credits    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, source, query)
+);
+CREATE INDEX IF NOT EXISTS idx_query_metrics_run ON query_metrics (run_id);
+CREATE INDEX IF NOT EXISTS idx_query_metrics_source_query ON query_metrics (source, query);
+
 -- High-value keys accumulated across all runs, deduped by apikey (last write
 -- wins via UPSERT). record == high_value_writer._build_entry() output.
 CREATE TABLE IF NOT EXISTS high_value_keys (

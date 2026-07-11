@@ -8,12 +8,14 @@ from pathlib import Path
 
 from aipocket.clients.fofa import FofaClient
 from aipocket.core.config import settings
+from aipocket.core.metrics import QueryUsage
 from aipocket.core.models import Credential, ScanRunResult, ValidationResult
 from aipocket.core.targets import canonicalize_hits
 
 from .dedup import DedupStore, get_dedup_store
 from .extractor import extract_credentials
 from .queries import build_queries
+from .query_metrics import QueryMetricsCollector
 from .validator import validate_all
 from .writer import (
     append_scan_result,
@@ -100,6 +102,7 @@ async def _run_scan_inner(
     queries_used: list[str] = []
     sources_used: list[str] = []
     hits_by_source: dict[str, int] = {}
+    query_metrics = QueryMetricsCollector()
 
     # ------------------------------------------------------------------
     # Source fetching — run FOFA and Shodan in PARALLEL via threads
@@ -152,6 +155,8 @@ async def _run_scan_inner(
                 continue
             try:
                 hits, used_queries = await future
+                for usage in used_queries:
+                    query_metrics.increment(name, usage.query, query_credits=usage.credits)
                 for h in hits:
                     if isinstance(h, dict):
                         h.setdefault("_source", name)
@@ -159,12 +164,21 @@ async def _run_scan_inner(
                     fofa_hits = hits
                 else:
                     shodan_hits = hits
-                queries_used.extend(used_queries)
+                queries_used.extend(usage.query for usage in used_queries)
             except Exception as e:
                 log.error("Source %s failed: %s", name, e)
 
     all_hits = fofa_hits + shodan_hits
     targets = canonicalize_hits(all_hits)
+    for hit in all_hits:
+        source = str(hit.get("_source", ""))
+        query = str(hit.get("_query_id", ""))
+        if source and query:
+            query_metrics.increment(source, query, raw_hits=1)
+    for target in targets:
+        for source in target.sources:
+            for query in target.query_ids:
+                query_metrics.increment(source, query, unique_targets=1)
     target_hits = [target.to_hit() for target in targets]
     hits_by_source["fofa"] = len(fofa_hits)
     hits_by_source["shodan"] = len(shodan_hits)
@@ -186,6 +200,18 @@ async def _run_scan_inner(
     # -> GPT recheck -> balance
     # ------------------------------------------------------------------
     creds = extract_credentials(all_hits)
+    target_by_url = {target.identity.url: target for target in targets}
+
+    def record_credentials(metric: str, credentials: list[Credential]) -> None:
+        for credential in credentials:
+            target = target_by_url.get(credential.host) or target_by_url.get(credential.apiurl)
+            if target is None:
+                continue
+            for source in target.sources:
+                for query in target.query_ids:
+                    query_metrics.increment(source, query, **{metric: 1})
+
+    record_credentials("candidates", creds)
     seen = {(c.apikey, c.apiurl) for c in creds}
     log.info("Extracted %d candidate credentials (regex)", len(creds))
 
@@ -306,7 +332,14 @@ async def _run_scan_inner(
             if settings.pg_enabled:
                 from .writer import persist_run_pg
 
-                await asyncio.to_thread(persist_run_pg, run_dir.name, empty_meta, [], [])
+                await asyncio.to_thread(
+                    persist_run_pg,
+                    run_dir.name,
+                    empty_meta,
+                    [],
+                    [],
+                    query_metrics.snapshot(),
+                )
         return ScanRunResult(
             started_at=started,
             finished_at=finished,
@@ -341,6 +374,7 @@ async def _run_scan_inner(
         len(to_validate),
         n_recent_fail,
     )
+    record_credentials("active_requests", to_validate)
 
     log.info(
         "Validating %d credentials (concurrency=%d)...",
@@ -349,6 +383,7 @@ async def _run_scan_inner(
     )
     fresh_results: list[ValidationResult] = await validate_all(to_validate) if to_validate else []
     results: list[ValidationResult] = cached_results + fresh_results
+    record_credentials("auth_confirmed", [result.credential for result in results if result.valid])
 
     # No-auth honeypot probe: for each host that has a valid result, send a
     # FORGED key. If it also validates, the endpoint ignores Authorization and
@@ -401,6 +436,16 @@ async def _run_scan_inner(
         suspicious_hosts=suspicious_urls,
     )
     valid = finalized.final_verified
+    record_credentials("final_verified", [result.credential for result in valid])
+    rejected_hosts = no_auth_urls - suspicious_urls
+    record_credentials(
+        "noauth_rejected",
+        [
+            result.credential
+            for result in results
+            if (result.credential.host or result.credential.apiurl) in rejected_hosts
+        ],
+    )
     suspicious = finalized.rate_limited_unconfirmed
     log.info(
         "Validation done: %d valid / %d total (%d suspicious quarantined)",
@@ -448,7 +493,14 @@ async def _run_scan_inner(
             "total_credentials": len(creds),
             "queries_used": queries_used,
         }
-        await asyncio.to_thread(persist_run_pg, run_dir.name, run_meta, valid, suspicious)
+        await asyncio.to_thread(
+            persist_run_pg,
+            run_dir.name,
+            run_meta,
+            valid,
+            suspicious,
+            query_metrics.snapshot(),
+        )
 
     return ScanRunResult(
         started_at=started,
@@ -466,7 +518,7 @@ async def _run_scan_inner(
 
 def _fetch_fofa(
     max_queries: int | None, *, skip_direct: bool = False
-) -> tuple[list[dict], list[str]]:
+) -> tuple[list[dict], list[QueryUsage]]:
     """Run the FOFA backend: build queries, paginate each, tag hits with _cve/_product."""
     queries = build_queries(skip_direct=skip_direct)
     if max_queries:
@@ -474,10 +526,11 @@ def _fetch_fofa(
     log.info("Built %d FOFA queries from CVE map", len(queries))
 
     all_hits: list[dict] = []
-    queries_used: list[str] = []
+    queries_used: list[QueryUsage] = []
     with FofaClient() as fofa:
         for i, q in enumerate(queries, 1):
             log.info("[FOFA %d/%d] %s | %s", i, len(queries), q["cve_id"], q["query"][:80])
+            queries_used.append(QueryUsage(q["query"]))
             hits = fofa.search(q["query"], pages=settings.fofa_max_pages)
             if hits:
                 for h in hits:
@@ -486,8 +539,8 @@ def _fetch_fofa(
                         h.setdefault("_product", q["product"])
                         h.setdefault("_cves", q.get("advisory_ids", []))
                         h.setdefault("_product_hints", q.get("product_hints", []))
+                        h.setdefault("_query_id", q["query"])
                 all_hits.extend(hits)
-                queries_used.append(q["query"])
             log.info("  FOFA accumulated %d hits", len(all_hits))
     log.info("FOFA total hits: %d", len(all_hits))
     return all_hits, queries_used
@@ -495,7 +548,7 @@ def _fetch_fofa(
 
 def _fetch_shodan(
     max_queries: int | None, *, skip_direct: bool = False
-) -> tuple[list[dict], list[str]]:
+) -> tuple[list[dict], list[QueryUsage]]:
     """Run the Shodan backend: build Shodan-syntax queries, paginate each."""
     from aipocket.clients.shodan import ShodanClient
 
@@ -508,7 +561,7 @@ def _fetch_shodan(
 
     # Report remaining credit budget so the 200k/month plan isn't blown silently.
     all_hits: list[dict] = []
-    queries_used: list[str] = []
+    queries_used: list[QueryUsage] = []
     with ShodanClient() as shodan:
         try:
             info = shodan.info()
@@ -539,6 +592,7 @@ def _fetch_shodan(
             # (page 1 of any filtered query is billed).
             total = shodan.count(q["query"])
             if total == 0:
+                queries_used.append(QueryUsage(q["query"]))
                 log.info("  shodan count=0, skipping (credit saved)")
                 continue
             if total is None:
@@ -546,6 +600,7 @@ def _fetch_shodan(
             else:
                 log.info("  shodan count=%s", total)
 
+            queries_used.append(QueryUsage(q["query"], credits=1))
             hits = shodan.search(q["query"], pages=settings.shodan_max_pages)
             if hits:
                 for h in hits:
@@ -554,8 +609,8 @@ def _fetch_shodan(
                         h.setdefault("_product", q["product"])
                         h.setdefault("_cves", q.get("advisory_ids", []))
                         h.setdefault("_product_hints", q.get("product_hints", []))
+                        h.setdefault("_query_id", q["query"])
                 all_hits.extend(hits)
-                queries_used.append(q["query"])
             log.info("  Shodan accumulated %d hits", len(all_hits))
     log.info("Shodan total hits: %d", len(all_hits))
     return all_hits, queries_used
