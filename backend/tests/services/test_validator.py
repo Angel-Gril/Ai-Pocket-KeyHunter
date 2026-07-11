@@ -51,7 +51,8 @@ async def test_probe_success_200():
         r = await _probe(client, cred)
     assert r.valid is True
     assert r.status_code == 200
-    assert r.tier == "tier5"
+    assert r.tier == "rpm:10000"
+    assert r.validation_state == "inference_verified"
     assert r.model_available == "gpt-5.5"
     assert "Hi there" in r.response_snippet
 
@@ -75,7 +76,8 @@ async def test_probe_rate_limited_429_counts_valid():
         r = await _probe(client, cred)
     assert r.valid is True
     assert r.suspicious is True
-    assert r.tier == "tier4"
+    assert r.tier == "rpm:5000"
+    assert r.validation_state == "rate_limited_unconfirmed"
     assert "rate-limited" in r.error
 
 
@@ -203,21 +205,17 @@ def test_normalize_apiurl_empty():
     assert _normalize_apiurl("") == ""
 
 
-def test_infer_tier_tier5():
+def test_infer_tier_does_not_invent_usage_tier_from_rpm():
     headers = {"x-ratelimit-limit-requests": "10000"}
-    assert _infer_tier({"x-ratelimit-limit-requests": "10000"}, headers) == "tier5"
+    assert _infer_tier({"x-ratelimit-limit-requests": "10000"}, headers) == "rpm:10000"
 
 
-def test_infer_tier_tier4():
-    assert _infer_tier({"x-ratelimit-limit-requests": "5000"}, {}) == "tier4"
-
-
-def test_infer_tier_tier3():
-    assert _infer_tier({"x-ratelimit-limit-requests": "2500"}, {}) == "tier3"
+def test_infer_tier_records_rpm_profile():
+    assert _infer_tier({"x-ratelimit-limit-requests": "5000"}, {}) == "rpm:5000"
 
 
 def test_infer_tier_low_limit():
-    assert _infer_tier({"x-ratelimit-limit-requests": "100"}, {}) == "limit:100"
+    assert _infer_tier({"x-ratelimit-limit-requests": "100"}, {}) == "rpm:100"
 
 
 def test_infer_tier_from_header():

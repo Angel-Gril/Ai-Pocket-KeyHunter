@@ -94,8 +94,25 @@ def _has_anthropic_high_value_evidence(result: ValidationResult) -> bool:
 
 
 def should_save(result: ValidationResult) -> bool:
-    """Determine whether this validation result should be saved as high-value."""
-    if not result.valid or result.suspicious or not is_alive_status(result.status_code):
+    """Determine whether this validation result should be saved as high-value.
+
+    Never persists rate-limited quarantine. Accepts authenticated provider
+    states, or legacy valid=True rows that never advanced past discovered.
+    """
+    state = result.validation_state
+    if state == "rate_limited_unconfirmed" or result.suspicious:
+        return False
+    authenticated = state in {
+        "final_verified",
+        "authentication_confirmed",
+        "scope_confirmed",
+        "inference_verified",
+        "no_auth_disproved",
+    }
+    legacy_valid = result.valid and state in {"discovered", "structurally_valid"}
+    if not authenticated and not legacy_valid:
+        return False
+    if not is_alive_status(result.status_code):
         return False
     key = result.credential.apikey
     if is_high_value_key(key):

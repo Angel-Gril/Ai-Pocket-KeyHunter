@@ -260,6 +260,10 @@ export default function HighValuePage() {
               provider={fields.provider}
               balance={balanceInfo?.balance ?? fields.balance}
               tier={balanceInfo?.tier ?? fields.tier}
+              credentialKind={fields.credentialKind}
+              validationState={fields.validationState}
+              scope={fields.scope}
+              tierEvidence={fields.tierEvidence}
               status={status}
               models={models[key]}
               modelsLoading={busy[key]?.models}

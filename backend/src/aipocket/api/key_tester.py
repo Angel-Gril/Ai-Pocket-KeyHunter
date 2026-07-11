@@ -5,7 +5,7 @@ three separate buttons):
 
 * :func:`list_models`  — GET /v1/models (cheap)                → validator._fetch_models_list
 * :func:`query_key_balance` — balance probes (cheap)           → balance.query_balance
-* :func:`test_chat`    — one minimal chat completion (SPENDS)  → validator._probe_chat_completions / _probe_anthropic
+* :func:`test_chat`    — one minimal chat completion (SPENDS)  → validator._probe
 
 Each builds a throwaway :class:`Credential` from the ``{apikey, apiurl}`` a row
 in the results list carries. No probing logic is re-implemented here — we call
@@ -18,9 +18,10 @@ import logging
 
 import httpx
 
-from aipocket.services import validator as _v
 from aipocket.core.config import settings
-from aipocket.core.models import Credential, ProviderInfo, ValidationResult
+from aipocket.core.models import Credential, ValidationResult
+from aipocket.services import validator as _v
+from aipocket.services.providers import resolve_provider
 
 log = logging.getLogger(__name__)
 
@@ -52,25 +53,27 @@ async def query_key_balance(apikey: str, apiurl: str) -> dict:
 async def test_chat(apikey: str, apiurl: str, model: str) -> ValidationResult:
     """Send ONE minimal chat/message with the user-selected model. SPENDS credit.
 
-    Routes to Anthropic's /v1/messages convention for sk-ant / anthropic hosts,
-    otherwise OpenAI-style /v1/chat/completions — mirroring _probe()'s routing,
-    but with the single, explicitly-chosen model rather than a probe list.
+    Routes through the provider registry/state machine used by the scanner so
+    Anthropic, OpenAI, Azure, and gateway semantics stay consistent.
     """
     cred = Credential(apikey=apikey, apiurl=apiurl)
-    chat_url = _v._normalize_apiurl(apiurl)
-    if not chat_url:
-        return ValidationResult(credential=cred, error="no apiurl")
-
-    provider, category, _ = _v._route_provider(cred.apiurl)
-    # sk-ant keys are always Anthropic even if the apiurl domain is unknown.
-    if cred.apikey.startswith("sk-ant") or provider in _v.ANTHROPIC_PROVIDERS:
-        provider = "anthropic"
-
-    result = ValidationResult(
-        credential=cred,
-        provider_info=ProviderInfo.model_validate({"provider": provider, "category": category}),
+    resolution = resolve_provider(apiurl=apiurl, apikey=apikey)
+    log.debug(
+        "test_chat provider=%s model=%s",
+        resolution.provider,
+        model,
     )
     async with _client() as client:
-        if provider == "anthropic":
-            return await _v._probe_anthropic(client, cred, chat_url, result, [model])
-        return await _v._probe_chat_completions(client, cred, chat_url, result, [model])
+        # Full probe path — adapters honor inference when the selected model is used
+        # by _probe_chat_completions / anthropic messages for gateway hosts.
+        result = await _v._probe(client, cred)
+        if result.model_available and model and result.model_available != model:
+            # Prefer the caller-selected model when the default probe list diverged.
+            if resolution.protocol_family == "anthropic" or resolution.provider == "anthropic":
+                chat_url = _v._normalize_apiurl(apiurl) or "https://api.anthropic.com/v1/chat/completions"
+                result = await _v._probe_anthropic(client, cred, chat_url, result, [model])
+            elif resolution.provider not in {"openai", "azure_openai", "vertex", "google", "gemini"}:
+                chat_url = _v._normalize_apiurl(apiurl)
+                if chat_url:
+                    result = await _v._probe_chat_completions(client, cred, chat_url, result, [model])
+        return result

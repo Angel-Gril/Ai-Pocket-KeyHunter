@@ -6,6 +6,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from aipocket.core.credentials import CredentialBundle
+from aipocket.core.validation_state import (
+    AUTHENTICATED_STATES,
+    ValidationState,
+)
 
 SourceType = Literal["header", "banner", "body", "fingerprint"]
 
@@ -67,7 +71,13 @@ class Credential(BaseModel):
 
 class ValidationResult(BaseModel):
     credential: Credential
+    # Derived convenience mirror of validation_state for legacy callers. Prefer
+    # validation_state / is_authenticated / is_final for new code.
     valid: bool = False
+    validation_state: ValidationState = "discovered"
+    credential_kind: str = ""
+    scope: str = ""
+    tier_evidence: str = ""
     status_code: int | None = None
     error: str = ""
     tier: str = ""
@@ -85,6 +95,14 @@ class ValidationResult(BaseModel):
     # manual review — they are NOT auto-rejected.
     suspicious: bool = False
     suspicious_reason: str = ""
+
+    @property
+    def is_authenticated(self) -> bool:
+        return self.validation_state in AUTHENTICATED_STATES
+
+    @property
+    def is_final(self) -> bool:
+        return self.validation_state == "final_verified"
 
 
 class ScanRunResult(BaseModel):

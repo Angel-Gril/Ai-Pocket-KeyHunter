@@ -186,6 +186,11 @@ export interface ProviderInfo {
 export interface KeyRecord {
   credential: Credential
   valid: boolean
+  /** Provider state-machine status (preferred over bare valid). */
+  validation_state?: string
+  credential_kind?: string
+  scope?: string
+  tier_evidence?: string
   status_code: number | null
   error: string
   tier: string

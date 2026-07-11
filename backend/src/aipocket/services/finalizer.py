@@ -4,6 +4,12 @@ import asyncio
 from dataclasses import dataclass
 
 from aipocket.core.models import ValidationResult
+from aipocket.core.validation_state import (
+    AUTHENTICATED_STATES,
+    FAILURE_STATES,
+    apply_state,
+    is_quarantined,
+)
 
 from .dedup import DedupStore
 from .high_value_writer import try_save
@@ -21,6 +27,21 @@ async def save_final_high_value(result: ValidationResult) -> None:
     await asyncio.to_thread(try_save, result)
 
 
+def _promote_to_final(result: ValidationResult) -> ValidationResult:
+    """Terminal success gate — only authenticated, non-quarantined results."""
+    if result.validation_state == "final_verified":
+        result.valid = True
+        return result
+    try:
+        apply_state(result, "final_verified")
+    except ValueError:
+        # Legacy callers that only set valid=True still land on final after filters.
+        result.validation_state = "final_verified"
+        result.valid = True
+        result.suspicious = False
+    return result
+
+
 async def finalize_results(
     results: list[ValidationResult],
     *,
@@ -34,11 +55,33 @@ async def finalize_results(
         no_auth_hosts=no_auth_hosts,
         suspicious_hosts=suspicious_hosts,
     )
-    final_verified = [result for result in filtered if result.valid and not result.suspicious]
-    rate_limited_unconfirmed = [
-        result for result in filtered if result.valid and result.suspicious
-    ]
-    rejected = [result for result in filtered if not result.valid]
+
+    final_verified: list[ValidationResult] = []
+    rate_limited_unconfirmed: list[ValidationResult] = []
+    rejected: list[ValidationResult] = []
+
+    for result in filtered:
+        state = result.validation_state
+        if state == "rate_limited_unconfirmed" or is_quarantined(result):
+            if state != "rate_limited_unconfirmed":
+                try:
+                    apply_state(result, "rate_limited_unconfirmed")
+                except ValueError:
+                    result.validation_state = "rate_limited_unconfirmed"
+                    result.suspicious = True
+                    result.valid = True
+            rate_limited_unconfirmed.append(result)
+            continue
+
+        if state in AUTHENTICATED_STATES or (result.valid and not result.suspicious):
+            final_verified.append(_promote_to_final(result))
+            continue
+
+        if state in FAILURE_STATES or not result.valid:
+            rejected.append(result)
+            continue
+
+        rejected.append(result)
 
     for result in final_verified:
         await dedup.cache_valid(result)

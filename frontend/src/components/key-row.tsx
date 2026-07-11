@@ -19,6 +19,10 @@ export interface KeyRowProps {
   provider?: string
   balance?: string
   tier?: string
+  credentialKind?: string
+  validationState?: string
+  scope?: string
+  tierEvidence?: string
   status?: KeyRowStatus
   models?: string[]
   modelsLoading?: boolean
@@ -191,6 +195,10 @@ export function KeyRow({
   provider,
   balance,
   tier,
+  credentialKind,
+  validationState,
+  scope,
+  tierEvidence,
   status,
   models,
   modelsLoading,
@@ -242,8 +250,11 @@ export function KeyRow({
           <span className="truncate font-mono text-[11px] text-text-muted">{host}</span>
         </div>
 
-        <div className="min-w-0 shrink-0 overflow-hidden" style={colWidthStyle("provider")}>
+        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("provider")}>
           {provider ? <ProviderBadge provider={provider} /> : null}
+          {credentialKind ? (
+            <span className="truncate font-mono text-[11px] text-text-muted">{credentialKind}</span>
+          ) : null}
         </div>
 
         <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("balance")}>
@@ -252,11 +263,18 @@ export function KeyRow({
           ) : (
             <span className="font-mono text-sm text-text-muted">N/A</span>
           )}
-          {tier ? <span className="truncate font-mono text-[11px] text-text-muted">{tier}</span> : null}
+          {tierEvidence || tier || scope ? (
+            <span className="truncate font-mono text-[11px] text-text-muted">
+              {[scope, tierEvidence || tier].filter(Boolean).join(" · ")}
+            </span>
+          ) : null}
         </div>
 
-        <div className="min-w-0 shrink-0 overflow-hidden" style={colWidthStyle("status")}>
+        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("status")}>
           {status ? <StatusBadge variant={status.variant} label={status.label} /> : null}
+          {validationState ? (
+            <span className="truncate font-mono text-[10px] text-text-muted">{validationState}</span>
+          ) : null}
         </div>
 
         <RowActions

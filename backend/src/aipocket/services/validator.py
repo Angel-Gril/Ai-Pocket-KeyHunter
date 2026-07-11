@@ -11,6 +11,7 @@ import httpx
 
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
+from aipocket.core.validation_state import apply_state
 from aipocket.services.providers import provider_registry, resolve_provider
 from aipocket.services.providers.anthropic import validate_anthropic
 from aipocket.services.providers.azure_openai import (
@@ -377,17 +378,20 @@ async def _probe_one(
             "validation failed unexpectedly for credential fingerprint=%s",
             fingerprint,
         )
-        return ValidationResult(
+        result = ValidationResult(
             credential=cred,
             valid=False,
             error=f"internal-validation-error:{type(exc).__name__}",
         )
+        result.validation_state = "transient_error"
+        return result
 
     return result
 
 
 async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResult:
     result = ValidationResult(credential=cred, validated_at=datetime.now(UTC).isoformat())
+    apply_state(result, "structurally_valid")
 
     effective_url = cred.apiurl
 
@@ -428,13 +432,17 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
     )
     if resolution.reason == "provider-conflict":
         result.error = resolution.reason
+        apply_state(result, "provider_conflict")
         return result
 
     if resolution.provider == "openai" and cred.bundle is not None:
         validation = await validate_openai(client, cred, InferencePolicy.READ_ONLY)
-        result.valid = validation.valid
         result.status_code = validation.status_code
         result.error = validation.error
+        result.credential_kind = validation.credential_kind.value
+        result.tier_evidence = validation.limit_profile.tier.value
+        # Preserve evidence labels (tier5_confirmed / candidate / unknown). Never
+        # invent tier5 from RPM alone — that mapping lives only in the OpenAI adapter.
         result.tier = validation.limit_profile.tier.value
         result.provider_info.models_available = list(validation.models)
         result.provider_info.models_verified = (
@@ -448,6 +456,17 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
                 result.rate_limit_headers[f"{limit.model}:rpm"] = str(limit.rpm)
             if limit.tpm is not None:
                 result.rate_limit_headers[f"{limit.model}:tpm"] = str(limit.tpm)
+        if validation.valid:
+            target = (
+                "scope_confirmed"
+                if validation.credential_kind.value == "admin"
+                else "authentication_confirmed"
+            )
+            if validation.inference_performed and validation.verified_model:
+                target = "inference_verified"
+            apply_state(result, target)
+        else:
+            apply_state(result, "auth_rejected")
         return result
 
     if resolution.provider == "azure_openai" and cred.bundle is not None:
@@ -456,18 +475,34 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             cred,
             AzureInferencePolicy.READ_ONLY,
         )
-        result.valid = validation.valid
         result.status_code = validation.status_code
         result.error = validation.error
+        result.credential_kind = validation.auth_kind.value
         result.provider_info.models_available = list(validation.models)
         result.model_available = validation.models[0] if validation.models else ""
+        if validation.valid:
+            apply_state(
+                result,
+                "inference_verified" if validation.inference_performed else "authentication_confirmed",
+            )
+        else:
+            err = validation.error
+            state = (
+                "unsupported_context"
+                if err.startswith("missing-")
+                else "provider_conflict"
+                if err == "public-openai-conflict"
+                else "auth_rejected"
+            )
+            apply_state(result, state)
         return result
 
     if resolution.provider == "anthropic":
         validation = await validate_anthropic(client, cred)
-        result.valid = validation.valid
         result.status_code = validation.status_code
         result.error = validation.error
+        result.credential_kind = validation.credential_kind.value
+        result.scope = validation.scope
         result.tier = validation.scope
         result.provider_info.models_available = list(validation.models)
         result.provider_info.models_verified = (
@@ -479,6 +514,19 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
         if validation.organization_id:
             # Stable org identity only — never member or key listings.
             result.response_snippet = f"organization_id={validation.organization_id}"
+        if validation.valid:
+            target = (
+                "scope_confirmed"
+                if validation.scope == "org:admin"
+                else (
+                    "inference_verified"
+                    if validation.verified_model
+                    else "authentication_confirmed"
+                )
+            )
+            apply_state(result, target)
+        else:
+            apply_state(result, "auth_rejected")
         return result
 
     probe_models = list(resolution.default_model_hints)
@@ -583,11 +631,11 @@ async def _probe_anthropic(
         if r.status_code == 200:
             body = _parse_json_body(r)
             if body and ("content" in body or "id" in body and body.get("type") == "message"):
-                result.valid = True
-                result.tier = _infer_tier(result.rate_limit_headers, r.headers)
+                result.tier = _limit_profile_label(result.rate_limit_headers, r.headers)
                 result.model_available = model
                 result.response_snippet = _snippet(body)
                 result.provider_info.models_verified.append(model)
+                apply_state(result, "inference_verified")
                 return result
 
         if r.status_code == 429:
@@ -601,42 +649,42 @@ async def _probe_anthropic(
             # 429 disambiguation — same rationale as _probe_chat_completions.
             # Re-probe with a forged key (Anthropic convention: x-api-key +
             # /v1/messages) and compare host behavior.
-            result.tier = _infer_tier(result.rate_limit_headers, r.headers)
+            result.tier = _limit_profile_label(result.rate_limit_headers, r.headers)
             result.model_available = model
             forged = await _forged_key_probe(client, chat_url, model, provider="anthropic")
             if forged == "suspicious_429":
-                result.valid = False
                 result.error = (
                     "honeypot:429-indiscriminate (real + forged key both 429 — "
                     "host rate-limits without checking auth; key not proven valid)"
                 )
+                apply_state(result, "auth_rejected")
                 return result
             if forged == "noauth":
-                result.valid = False
                 result.error = (
                     "honeypot:no-auth-host (forged key returned a message under "
                     "429 retry — endpoint ignores auth, key is fake)"
                 )
+                apply_state(result, "no_auth_endpoint")
                 return result
             if forged == "":
-                result.valid = True
-                result.suspicious = True
                 result.error = "rate-limited but key is valid (forged key rejected)"
                 result.suspicious_reason = (
                     "429 with forged-key rejected: real rate limit likely but "
                     "unverified — manual review"
                 )
+                apply_state(result, "rate_limited_unconfirmed")
                 return result
-            result.valid = True
-            result.suspicious = True
             result.error = f"rate-limited but key is valid (forged probe inconclusive: {forged})"
             result.suspicious_reason = (
                 f"429 with inconclusive forged-key probe ({forged}) — manual review"
             )
+            apply_state(result, "rate_limited_unconfirmed")
             return result
 
         result.error = f"unexpected {r.status_code}: {r.text[:120]}"
 
+    if result.status_code in (401, 403):
+        apply_state(result, "auth_rejected")
     return result
 
 
@@ -676,6 +724,7 @@ async def _probe_chat_completions(
 
         if r.status_code in (401, 403):
             result.error = f"unauthorized ({r.status_code})"
+            apply_state(result, "auth_rejected")
             return result
         if r.status_code == 404:
             continue
@@ -687,6 +736,7 @@ async def _probe_chat_completions(
             body = _parse_json_body(r)
             if body is None or not _looks_like_chat_completion(body):
                 result.error = f"status 200 but not chat completion (body: {r.text[:120]})"
+                apply_state(result, "auth_rejected")
                 return result
 
             # Model-mismatch detection: a legitimate proxy may downgrade within
@@ -707,12 +757,12 @@ async def _probe_chat_completions(
                         actual_model,
                         cred.apikey[:12],
                     )
-                    result.valid = False
                     result.model_available = actual_model
                     result.error = (
                         f"honeypot:model-mismatch (requested {model}, got "
                         f"{actual_model} — cross-generation/family swap)"
                     )
+                    apply_state(result, "auth_rejected")
                     return result
                 # Mild within-family downgrade (gpt-5.5 → gpt-5.4): plausible
                 # proxy cost-saving. Keep valid but record the mismatch.
@@ -721,28 +771,30 @@ async def _probe_chat_completions(
                     model,
                     actual_model,
                 )
-                result.valid = True
-                result.tier = _infer_tier(result.rate_limit_headers, r.headers)
+                result.tier = _limit_profile_label(result.rate_limit_headers, r.headers)
                 result.model_available = actual_model
                 result.response_snippet = _snippet(body)
                 result.error = f"model-mismatch: requested {model}, got {actual_model}"
                 result.provider_info.models_verified.append(actual_model)
+                apply_state(result, "inference_verified")
                 return result
 
-            result.valid = True
-            result.tier = _infer_tier(result.rate_limit_headers, r.headers)
+            result.tier = _limit_profile_label(result.rate_limit_headers, r.headers)
             result.model_available = model
             result.response_snippet = _snippet(body)
             result.provider_info.models_verified.append(model)
+            apply_state(result, "inference_verified")
             return result
 
         if r.status_code == 429:
             body = _parse_json_body(r)
             if body is None:
                 result.error = f"status 429 non-json (body: {r.text[:120]})"
+                apply_state(result, "transient_error")
                 return result
             if not _looks_like_api_error(body):
                 result.error = f"status 429 but body not api error (body: {r.text[:120]})"
+                apply_state(result, "transient_error")
                 return result
 
             # 429 no longer means "valid" unconditionally. Scam / open-proxy
@@ -750,50 +802,45 @@ async def _probe_chat_completions(
             # proves nothing. Disambiguate by re-probing the same endpoint with
             # a FORGED key and comparing the host's behavior. See the verdict
             # matrix in the plan / _forged_key_probe docstring.
-            result.tier = _infer_tier(result.rate_limit_headers, r.headers)
+            result.tier = _limit_profile_label(result.rate_limit_headers, r.headers)
             result.model_available = model
             forged = await _forged_key_probe(client, api_url, model)
             if forged == "suspicious_429":
                 # Real AND forged key both 429 → host does not check auth at
                 # all. This is the apillm.cn pattern: the 429 was never a real
-                # rate limit. Reject.
-                result.valid = False
+                # rate limit. Reject — key is not proven.
                 result.error = (
                     "honeypot:429-indiscriminate (real + forged key both 429 — "
                     "host rate-limits without checking auth; key not proven valid)"
                 )
+                apply_state(result, "auth_rejected")
                 return result
             if forged == "noauth":
                 # Forged key got a completion → endpoint ignores auth entirely.
-                result.valid = False
                 result.error = (
                     "honeypot:no-auth-host (forged key returned a completion under "
                     "429 retry — endpoint ignores Authorization, key is fake)"
                 )
+                apply_state(result, "no_auth_endpoint")
                 return result
             if forged == "":
                 # Forged key was REJECTED (401/403) → host DOES distinguish
                 # keys. The real key's 429 is plausibly a genuine rate limit,
-                # but we never saw a completion, so keep it as suspicious for
-                # manual review rather than trusting it outright.
-                result.valid = True
-                result.suspicious = True
+                # but we never saw a completion, so quarantine for review.
                 result.error = "rate-limited but key is valid (forged key rejected)"
                 result.suspicious_reason = (
                     "429 with forged-key rejected: real rate limit likely but "
                     "unverified — manual review"
                 )
+                apply_state(result, "rate_limited_unconfirmed")
                 return result
             # "suspicious_noncompletion" / "error" / anything else → host
-            # behaved oddly under the forged probe (non-completion 200, network
-            # error). Could not confirm the key is real. Keep valid but
-            # suspicious.
-            result.valid = True
-            result.suspicious = True
+            # behaved oddly under the forged probe. Quarantine, never final.
             result.error = f"rate-limited but key is valid (forged probe inconclusive: {forged})"
             result.suspicious_reason = (
                 f"429 with inconclusive forged-key probe ({forged}) — manual review"
             )
+            apply_state(result, "rate_limited_unconfirmed")
             return result
 
         # 400 with "model not found" / "model not exist" → try next model, don't fail the key.
@@ -810,6 +857,8 @@ async def _probe_chat_completions(
             continue
         result.error = f"unexpected {r.status_code}: {body_text[:120]}"
 
+    if result.status_code in (401, 403):
+        apply_state(result, "auth_rejected")
     return result
 
 
@@ -841,26 +890,30 @@ def _extract_rate_headers(headers: Any) -> dict[str, str]:
     return out
 
 
-def _infer_tier(rate_headers: dict[str, str], all_headers: Any) -> str:
+def _limit_profile_label(rate_headers: dict[str, str], all_headers: Any) -> str:
+    """Record rate-limit profile without inventing OpenAI usage tiers.
+
+    A single ``x-ratelimit-limit-requests`` value is model-scoped evidence, not
+    an account tier. Explicit ``tier`` response headers are preserved as-is.
+    """
+    lower_map = {k.lower(): v for k, v in all_headers.items()}
+    explicit = lower_map.get("tier") or lower_map.get("x-tier")
+    if explicit:
+        return str(explicit)
+
     limit_req = rate_headers.get("x-ratelimit-limit-requests")
     if limit_req:
         try:
-            n = int(limit_req)
-            if n >= 10000:
-                return "tier5"
-            if n >= 5000:
-                return "tier4"
-            if n >= 2500:
-                return "tier3"
-            return f"limit:{n}"
+            return f"rpm:{int(limit_req)}"
         except ValueError:
-            pass
-
-    lower_map = {k.lower(): v for k, v in all_headers.items()}
-    if "tier" in lower_map:
-        return str(lower_map["tier"])
-
+            return f"rpm:{limit_req}"
     return ""
+
+
+# Backward-compatible alias for tests/callers that still import the old name.
+# Does not map RPM thresholds to tier5/4/3.
+def _infer_tier(rate_headers: dict[str, str], all_headers: Any) -> str:
+    return _limit_profile_label(rate_headers, all_headers)
 
 
 def _snippet(body: dict) -> str:
