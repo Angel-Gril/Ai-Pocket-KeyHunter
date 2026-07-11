@@ -183,9 +183,8 @@ async def _run_scan_inner(
         if source and query:
             query_metrics.increment(source, query, raw_hits=1)
     for target in targets:
-        for source in target.sources:
-            for query in target.query_ids:
-                query_metrics.increment(source, query, unique_targets=1)
+        for source, query in target.provenance_pairs:
+            query_metrics.increment(source, query, unique_targets=1)
     target_hits = [target.to_hit() for target in targets]
     hits_by_source["fofa"] = len(fofa_hits)
     hits_by_source["shodan"] = len(shodan_hits)
@@ -214,9 +213,8 @@ async def _run_scan_inner(
             target = target_by_url.get(credential.host) or target_by_url.get(credential.apiurl)
             if target is None:
                 continue
-            for source in target.sources:
-                for query in target.query_ids:
-                    query_metrics.increment(source, query, **{metric: 1})
+            for source, query in target.provenance_pairs:
+                query_metrics.increment(source, query, **{metric: 1})
 
     record_credentials("candidates", creds)
     seen = {(c.apikey, c.apiurl) for c in creds}
@@ -331,6 +329,11 @@ async def _run_scan_inner(
             "unique_targets": len(targets),
             "total_hosts": len(targets),
             "total_credentials": 0,
+            "candidates": 0,
+            "active_requests": 0,
+            "final_verified": 0,
+            "suspicious": 0,
+            "high_value_final": 0,
             "queries_used": queries_used,
         }
         if run_dir:
@@ -353,6 +356,8 @@ async def _run_scan_inner(
             sources=sources_used,
             hits_by_source=hits_by_source,
             total_hosts=len(targets),
+            raw_hits_count=len(all_hits),
+            unique_targets=len(targets),
             total_credentials=0,
             total_valid=0,
             queries_used=queries_used,
@@ -408,25 +413,6 @@ async def _run_scan_inner(
         )
         no_auth_urls, suspicious_urls = await verify_no_auth(results)
 
-    # Write scan metadata + per-result JSONL lines
-    scan_path: Path | None = None
-    if run_dir:
-        scan_path = write_scan_metadata(
-            {
-                "started_at": started,
-                "sources": sources_used,
-                "hits_by_source": hits_by_source,
-                "raw_hits": len(all_hits),
-                "unique_targets": len(targets),
-                "total_hosts": len(targets),
-                "total_credentials": len(creds),
-                "queries_used": queries_used,
-            },
-            run_dir,
-        )
-        for r in results:
-            append_scan_result(r, scan_path)
-
     # GPT recheck — disabled by default since honeypot filter catches the same
     # cases faster. Enable with GPT_RECHECK=true for extra verification.
     if settings.gpt_recheck:
@@ -479,6 +465,28 @@ async def _run_scan_inner(
             write_suspicious_results(suspicious, run_dir)
 
     finished = datetime.now(UTC).isoformat()
+    run_meta = {
+        "started_at": started,
+        "finished_at": finished,
+        "state": "finished",
+        "sources": sources_used,
+        "hits_by_source": hits_by_source,
+        "raw_hits": len(all_hits),
+        "unique_targets": len(targets),
+        "candidates": len(creds),
+        "active_requests": len(to_validate),
+        "final_verified": len(valid),
+        "suspicious": len(suspicious),
+        "high_value_final": 0,
+        "total_hosts": len(targets),
+        "total_credentials": len(creds),
+        "queries_used": queries_used,
+    }
+
+    if run_dir:
+        scan_path = write_scan_metadata(run_meta, run_dir)
+        for result in results:
+            append_scan_result(result, scan_path)
 
     # Persist the whole run (metadata + valid + suspicious) to PG in one
     # transaction — the source of truth when DATABASE_URL is set.
@@ -488,18 +496,6 @@ async def _run_scan_inner(
     if run_dir and settings.pg_enabled:
         from .writer import persist_run_pg
 
-        run_meta = {
-            "started_at": started,
-            "finished_at": finished,
-            "state": "finished",
-            "sources": sources_used,
-            "hits_by_source": hits_by_source,
-            "raw_hits": len(all_hits),
-            "unique_targets": len(targets),
-            "total_hosts": len(targets),
-            "total_credentials": len(creds),
-            "queries_used": queries_used,
-        }
         await asyncio.to_thread(
             persist_run_pg,
             run_dir.name,
@@ -515,6 +511,12 @@ async def _run_scan_inner(
         sources=sources_used,
         hits_by_source=hits_by_source,
         total_hosts=len(targets),
+        raw_hits_count=len(all_hits),
+        unique_targets=len(targets),
+        candidates=len(creds),
+        active_requests=len(to_validate),
+        final_verified=len(valid),
+        suspicious=len(suspicious),
         total_credentials=len(creds),
         total_valid=len(valid),
         queries_used=queries_used,

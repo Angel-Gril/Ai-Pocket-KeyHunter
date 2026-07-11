@@ -219,6 +219,37 @@ async def test_run_scan_probes_unique_targets_and_reports_discovery_counts(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_run_scan_preserves_exact_source_query_pairs_for_merged_target(tmp_path, monkeypatch):
+    same_endpoint = [{"host": "https://example.com", "protocol": "https"}]
+    _scan_mocks(
+        monkeypatch,
+        tmp_path,
+        fofa_hits=copy.deepcopy(same_endpoint),
+        shodan_hits=copy.deepcopy(same_endpoint),
+    )
+    monkeypatch.setattr("aipocket.core.config.settings.scan_prober", False)
+    monkeypatch.setattr("aipocket.core.config.settings.database_url", "postgresql://test/test")
+    monkeypatch.setattr("aipocket.services.scanner.load_query_history", lambda _source: ())
+    persisted_metrics = []
+
+    def capture_persist(_run_id, _metadata, _valid, _suspicious, metrics):
+        persisted_metrics.extend(metrics)
+
+    monkeypatch.setattr("aipocket.services.writer.persist_run_pg", capture_persist)
+    run_dir = tmp_path / "run_test"
+    run_dir.mkdir()
+
+    await run_scan(max_queries=1, run_dir=run_dir)
+
+    rows = {
+        (metric.source, metric.query): metric.funnel.unique_targets
+        for metric in persisted_metrics
+        if metric.funnel.unique_targets
+    }
+    assert rows == {("fofa", "q"): 1, ("shodan", "sq"): 1}
+
+
+@pytest.mark.asyncio
 async def test_run_scan_fofa_only_when_shodan_unconfigured(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "aipocket.services.scanner.build_queries",

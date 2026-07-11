@@ -32,6 +32,7 @@ class DiscoveryTarget:
     identity: TargetIdentity
     sources: frozenset[str] = field(default_factory=frozenset)
     query_ids: frozenset[str] = field(default_factory=frozenset)
+    provenance_pairs: frozenset[tuple[str, str]] = field(default_factory=frozenset)
     advisory_ids: frozenset[str] = field(default_factory=frozenset)
     product_hints: frozenset[str] = field(default_factory=frozenset)
     aliases: frozenset[str] = field(default_factory=frozenset)
@@ -102,6 +103,11 @@ def canonicalize_hits(hits: list[dict[str, Any]]) -> list[DiscoveryTarget]:
             identity=identity,
             sources=_strings(hit, "_source"),
             query_ids=_strings(hit, "_query_id", "_query_ids"),
+            provenance_pairs=frozenset(
+                (source, query)
+                for source in _strings(hit, "_source")
+                for query in _strings(hit, "_query_id")
+            ),
             advisory_ids=_strings(hit, "_cve", "_cves"),
             product_hints=frozenset(v.lower() for v in _strings(hit, "_product", "_product_hints")),
             aliases=_strings(hit, "host", "ip", "link"),
@@ -116,6 +122,7 @@ def canonicalize_hits(hits: list[dict[str, Any]]) -> list[DiscoveryTarget]:
             identity=identity,
             sources=previous.sources | current.sources,
             query_ids=previous.query_ids | current.query_ids,
+            provenance_pairs=previous.provenance_pairs | current.provenance_pairs,
             advisory_ids=previous.advisory_ids | current.advisory_ids,
             product_hints=previous.product_hints | current.product_hints,
             aliases=previous.aliases | current.aliases,
