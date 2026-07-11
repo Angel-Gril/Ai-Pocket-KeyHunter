@@ -215,7 +215,6 @@ export interface RunSummary {
   suspicious: number
   sources: string[]
   high_value_final: number
-  hits: number
 }
 
 export interface RunDay {

@@ -82,7 +82,7 @@ export default function RunResultsPage() {
     const time = (summary?.started_at && isoToLabel(summary.started_at)) || runIdToLabel(runId)
     const parts = [time]
     if (summary?.sources.length) parts.push(summary.sources.join(","))
-    if (summary && summary.hits > 0) parts.push(`命中 ${summary.hits}`)
+    if (summary && summary.raw_hits > 0) parts.push(`命中 ${summary.raw_hits}`)
     return parts.join(" · ")
   }, [runId, summary])
 
