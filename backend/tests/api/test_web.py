@@ -128,7 +128,11 @@ def test_list_runs_extended_fields(results_root):
             {
                 "raw_hits": 9,
                 "unique_targets": 3,
-                "total_credentials": 2,
+                "candidates": 2,
+                "active_requests": 2,
+                "final_verified": 2,
+                "suspicious": 0,
+                "high_value_final": 1,
             }
         )
         + "\n{}\n{}\n",
@@ -276,7 +280,9 @@ def test_scan_manager_log_buffer_does_not_parse_progress_from_prose():
     mgr = ScanManager()
     mgr._ingest_log("12:00:00 [INFO] aipocket.scanner: Total hits: 42 (sources: fofa)")
     mgr._ingest_log("12:00:01 [INFO] aipocket.scanner: Validating 7 credentials (concurrency=20)")
-    mgr._ingest_log("12:00:02 [INFO] aipocket.high_value_writer: high_value_key saved: sk-proj-abcd…  status=200")
+    mgr._ingest_log(
+        "12:00:02 [INFO] aipocket.high_value_writer: high_value_key saved: sk-proj-abcd…  status=200"
+    )
     lines, last = mgr.logs_since(0)
     assert len(lines) == 3
     assert last == 3
@@ -293,6 +299,44 @@ def test_scan_manager_log_buffer_does_not_parse_progress_from_prose():
     # since filter
     lines2, _ = mgr.logs_since(1)
     assert len(lines2) == 2
+
+
+@pytest.mark.asyncio
+async def test_scan_manager_preserves_explicit_zero_metrics(tmp_path, monkeypatch):
+    from aipocket.api.scan_manager import ScanManager
+    from aipocket.core.models import Credential, ScanRunResult, ValidationResult
+
+    result = ScanRunResult(
+        started_at="2026-07-06T10:00:00+00:00",
+        finished_at="2026-07-06T10:01:00+00:00",
+        sources=["fofa"],
+        total_hosts=9,
+        total_credentials=8,
+        total_valid=7,
+        queries_used=["q"],
+        results=[ValidationResult(credential=Credential(apikey="sk-test"), suspicious=True)],
+        raw_hits=[{"host": "example.com"}],
+    )
+
+    async def fake_run_scan(**_kwargs):
+        return result
+
+    monkeypatch.setattr("aipocket.services.scanner.run_scan", fake_run_scan)
+    monkeypatch.setattr("aipocket.core.config.settings.database_url", "")
+    mgr = ScanManager()
+    mgr._run_dir = tmp_path
+
+    await mgr._run("fofa")
+
+    assert mgr.status()["progress"] == {
+        "raw_hits": 0,
+        "unique_targets": 0,
+        "candidates": 0,
+        "active_requests": 0,
+        "final_verified": 0,
+        "suspicious": 0,
+        "high_value_final": 0,
+    }
 
 
 @pytest.mark.asyncio

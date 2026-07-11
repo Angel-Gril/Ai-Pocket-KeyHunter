@@ -35,6 +35,7 @@ _LOG_FMT = logging.Formatter(
     "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"
 )
 
+
 class _BufferHandler(logging.Handler):
     """Logging handler that appends formatted lines to the manager's buffer.
 
@@ -192,13 +193,12 @@ class ScanManager:
             with self._lock:
                 self._state = "finished"
                 self._progress = {
-                    "raw_hits": result.raw_hits_count or len(result.raw_hits),
-                    "unique_targets": result.unique_targets or result.total_hosts,
-                    "candidates": result.candidates or result.total_credentials,
-                    "active_requests": result.active_requests or len(result.results),
-                    "final_verified": result.final_verified or result.total_valid,
-                    "suspicious": result.suspicious
-                    or sum(1 for item in result.results if item.suspicious),
+                    "raw_hits": result.raw_hits_count,
+                    "unique_targets": result.unique_targets,
+                    "candidates": result.candidates,
+                    "active_requests": result.active_requests,
+                    "final_verified": result.final_verified,
+                    "suspicious": result.suspicious,
                     "high_value_final": result.high_value_final,
                 }
             log.info(
