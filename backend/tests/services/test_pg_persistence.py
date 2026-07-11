@@ -400,8 +400,13 @@ class TestResultsReaderPg:
         entry = days[0]["runs"][0]
         assert entry["valid_count"] == 2
         assert entry["suspicious_count"] == 1
-        assert entry["hits"] == 5
-        assert entry["high_value"] == 1
+        assert entry["raw_hits"] == 5
+        assert entry["unique_targets"] == 5
+        assert entry["candidates"] == 0
+        assert entry["active_requests"] == 0
+        assert entry["final_verified"] == 2
+        assert entry["suspicious"] == 1
+        assert entry["high_value_final"] == 1
         assert entry["sources"] == ["fofa", "shodan"]
 
     def test_load_kind_prefers_pg_when_run_exists(self, fake_pg):
