@@ -209,13 +209,16 @@ def parse_advisory_from_text(
         if len(content.strip()) < 40 and len(title.strip()) < 20:
             return None
         advisory_id = _stable_disclosure_id(title or product, url)
-        if zero_day and "nvd.nist.gov" not in url.lower() and "github.com" not in url.lower():
-            # Uncorroborated 0-day without authoritative source → reject.
-            if not any(
-                token in url.lower()
-                for token in ("security", "advisory", "vuln", "blog")
-            ):
-                return None
+        # Uncorroborated 0-day without authoritative source → reject.
+        if (
+            zero_day
+            and "nvd.nist.gov" not in url.lower()
+            and "github.com" not in url.lower()
+            and not any(
+                token in url.lower() for token in ("security", "advisory", "vuln", "blog")
+            )
+        ):
+            return None
 
     if not product:
         # Stable IDs without product are still accepted with unknown product blank reject
