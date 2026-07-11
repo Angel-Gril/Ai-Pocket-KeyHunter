@@ -7,7 +7,20 @@ FIELD_LIST = [f.strip() for f in DEFAULT_FIELDS.split(",")]
 
 def test_rows_to_dicts_list_input():
     rows = [
-        ["h1", "1.1.1.1", "443", "http", "t1", "HTTP/1.1 200", "banner1", "srv", "p1", "lnk", "d1", "cert1"],
+        [
+            "h1",
+            "1.1.1.1",
+            "443",
+            "http",
+            "t1",
+            "HTTP/1.1 200",
+            "banner1",
+            "srv",
+            "p1",
+            "lnk",
+            "d1",
+            "cert1",
+        ],
     ]
     out = _rows_to_dicts(rows, FIELD_LIST)
     assert len(out) == 1

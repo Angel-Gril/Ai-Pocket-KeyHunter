@@ -125,9 +125,7 @@ def test_binds_opaque_azure_key_to_v1_endpoint_without_rewriting_path() -> None:
     bundle = extract_config_bundles(content, format_hint="env")[0]
 
     assert bundle.secret_value.reveal() == AZURE_KEY
-    assert bundle.endpoint_candidates == (
-        "https://resource.openai.azure.com/openai/v1",
-    )
+    assert bundle.endpoint_candidates == ("https://resource.openai.azure.com/openai/v1",)
     assert bundle.provider_hint == "azure_openai"
     assert bundle.context.azure_resource == "resource"
 

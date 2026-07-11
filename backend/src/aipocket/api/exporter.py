@@ -19,14 +19,25 @@ from datetime import UTC, datetime
 from typing import Any
 
 from aipocket.services.high_value_writer import load_all
+
 from .errors import ApiError
 from .results_reader import load_run_records_plain
 from .schemas import ExportRequest
 
 # Column order for CSV exports — a stable superset covering all dataset shapes.
 _CSV_FIELDS = [
-    "apikey", "apiurl", "host", "provider", "status_code", "valid",
-    "tier", "balance", "gateway", "model_available", "error", "suspicious_reason",
+    "apikey",
+    "apiurl",
+    "host",
+    "provider",
+    "status_code",
+    "valid",
+    "tier",
+    "balance",
+    "gateway",
+    "model_available",
+    "error",
+    "suspicious_reason",
 ]
 
 
@@ -60,9 +71,7 @@ def _collect(req: ExportRequest) -> list[dict[str, Any]]:
         # Legacy path: explicit plaintext key rows supplied by the client.
         if req.keys:
             return [{"apikey": k.apikey, "apiurl": k.apiurl} for k in req.keys]
-        raise ApiError(
-            "selected export requires 'run_id'+'indices' or 'keys'", code="bad_request"
-        )
+        raise ApiError("selected export requires 'run_id'+'indices' or 'keys'", code="bad_request")
 
     if req.dataset == "run":
         if not req.run_id:

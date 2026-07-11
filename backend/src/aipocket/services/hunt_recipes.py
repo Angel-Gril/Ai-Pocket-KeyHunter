@@ -8,6 +8,24 @@ from aipocket.core.advisory import AdvisoryRecord
 
 RecipeAction = Literal["fingerprint", "readonly_probe", "query_only"]
 
+# Allowed enum values mirroring core.advisory Literals — used to sanitize legacy
+# CVE dicts (which may carry absent or unexpected values) before rebuilding an
+# AdvisoryRecord, so gating fails closed rather than raising on dirty data.
+_ATTACK_SURFACES: Final[frozenset[str]] = frozenset(
+    {
+        "auth_bypass",
+        "credential_exposure",
+        "ssrf",
+        "info_disclosure",
+        "rce",
+        "sqli",
+        "privilege_escalation",
+        "unknown",
+    }
+)
+_CREDENTIAL_RELEVANCE: Final[frozenset[str]] = frozenset({"high", "medium", "low", "none"})
+_SOURCE_CONFIDENCE: Final[frozenset[str]] = frozenset({"high", "medium", "low", "unconfirmed"})
+
 # Product fingerprints already covered by existing probers / product queries.
 KNOWN_PRODUCT_FINGERPRINTS: Final[frozenset[str]] = frozenset(
     {
@@ -121,3 +139,46 @@ def active_recipes(advisories: list[AdvisoryRecord]) -> tuple[HuntRecipe, ...]:
 
 def products_with_active_coverage(advisories: list[AdvisoryRecord]) -> frozenset[str]:
     return frozenset(recipe.product for recipe in active_recipes(advisories))
+
+
+def advisory_from_cve_record(record: dict) -> AdvisoryRecord:
+    """Rebuild an :class:`AdvisoryRecord` from a legacy CVE/advisory dict.
+
+    ``load_cves()`` returns the legacy shape produced by
+    ``AdvisoryRecord.to_legacy_cve_dict`` (unified sync) or older file entries
+    that predate the advisory fields. Missing advisory fields fall back to
+    conservative defaults so gating never over-expands coverage.
+    """
+
+    def _cvss() -> float:
+        raw = record.get("cvss", 0.0)
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _one_of(value: object, allowed: frozenset[str], default: str) -> str:
+        # Legacy file entries may carry unexpected/absent enum values; coerce to a
+        # safe default so a dirty record never crashes gating (fails closed).
+        return value if isinstance(value, str) and value in allowed else default
+
+    return AdvisoryRecord(
+        advisory_id=str(record.get("id") or record.get("advisory_id") or ""),
+        product=str(record.get("product", "")),
+        affected_versions=tuple(record.get("affected_versions", []) or ()),
+        attack_surface=_one_of(record.get("attack_surface"), _ATTACK_SURFACES, "unknown"),
+        credential_relevance=_one_of(
+            record.get("credential_relevance"), _CREDENTIAL_RELEVANCE, "medium"
+        ),
+        safe_check_profile=str(record.get("safe_check_profile", "")),
+        source_confidence=_one_of(record.get("source_confidence"), _SOURCE_CONFIDENCE, "medium"),
+        description=str(record.get("description", "")),
+        cvss=_cvss(),
+        title=str(record.get("title", "")),
+    )
+
+
+def products_with_active_coverage_from_cves(records: list[dict]) -> frozenset[str]:
+    """Active-coverage product fingerprints derived from legacy CVE dicts."""
+    advisories = [advisory_from_cve_record(record) for record in records if record]
+    return products_with_active_coverage(advisories)

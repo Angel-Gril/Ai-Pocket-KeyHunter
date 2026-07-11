@@ -10,7 +10,6 @@ Outputs JSON with verification results.
 
 import asyncio
 import json
-import sys
 import time
 from pathlib import Path
 
@@ -81,7 +80,9 @@ async def test_chat(
                 result["response"] = content[:200]
                 result["model_used"] = body.get("model", "")
                 # Check for zero-width steganography
-                zwc_count = sum(1 for c in content if c in '\u200b\u200c\u200d\u200e\u200f\u2060\ufeff')
+                zwc_count = sum(
+                    1 for c in content if c in "\u200b\u200c\u200d\u200e\u200f\u2060\ufeff"
+                )
                 if zwc_count > 5:
                     result["warning"] = f"STEGANOGRAPHY_DETECTED: {zwc_count} zero-width chars"
                 return result
@@ -196,7 +197,7 @@ async def main():
     for v, count in sorted(verdicts.items()):
         print(f"  {v}: {count}")
 
-    print(f"\nDetails:")
+    print("\nDetails:")
     for r in results:
         icon = "✅" if r["verdict"] == "LIVE_GPT55" else "❌" if r["verdict"] == "DEAD" else "⚠️"
         print(f"  {icon} {r['key']} → {r['verdict']}")

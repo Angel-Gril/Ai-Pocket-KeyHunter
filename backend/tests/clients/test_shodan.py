@@ -31,7 +31,9 @@ def _match(ip: str, port: int, **kw):
 @respx.mock
 def test_search_single_page():
     respx.get(f"{BASE}/shodan/host/search").mock(
-        return_value=httpx.Response(200, json={"total": 2, "matches": [_match("1.1.1.1", 4000), _match("2.2.2.2", 4000)]})
+        return_value=httpx.Response(
+            200, json={"total": 2, "matches": [_match("1.1.1.1", 4000), _match("2.2.2.2", 4000)]}
+        )
     )
     with ShodanClient(keys=["k1"], base_url=BASE) as c:
         results = c.search("http.title:LiteLLM", pages=1)
@@ -94,7 +96,9 @@ def test_search_handles_network_error_then_success():
 
 @respx.mock
 def test_search_non_json_returns_empty():
-    respx.get(f"{BASE}/shodan/host/search").mock(return_value=httpx.Response(200, text="<html>nope"))
+    respx.get(f"{BASE}/shodan/host/search").mock(
+        return_value=httpx.Response(200, text="<html>nope")
+    )
     with ShodanClient(keys=["k1", "k2"], base_url=BASE) as c:
         assert c.search("http.title:LiteLLM", pages=1) == []
 
@@ -142,9 +146,7 @@ def test_info_aggregates_across_multiple_keys():
 @respx.mock
 def test_count_returns_none_when_endpoint_fails():
     # count() returns None (not 0) on API failure so callers don't skip live queries.
-    respx.get(f"{BASE}/shodan/host/count").mock(
-        return_value=httpx.Response(500, text="boom")
-    )
+    respx.get(f"{BASE}/shodan/host/count").mock(return_value=httpx.Response(500, text="boom"))
     with ShodanClient(keys=["k1"], base_url=BASE) as c:
         assert c.count("http.title:LiteLLM") is None
 
@@ -152,9 +154,7 @@ def test_count_returns_none_when_endpoint_fails():
 @respx.mock
 def test_count_returns_zero_when_truly_empty():
     # count() returns 0 only when Shodan explicitly reports zero — safe to skip.
-    respx.get(f"{BASE}/shodan/host/count").mock(
-        return_value=httpx.Response(200, json={"total": 0})
-    )
+    respx.get(f"{BASE}/shodan/host/count").mock(return_value=httpx.Response(200, json={"total": 0}))
     with ShodanClient(keys=["k1"], base_url=BASE) as c:
         assert c.count("nothing") == 0
 

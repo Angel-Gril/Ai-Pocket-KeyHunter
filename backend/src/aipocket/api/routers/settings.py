@@ -21,7 +21,9 @@ from ..settings_io import (
     update_settings,
 )
 
-router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(get_current_user)])
+router = APIRouter(
+    prefix="/api/settings", tags=["settings"], dependencies=[Depends(get_current_user)]
+)
 
 
 @router.get("", response_model=SettingsView)

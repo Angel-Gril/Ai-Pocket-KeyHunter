@@ -10,11 +10,11 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 import urllib.parse
 import urllib.request
-import json
 from pathlib import Path
 
 # Candidate filters grouped by intent.
@@ -33,8 +33,8 @@ FILTERS: dict[str, list[str]] = {
     ],
     "dify_favicon_ssl (strongest fingerprint)": [
         # Dify favicon hashes are empirical — test a few known candidates.
-        'http.favicon.hash:-890583488',
-        'http.favicon.hash:2042235418',
+        "http.favicon.hash:-890583488",
+        "http.favicon.hash:2042235418",
         'ssl.cert.subject.cn:"dify"',
         'hostname:"dify"',
     ],

@@ -26,13 +26,13 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
+from aipocket.core.models import Credential
 from aipocket.services.balance import query_balance
 from aipocket.services.high_value_writer import (
     _output_dir,
     _output_path,
     load_all,
 )
-from aipocket.core.models import Credential
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -41,6 +41,7 @@ console = Console()
 # ---------------------------------------------------------------------------
 # Verification logic
 # ---------------------------------------------------------------------------
+
 
 async def verify_one(
     client: httpx.AsyncClient,
@@ -150,6 +151,7 @@ async def _check_alive(
 # Main
 # ---------------------------------------------------------------------------
 
+
 async def run(concurrency: int = 20, output_path: Path | None = None):
     entries = load_all()
 
@@ -165,8 +167,12 @@ async def run(concurrency: int = 20, output_path: Path | None = None):
     unique_entries = list(by_key.values())
 
     console.print(f"[bold]Verifying {len(unique_entries)} high-value keys[/bold]")
-    console.print(f"  OpenAI (sk-proj-*): {sum(1 for e in unique_entries if e['apikey'].startswith('sk-proj-'))}")
-    console.print(f"  Claude (sk-ant-*):  {sum(1 for e in unique_entries if e['apikey'].startswith('sk-ant-'))}")
+    console.print(
+        f"  OpenAI (sk-proj-*): {sum(1 for e in unique_entries if e['apikey'].startswith('sk-proj-'))}"
+    )
+    console.print(
+        f"  Claude (sk-ant-*):  {sum(1 for e in unique_entries if e['apikey'].startswith('sk-ant-'))}"
+    )
     console.print()
 
     sem = asyncio.Semaphore(concurrency)
@@ -199,7 +205,9 @@ async def run(concurrency: int = 20, output_path: Path | None = None):
 
     console.print(table)
     console.print()
-    console.print(f"[green]Alive: {len(alive_keys)}[/green] / [red]Dead: {len(dead_keys)}[/red] / Total: {len(results)}")
+    console.print(
+        f"[green]Alive: {len(alive_keys)}[/green] / [red]Dead: {len(dead_keys)}[/red] / Total: {len(results)}"
+    )
 
     # Write report as JSONL (first line = metadata, then one result per line)
     report_path = output_path or (_output_dir() / "verify_report.jsonl")
@@ -247,15 +255,23 @@ def _update_alive_keys(alive_results: list[dict]):
 def main():
     parser = argparse.ArgumentParser(description="验证高价值key + 探测余额")
     parser.add_argument(
-        "--concurrency", "-c", type=int, default=20,
+        "--concurrency",
+        "-c",
+        type=int,
+        default=20,
         help="Concurrent verification tasks (default: 20)",
     )
     parser.add_argument(
-        "--output", "-o", type=Path, default=None,
+        "--output",
+        "-o",
+        type=Path,
+        default=None,
         help="Output report path (default: results/high_value_keys/verify_report.jsonl)",
     )
     parser.add_argument(
-        "--verbose", "-v", action="store_true",
+        "--verbose",
+        "-v",
+        action="store_true",
         help="Enable debug logging",
     )
     args = parser.parse_args()

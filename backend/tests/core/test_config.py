@@ -35,5 +35,6 @@ def test_defaults(monkeypatch):
 
 def test_no_keys_raises_on_access():
     from aipocket.clients.fofa import FofaClient
+
     with pytest.raises(RuntimeError):
         FofaClient(keys=[])

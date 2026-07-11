@@ -41,7 +41,9 @@ from aipocket.services.queries import (  # noqa: E402  — path patched above
     load_cves,
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
+)
 log = logging.getLogger("carve_realtest")
 
 
@@ -75,7 +77,12 @@ def carve(cves: list[dict], limit: int = 10) -> list[dict]:
     # Pre-compute which prober (if any) each CVE maps to.
     tagged = [(_prober_for_product(c.get("product", "")), c) for c in pool]
     # Severity rank within the pool: priority asc, CVSS desc.
-    tagged.sort(key=lambda tc: (VULN_TYPE_PRIORITIES.get(tc[1].get("type", ""), 9), -float(tc[1].get("cvss") or 0)))
+    tagged.sort(
+        key=lambda tc: (
+            VULN_TYPE_PRIORITIES.get(tc[1].get("type", ""), 9),
+            -float(tc[1].get("cvss") or 0),
+        )
+    )
 
     picked: list[dict] = []
     have_ids: set[str] = set()
@@ -105,7 +112,9 @@ def carve(cves: list[dict], limit: int = 10) -> list[dict]:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Carve a small real-test CVE subset covering all prober types.")
+    ap = argparse.ArgumentParser(
+        description="Carve a small real-test CVE subset covering all prober types."
+    )
     ap.add_argument("--input", type=Path, default=_REPO_ROOT / "sources" / "cve_2026_ai.json")
     ap.add_argument("--output", type=Path, default=_REPO_ROOT / "sources" / "cve_realtest.json")
     ap.add_argument("--limit", type=int, default=10, help="Max CVEs to carve (default: 10)")
@@ -125,7 +134,9 @@ def main() -> None:
     missing = all_probers - covered
     log.info(
         "Carved %d CVEs covering %d/%d prober types%s",
-        len(picked), len(covered), len(all_probers),
+        len(picked),
+        len(covered),
+        len(all_probers),
         f" (missing: {', '.join(sorted(missing))})" if missing else "",
     )
 
@@ -133,7 +144,9 @@ def main() -> None:
     print("  " + "-" * 72)
     for c in picked:
         prober = _prober_for_product(c.get("product", "")) or "-"
-        print(f"  {c['id']:18} {c.get('product','')[:18]:18} {c.get('type','')[:12]:12} {str(c.get('cvss','')):5} {prober}")
+        print(
+            f"  {c['id']:18} {c.get('product', '')[:18]:18} {c.get('type', '')[:12]:12} {str(c.get('cvss', '')):5} {prober}"
+        )
 
     if missing:
         print(f"\n  ⚠️  {len(missing)} prober type(s) have NO matching CVE in the source map:")
@@ -144,7 +157,9 @@ def main() -> None:
         log.info("Dry-run: not writing.")
         return
 
-    args.output.write_text(json.dumps(picked, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    args.output.write_text(
+        json.dumps(picked, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     log.info("Wrote %d CVEs to %s", len(picked), args.output)
 
 

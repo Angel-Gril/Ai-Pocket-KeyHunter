@@ -19,7 +19,9 @@ OUTPUT_JS = RESULTS_DIR.parent / "preview" / "data.js"
 
 def find_latest_valid() -> Path | None:
     """Find the most recent valid_*.jsonl across all run directories."""
-    candidates = sorted(RESULTS_DIR.glob("run_*/valid_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    candidates = sorted(
+        RESULTS_DIR.glob("run_*/valid_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
     return candidates[0] if candidates else None
 
 
@@ -32,11 +34,13 @@ def find_matching_suspicious(valid_path: Path) -> Path | None:
     """
     run_dir = valid_path.parent
     # Exact-pair match: same timestamp token after valid_/suspicious_
-    suffix = valid_path.name[len("valid_"):]  # e.g. 20260704T041501Z.jsonl
+    suffix = valid_path.name[len("valid_") :]  # e.g. 20260704T041501Z.jsonl
     pair = run_dir / f"suspicious_{suffix}"
     if pair.exists():
         return pair
-    candidates = sorted(run_dir.glob("suspicious_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    candidates = sorted(
+        run_dir.glob("suspicious_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
     return candidates[0] if candidates else None
 
 
@@ -73,13 +77,19 @@ def gen(valid_path: Path | None = None) -> Path:
 
     print(f"Using valid: {valid_path}")
 
-    entries = [json.loads(line) for line in valid_path.read_text("utf-8").splitlines() if line.strip()]
+    entries = [
+        json.loads(line) for line in valid_path.read_text("utf-8").splitlines() if line.strip()
+    ]
 
     # Load matching suspicious entries (honeypots / quarantined hosts), if any.
     suspicious_entries: list[dict] = []
     suspicious_path = find_matching_suspicious(valid_path)
     if suspicious_path and suspicious_path.exists():
-        suspicious_entries = [json.loads(line) for line in suspicious_path.read_text("utf-8").splitlines() if line.strip()]
+        suspicious_entries = [
+            json.loads(line)
+            for line in suspicious_path.read_text("utf-8").splitlines()
+            if line.strip()
+        ]
         print(f"Using suspicious: {suspicious_path} ({len(suspicious_entries)} entries)")
 
     # De-dup by (apikey, apiurl); valid entries win over suspicious.
@@ -101,7 +111,7 @@ def gen(valid_path: Path | None = None) -> Path:
         merged.append(e)
 
     # Scan-time token from the valid_ filename, e.g. valid_20260704T041501Z.jsonl.
-    scan_time = valid_path.name[len("valid_"):].removesuffix(".jsonl")
+    scan_time = valid_path.name[len("valid_") :].removesuffix(".jsonl")
 
     data = {
         "total_valid": len(entries),

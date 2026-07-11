@@ -46,6 +46,7 @@ def test_scan_run_result_serializes():
 def test_credential_invalid_source_type_rejected():
     import pytest
     from pydantic import ValidationError
+
     with pytest.raises(ValidationError):
         Credential(apikey="k", apiurl="u", source_type="invalid")  # type: ignore[arg-type]
 

@@ -7,8 +7,11 @@ forged key (= no-auth honeypots that should be voided).
 Usage:
     python scripts/verify_honeypot_replay.py results/run_XXX/valid_YYY.jsonl
 """
-import asyncio, json, sys
-from pathlib import Path
+
+import asyncio
+import json
+import sys
+
 from aipocket.core.models import Credential, ValidationResult
 from aipocket.services.validator import verify_no_auth
 
@@ -26,13 +29,18 @@ def load_results(path: str) -> list[ValidationResult]:
                 continue
             c = r["credential"]
             cred = Credential(
-                apikey=c["apikey"], apiurl=c.get("apiurl", ""),
-                source=c.get("source", ""), source_type=c.get("source_type", "fingerprint"),
-                host=c.get("host", ""), ip=c.get("ip", ""),
-                backend=c.get("backend", ""), product=c.get("product", ""),
+                apikey=c["apikey"],
+                apiurl=c.get("apiurl", ""),
+                source=c.get("source", ""),
+                source_type=c.get("source_type", "fingerprint"),
+                host=c.get("host", ""),
+                ip=c.get("ip", ""),
+                backend=c.get("backend", ""),
+                product=c.get("product", ""),
             )
             vr = ValidationResult(
-                credential=cred, valid=r.get("valid", True),
+                credential=cred,
+                valid=r.get("valid", True),
                 status_code=r.get("status_code"),
                 model_available=r.get("model_available"),
             )
@@ -41,24 +49,28 @@ def load_results(path: str) -> list[ValidationResult]:
 
 
 async def main() -> None:
-    path = sys.argv[1] if len(sys.argv) > 1 else "results/run_2026_07_02_16-58-49/valid_20260702T171742Z.jsonl"
+    path = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else "results/run_2026_07_02_16-58-49/valid_20260702T171742Z.jsonl"
+    )
     results = load_results(path)
     hosts = {r.credential.host for r in results}
     print(f"Loaded {len(results)} valid result(s) across {len(hosts)} host(s).")
-    print(f"Probing each with a forged key...\n")
+    print("Probing each with a forged key...\n")
 
     no_auth, suspicious = await verify_no_auth(results)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     if no_auth:
         print(f"❌ {len(no_auth)} host(s) confirmed NO-AUTH (accept forged key):")
         for h in sorted(no_auth):
             print(f"   {h}")
-        print(f"\n→ filter_honeypots would VOID all key(s) on these hosts.")
+        print("\n→ filter_honeypots would VOID all key(s) on these hosts.")
     else:
         print("✅ No no-auth hosts found.")
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     if suspicious:
         print(f"⚠️  {len(suspicious)} host(s) SUSPICIOUS (forged-429 / 200-non-completion):")
         for h in sorted(suspicious):

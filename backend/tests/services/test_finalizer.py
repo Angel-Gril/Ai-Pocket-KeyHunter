@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 from aipocket.core.models import Credential, ValidationResult
-from aipocket.services.finalizer import finalize_results
+from aipocket.services.finalizer import commit_final_results, finalize_results
 
 
 def _result(*, host: str, status_code: int = 200) -> ValidationResult:
@@ -31,6 +31,11 @@ async def test_no_auth_result_is_rejected_before_persistence(monkeypatch):
     assert finalized.final_verified == []
     dedup.cache_valid.assert_not_awaited()
     dedup.mark_rejected.assert_awaited_once_with(result.credential)
+    save.assert_not_awaited()
+
+    # commit runs only over final_verified — nothing to persist here.
+    await commit_final_results(finalized.final_verified, dedup=dedup)
+    dedup.cache_valid.assert_not_awaited()
     save.assert_not_awaited()
 
 
@@ -70,6 +75,13 @@ async def test_final_verified_result_is_cached_and_saved(monkeypatch):
         [result], dedup=dedup, no_auth_hosts=set(), suspicious_hosts=set()
     )
 
+    # finalize_results promotes to final but defers caching/persistence so they
+    # run after balance enrichment.
     assert finalized.final_verified == [result]
+    dedup.cache_valid.assert_not_awaited()
+    save.assert_not_awaited()
+
+    # commit_final_results (called by the scanner post-balance) caches + saves.
+    await commit_final_results(finalized.final_verified, dedup=dedup)
     dedup.cache_valid.assert_awaited_once_with(result)
     save.assert_awaited_once_with(result)

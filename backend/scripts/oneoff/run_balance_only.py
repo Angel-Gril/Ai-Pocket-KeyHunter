@@ -9,17 +9,22 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from aipocket.services.balance import enrich_results
-from aipocket.core.config import settings
 from aipocket.core.models import ScanRunResult, ValidationResult
+from aipocket.services.balance import enrich_results
 from aipocket.services.writer import write_result
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
 log = logging.getLogger(__name__)
 
 
 async def main():
-    partial_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/partial_validated.jsonl")
+    partial_path = (
+        Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/partial_validated.jsonl")
+    )
     if not partial_path.exists():
         print(f"File not found: {partial_path}")
         sys.exit(1)
@@ -27,7 +32,9 @@ async def main():
     log.info("Loading partial results from %s ...", partial_path)
     lines = partial_path.read_text(encoding="utf-8").splitlines()
     meta = json.loads(lines[0])
-    results = [ValidationResult.model_validate(json.loads(l)) for l in lines[1:] if l.strip()]
+    results = [
+        ValidationResult.model_validate(json.loads(line)) for line in lines[1:] if line.strip()
+    ]
     valid = [r for r in results if r.valid]
     log.info("Loaded %d results (%d valid)", len(results), len(valid))
 

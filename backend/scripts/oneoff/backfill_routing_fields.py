@@ -23,6 +23,7 @@ Usage:
 
 If no path is given, the most recent results/run_*/valid_*.jsonl is used.
 """
+
 from __future__ import annotations
 
 import json
@@ -43,9 +44,17 @@ KEY_PREFIX_ROUTING: list[tuple[str, str, str]] = [
 ]
 
 DOMAIN_FINGERPRINTS: list[str] = [
-    "openai.com", "oaiusercontent", "anthropic.com", "deepseek.com",
-    "moonshot.cn", "bigmodel.cn", "zhipuai", "siliconflow.cn",
-    "dashscope.aliyuncs.com", "baidu.com", "googleapis.com",
+    "openai.com",
+    "oaiusercontent",
+    "anthropic.com",
+    "deepseek.com",
+    "moonshot.cn",
+    "bigmodel.cn",
+    "zhipuai",
+    "siliconflow.cn",
+    "dashscope.aliyuncs.com",
+    "baidu.com",
+    "googleapis.com",
 ]
 
 
@@ -116,7 +125,8 @@ def main() -> None:
     else:
         candidates = sorted(
             results_dir.glob("run_*/valid_*.jsonl"),
-            key=lambda p: p.stat().st_mtime, reverse=True,
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
         )
         target = candidates[0] if candidates else None
 
@@ -131,6 +141,7 @@ def main() -> None:
     # Regenerate preview/data.js from the patched file.
     print("\nRegenerating preview/data.js …")
     import subprocess
+
     repo = Path(__file__).resolve().parent.parent
     subprocess.run(
         [sys.executable, str(repo / "scripts" / "gen_balance_html.py"), str(target)],

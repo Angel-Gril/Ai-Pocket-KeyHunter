@@ -10,7 +10,7 @@ from aipocket.clients.fofa import FofaClient
 from aipocket.core.config import settings
 from aipocket.core.metrics import QueryUsage
 from aipocket.core.models import Credential, ScanRunResult, ValidationResult
-from aipocket.core.targets import canonicalize_hits
+from aipocket.core.targets import DiscoveryTarget, canonicalize_hits
 
 from .dedup import DedupStore, get_dedup_store
 from .extractor import extract_credentials
@@ -213,11 +213,23 @@ async def _run_scan_inner(
     # -> GPT recheck -> balance
     # ------------------------------------------------------------------
     creds = extract_credentials(all_hits)
-    target_by_url = {target.identity.url: target for target in targets}
+    # Map a credential back to its discovery target for per-query funnel metrics.
+    # regex-extracted creds carry the RAW hit host (e.g. "1.2.3.4:8080"), while
+    # probed/GPT creds carry the canonical identity url ("https://1.2.3.4:8080").
+    # Index BOTH the canonical url and every raw alias (host/ip/link) so no
+    # credential silently misses its target and drops out of the funnel counts.
+    target_by_alias: dict[str, DiscoveryTarget] = {}
+    for target in targets:
+        for alias in (target.identity.url, *target.aliases):
+            target_by_alias.setdefault(alias, target)
 
     def record_credentials(metric: str, credentials: list[Credential]) -> None:
         for credential in credentials:
-            target = target_by_url.get(credential.host) or target_by_url.get(credential.apiurl)
+            target = (
+                target_by_alias.get(credential.host)
+                or target_by_alias.get(credential.apiurl)
+                or target_by_alias.get(credential.leak_host)
+            )
             if target is None:
                 continue
             for source, query in target.provenance_pairs:
@@ -285,6 +297,29 @@ async def _run_scan_inner(
             high_count,
             len(probe_targets) - high_count,
         )
+
+        # Advisory-gated coverage: attach ONLY product fingerprints that a
+        # reviewed, credential-relevant advisory maps to a safe (fingerprint /
+        # read-only) hunt recipe. This lets the runner route those hits to a
+        # product prober without ever emitting exploit payloads. Advisories that
+        # don't map to a known/read-only safe check add no active coverage.
+        from .hunt_recipes import products_with_active_coverage_from_cves
+        from .queries import load_cves
+
+        try:
+            safe_products = products_with_active_coverage_from_cves(load_cves())
+        except Exception as e:  # noqa: BLE001 — advisory gating must never block a scan
+            log.warning("advisory hunt-recipe gating skipped (%s)", type(e).__name__)
+            safe_products = frozenset()
+        if safe_products:
+            from aipocket.prober.runner import attach_safe_recipe_products
+
+            probe_targets = attach_safe_recipe_products(probe_targets, safe_products)
+            log.info(
+                "Advisory safe-recipe coverage: %d product fingerprint(s) enabled",
+                len(safe_products),
+            )
+
         probed_creds = await probe_hosts(probe_targets)
         for target in ordered_targets:
             await dedup.mark_target("probe", target)
@@ -426,7 +461,7 @@ async def _run_scan_inner(
 
         results = list(await recheck_all_with_gpt(results))
 
-    from .finalizer import finalize_results
+    from .finalizer import commit_final_results, finalize_results
 
     finalized = await finalize_results(
         results,
@@ -463,6 +498,10 @@ async def _run_scan_inner(
         enrichable = [r for r in results if r.valid and not r.suspicious]
         await enrich_results(enrichable, dedup=dedup)
         log.info("Balance enrichment done.")
+
+    # Cache + persist high-value AFTER balance enrichment so the saved record
+    # carries balance/tier evidence (not the pre-enrichment snapshot).
+    await commit_final_results(valid, dedup=dedup)
 
     # Write valid_*.jsonl + suspicious_*.jsonl after honeypot + balance enrichment
     if run_dir:

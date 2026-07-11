@@ -28,7 +28,10 @@ def _setup_logging(verbose: bool, log_file: Path | None = None):
     root = logging.getLogger()
     root.setLevel(level)
     # Console handler (replace basicConfig's default so we control format).
-    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
+    if not any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+        for h in root.handlers
+    ):
         sh = logging.StreamHandler()
         sh.setFormatter(fmt)
         root.addHandler(sh)
@@ -41,14 +44,18 @@ def _setup_logging(verbose: bool, log_file: Path | None = None):
 
 @app.command()
 def scan(
-    max_queries: int = typer.Option(0, "--max-queries", "-n", help="Limit number of queries per source (0=all)"),
-    fast: bool = typer.Option(False, "--fast", help="Fast GPT mode: higher concurrency + bigger batches"),
+    max_queries: int = typer.Option(
+        0, "--max-queries", "-n", help="Limit number of queries per source (0=all)"
+    ),
+    fast: bool = typer.Option(
+        False, "--fast", help="Fast GPT mode: higher concurrency + bigger batches"
+    ),
     realtest: bool = typer.Option(
         False,
         "--realtest",
         help="Small-batch real test: use sources/cve_realtest.json (10 CVEs) and default -n 3, "
-             "skipping generic DIRECT-CRED-LEAK queries so the prober gets product-fingerprint hits. "
-             "Full end-to-end (fetch → probe → validate) with minimal quota cost.",
+        "skipping generic DIRECT-CRED-LEAK queries so the prober gets product-fingerprint hits. "
+        "Full end-to-end (fetch → probe → validate) with minimal quota cost.",
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
@@ -72,8 +79,11 @@ def scan(
         # gateway-shaped hits the prober can identify, instead of random sites
         # that merely leaked a key in their banner.
         skip_direct = True
-        log.info("Realtest mode: CVE map = %s (%d CVEs), skipping DIRECT-CRED-LEAK queries",
-                 _queries_mod.CVE_PATH, len(_queries_mod.load_cves()))
+        log.info(
+            "Realtest mode: CVE map = %s (%d CVEs), skipping DIRECT-CRED-LEAK queries",
+            _queries_mod.CVE_PATH,
+            len(_queries_mod.load_cves()),
+        )
         settings.fofa_max_pages = 1
         settings.shodan_max_pages = 1
         log.info("Realtest mode: fofa_max_pages=1, shodan_max_pages=1")
@@ -197,20 +207,28 @@ def config():
     console.print("[bold]== FOFA ==[/bold]")
     console.print(f"[bold]FOFA base URL:[/bold] {settings.fofa_base_url}")
     console.print(f"[bold]FOFA keys:[/bold] {masked} ({len(keys)} keys)")
-    console.print(f"[bold]Page size / max pages:[/bold] {settings.fofa_page_size} / {settings.fofa_max_pages}")
+    console.print(
+        f"[bold]Page size / max pages:[/bold] {settings.fofa_page_size} / {settings.fofa_max_pages}"
+    )
 
     skeys = settings.shodan_key_list
     smasked = ", ".join(f"{k[:6]}…{k[-4:]}" for k in skeys) or "(none)"
     console.print("[bold]== Shodan ==[/bold]")
     console.print(f"[bold]Shodan base URL:[/bold] {settings.shodan_base_url}")
     console.print(f"[bold]Shodan keys:[/bold] {smasked} ({len(skeys)} keys)")
-    console.print(f"[bold]Shodan max pages / page delay:[/bold] {settings.shodan_max_pages} / {settings.shodan_page_delay}s")
+    console.print(
+        f"[bold]Shodan max pages / page delay:[/bold] {settings.shodan_max_pages} / {settings.shodan_page_delay}s"
+    )
 
     console.print("[bold]== Common ==[/bold]")
     console.print(f"[bold]Validation concurrency:[/bold] {settings.validate_concurrency}")
-    console.print(f"[bold]Scheduler:[/bold] enabled={settings.scheduler_enabled} interval={settings.scheduler_interval}s")
+    console.print(
+        f"[bold]Scheduler:[/bold] enabled={settings.scheduler_enabled} interval={settings.scheduler_interval}s"
+    )
     console.print(f"[bold]Tavily:[/bold] {settings.tavily_base_url or '(disabled)'}")
-    console.print(f"[bold]GPT analyzer:[/bold] {settings.gpt_base_url or '(disabled)'} model={settings.gpt_model}")
+    console.print(
+        f"[bold]GPT analyzer:[/bold] {settings.gpt_base_url or '(disabled)'} model={settings.gpt_model}"
+    )
     console.print(f"[bold]Results dir:[/bold] {settings.results_path.resolve()}")
 
 
@@ -230,13 +248,24 @@ def shodan_info():
         raise typer.Exit(1)
     # info() aggregates across ALL keys (each key's quota is reported separately,
     # since accounts often mix a high-quota key with a low-quota one).
-    console.print(f"[bold]Keys:[/bold] {info['n_keys']}  [bold]Dead:[/bold] {info['n_dead']}  "
-                  f"[bold]Total query credits:[/bold] {info['total_query_credits']}")
+    console.print(
+        f"[bold]Keys:[/bold] {info['n_keys']}  [bold]Dead:[/bold] {info['n_dead']}  "
+        f"[bold]Total query credits:[/bold] {info['total_query_credits']}"
+    )
     for k in info.get("keys", []):
         table = Table(title=f"Shodan API key {k.get('_key_masked', '?')}")
         table.add_column("field")
         table.add_column("value")
-        for field in ("plan", "query_credits", "unlocked_left", "scan_credits", "monitored_ips", "https", "unlocked", "telnet"):
+        for field in (
+            "plan",
+            "query_credits",
+            "unlocked_left",
+            "scan_credits",
+            "monitored_ips",
+            "https",
+            "unlocked",
+            "telnet",
+        ):
             if field in k:
                 table.add_row(field, str(k[field]))
         console.print(table)
@@ -251,8 +280,8 @@ def cve_sync(
     if not settings.tavily_key:
         console.print("[red]TAVILY_KEY not configured. Set it in .env[/red]")
         raise typer.Exit(1)
-    from aipocket.core.db import ensure_schema
     from aipocket.clients.tavily import sync_cves
+    from aipocket.core.db import ensure_schema
 
     ensure_schema()
     merged, added = asyncio.run(sync_cves())
@@ -306,7 +335,9 @@ def _print_summary(result):
     sources = ", ".join(result.sources) if result.sources else "?"
     by_src = " ".join(f"{k}={v}" for k, v in result.hits_by_source.items())
     console.print(f"[bold]Sources:[/bold] {sources}   [bold]Hits:[/bold] {by_src}")
-    table = Table(title=f"Scan summary — {result.total_valid} valid / {result.total_credentials} creds")
+    table = Table(
+        title=f"Scan summary — {result.total_valid} valid / {result.total_credentials} creds"
+    )
     table.add_column("source")
     table.add_column("apikey")
     table.add_column("apiurl")

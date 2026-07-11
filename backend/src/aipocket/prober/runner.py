@@ -23,7 +23,6 @@ from .evidence import TargetEvidence, score_target
 
 log = logging.getLogger(__name__)
 
-MEDIUM_EVIDENCE_SCORE = 50
 HIGH_EVIDENCE_SCORE = 70
 
 

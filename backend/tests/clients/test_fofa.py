@@ -23,7 +23,9 @@ def _ok_response(rows, size=100, page=1):
 @respx.mock
 def test_search_single_page():
     rows = [["https://a.com", "1.1.1.1", "443", "hdr", "ban", "P", "T"]]
-    respx.get(f"{BASE}/api/v1/search/all").mock(return_value=httpx.Response(200, json=_ok_response(rows, size=1)))
+    respx.get(f"{BASE}/api/v1/search/all").mock(
+        return_value=httpx.Response(200, json=_ok_response(rows, size=1))
+    )
 
     with FofaClient(keys=["k1"], base_url=BASE) as c:
         results = c.search('body="test"', pages=1, size=100)
@@ -52,7 +54,9 @@ def test_search_stops_when_page_smaller_than_size():
 
 @respx.mock
 def test_search_stops_on_empty_results():
-    respx.get(f"{BASE}/api/v1/search/all").mock(return_value=httpx.Response(200, json=_ok_response([])))
+    respx.get(f"{BASE}/api/v1/search/all").mock(
+        return_value=httpx.Response(200, json=_ok_response([]))
+    )
 
     with FofaClient(keys=["k1"], base_url=BASE) as c:
         results = c.search('body="test"', pages=5)
@@ -102,7 +106,9 @@ def test_search_handles_network_error_then_success():
 
 @respx.mock
 def test_search_non_json_response():
-    respx.get(f"{BASE}/api/v1/search/all").mock(return_value=httpx.Response(200, text="<html>not json</html>"))
+    respx.get(f"{BASE}/api/v1/search/all").mock(
+        return_value=httpx.Response(200, text="<html>not json</html>")
+    )
 
     with FofaClient(keys=["k1", "k2"], base_url=BASE) as c:
         results = c.search('body="t"', pages=1)

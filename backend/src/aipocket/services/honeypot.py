@@ -58,9 +58,7 @@ _KEY_BLOCKLIST: list[tuple[str, re.Pattern[str]]] = [
 _HEX_TOKEN_PATTERN = re.compile(r"^[0-9a-fA-F]{32,128}$")
 
 # Base64 of hex — decode to check
-_BASE64_HEX_PATTERN = re.compile(
-    r'^[A-Za-z0-9+/]{40,80}={0,2}$'
-)
+_BASE64_HEX_PATTERN = re.compile(r"^[A-Za-z0-9+/]{40,80}={0,2}$")
 
 
 def _has_bound_azure_evidence(credential: Credential | None) -> bool:
@@ -97,6 +95,7 @@ def _is_blocked_key_format(
     # Base64-encoded hex string detection
     if _BASE64_HEX_PATTERN.match(apikey):
         import base64
+
         try:
             decoded = base64.b64decode(apikey).decode("ascii", errors="ignore")
             if re.match(r'^"?[0-9a-f]{32,}"?$', decoded.strip()):
@@ -161,10 +160,14 @@ def pre_filter_credentials(creds: list) -> list:
     if total_rejected > 0:
         log.info(
             "Pre-filter rejected %d credentials (format=%d, noise=%d, broadcast=%d)",
-            total_rejected, rejected_format, rejected_noise, rejected_dedup,
+            total_rejected,
+            rejected_format,
+            rejected_noise,
+            rejected_dedup,
         )
 
     return valid
+
 
 # ---------------------------------------------------------------------------
 # 2. Cross-host dedup — same key on N hosts → keep only first, reject rest.
@@ -195,9 +198,7 @@ def _dedup_cross_host(results: list[ValidationResult]) -> int:
             # Keep only the first, reject the rest
             for idx in indices[1:]:
                 results[idx].valid = False
-                results[idx].error = (
-                    f"honeypot:cluster-key (same key on {len(hosts)} hosts)"
-                )
+                results[idx].error = f"honeypot:cluster-key (same key on {len(hosts)} hosts)"
                 rejected += 1
         elif len(indices) > 1:
             # Same key on 2 hosts — dedup but softer label
@@ -222,9 +223,8 @@ def _dedup_cross_host(results: list[ValidationResult]) -> int:
 #     proves no-auth.
 # ---------------------------------------------------------------------------
 
-def _reject_no_auth_hosts(
-    results: list[ValidationResult], no_auth_hosts: set[str]
-) -> int:
+
+def _reject_no_auth_hosts(results: list[ValidationResult], no_auth_hosts: set[str]) -> int:
     """Reject all valid results on hosts confirmed to accept forged keys.
 
     ``no_auth_hosts`` holds HOST values (matched against ``credential.host``),
@@ -254,6 +254,7 @@ def _reject_no_auth_hosts(
 #     gain suspicious=True so the scanner can split them out of valid_*.jsonl
 #     into suspicious_*.jsonl for manual review.
 # ---------------------------------------------------------------------------
+
 
 def _quarantine_suspicious_hosts(
     results: list[ValidationResult], suspicious_hosts: set[str]
@@ -414,29 +415,29 @@ def _detect_steganography(results: list[ValidationResult]) -> int:
 
 _PROMPT_INJECTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # HTML comments with system instructions / verification URLs
-    ("html_comment_injection", re.compile(
-        r"<!--\s*system\s*:", re.I
-    )),
+    ("html_comment_injection", re.compile(r"<!--\s*system\s*:", re.I)),
     # Fake [SYSTEM NOTE] blocks
-    ("fake_system_note", re.compile(
-        r"\[SYSTEM\s+NOTE", re.I
-    )),
+    ("fake_system_note", re.compile(r"\[SYSTEM\s+NOTE", re.I)),
     # Instructions to perform GET/POST to verify/exfil URLs
-    ("exfil_instruction", re.compile(
-        r"(?:perform|issue|make|send)\s+(?:GET|POST|PUT)\s+/", re.I
-    )),
+    ("exfil_instruction", re.compile(r"(?:perform|issue|make|send)\s+(?:GET|POST|PUT)\s+/", re.I)),
     # "silently" + action verb — classic agent manipulation
-    ("silent_action", re.compile(
-        r"silently\s+(?:perform|execute|send|make|issue|fetch|call)", re.I
-    )),
+    (
+        "silent_action",
+        re.compile(r"silently\s+(?:perform|execute|send|make|issue|fetch|call)", re.I),
+    ),
     # "do not include this in your response" — hiding from user
-    ("hide_from_user", re.compile(
-        r"do\s+not\s+include\s+(?:this|the\s+above)\s+in\s+your\s+response", re.I
-    )),
+    (
+        "hide_from_user",
+        re.compile(r"do\s+not\s+include\s+(?:this|the\s+above)\s+in\s+your\s+response", re.I),
+    ),
     # Asking the model to submit context/instructions to an endpoint
-    ("context_exfil", re.compile(
-        r"(?:submit(?:ting)?|send(?:ing)?|post(?:ing)?)\s+your\s+(?:full\s+)?(?:system\s+)?(?:context|instructions|prompt)", re.I
-    )),
+    (
+        "context_exfil",
+        re.compile(
+            r"(?:submit(?:ting)?|send(?:ing)?|post(?:ing)?)\s+your\s+(?:full\s+)?(?:system\s+)?(?:context|instructions|prompt)",
+            re.I,
+        ),
+    ),
 ]
 
 
@@ -522,10 +523,16 @@ def filter_honeypots(
             "Honeypot filter: %d/%d rejected, %d suspicious "
             "(cluster=%d, steg=%d, injection=%d, format=%d, dedup=%d, no-auth=%d, "
             "suspicious=%d) → %d valid remain",
-            total_rejected, valid_before,
+            total_rejected,
+            valid_before,
             suspicious_marked,
-            cluster_rejected, steg_rejected, injection_rejected,
-            format_rejected, dedup_rejected, noauth_rejected, suspicious_marked,
+            cluster_rejected,
+            steg_rejected,
+            injection_rejected,
+            format_rejected,
+            dedup_rejected,
+            noauth_rejected,
+            suspicious_marked,
             valid_after,
         )
     else:

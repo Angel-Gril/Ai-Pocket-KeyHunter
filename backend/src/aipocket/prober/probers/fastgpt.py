@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from aipocket.core.models import Credential
+
 from ..base import Prober
 
 log = logging.getLogger(__name__)
@@ -30,7 +31,9 @@ class FastGPTProber(Prober):
 
         for path in ("/api/systemConfig", "/api/openapi", "/api/v1/models", "/api/getInitData"):
             resp = await self._get(self._url(hit, path))
-            found = self._extract_from_response(resp, hit, f"fastgpt_{path.strip('/').replace('/', '_')}")
+            found = self._extract_from_response(
+                resp, hit, f"fastgpt_{path.strip('/').replace('/', '_')}"
+            )
             creds.extend(found)
 
         return creds

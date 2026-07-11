@@ -3,7 +3,9 @@ from __future__ import annotations
 from aipocket.core.advisory import AdvisoryRecord
 from aipocket.services.hunt_recipes import (
     active_recipes,
+    advisory_from_cve_record,
     products_with_active_coverage,
+    products_with_active_coverage_from_cves,
     recipe_from_advisory,
 )
 
@@ -64,3 +66,31 @@ def test_unmapped_product_without_reviewed_check_stays_inactive() -> None:
     assert recipe is not None
     assert recipe.active is False
     assert not active_recipes([_adv(product="unknown-widget", profile="")])
+
+
+def test_legacy_cve_dict_maps_to_active_coverage() -> None:
+    # Shape produced by AdvisoryRecord.to_legacy_cve_dict / stored CVE rows.
+    records = [
+        {
+            "id": "CVE-2024-9",
+            "product": "New-API",
+            "attack_surface": "credential_exposure",
+            "credential_relevance": "high",
+            "safe_check_profile": "readonly-fingerprint:new-api",
+            "description": "leaked upstream keys",
+        },
+        # Unmapped, no reviewed check → no active coverage.
+        {"id": "CVE-2024-10", "product": "Random Widget", "description": "cosmetic"},
+    ]
+    products = products_with_active_coverage_from_cves(records)
+    assert "new-api" in products
+    assert "random widget" not in products
+
+
+def test_legacy_cve_dict_with_dirty_enums_fails_closed() -> None:
+    # Absent/garbage enum values must not raise; they coerce to safe defaults.
+    adv = advisory_from_cve_record(
+        {"id": "x", "product": "dify", "attack_surface": "???", "credential_relevance": 42}
+    )
+    assert adv.attack_surface == "unknown"
+    assert adv.credential_relevance == "medium"

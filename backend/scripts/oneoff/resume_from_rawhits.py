@@ -13,30 +13,42 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from aipocket.services.analyzer import extract_with_gpt, recheck_all_with_gpt
 from aipocket.core.config import settings
-from aipocket.services.extractor import extract_credentials
 from aipocket.core.models import ScanRunResult
+from aipocket.services.analyzer import extract_with_gpt, recheck_all_with_gpt
+from aipocket.services.extractor import extract_credentials
 from aipocket.services.scanner import _sample_hits_for_gpt, _trim_hits
 from aipocket.services.validator import validate_all
 from aipocket.services.writer import write_result
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
 log = logging.getLogger(__name__)
 
 
 async def main():
-    raw_file = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/raw_hits_20260630T175521Z.jsonl")
+    raw_file = (
+        Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/raw_hits_20260630T175521Z.jsonl")
+    )
     if not raw_file.exists():
         print(f"File not found: {raw_file}")
         sys.exit(1)
 
     log.info("Loading raw hits from %s ...", raw_file)
-    all_hits = [json.loads(line) for line in raw_file.read_text(encoding="utf-8").splitlines() if line.strip()]
-    log.info("Loaded %d hits (fofa=%d, shodan=%d)",
-             len(all_hits),
-             sum(1 for h in all_hits if h.get("_source") == "fofa"),
-             sum(1 for h in all_hits if h.get("_source") == "shodan"))
+    all_hits = [
+        json.loads(line)
+        for line in raw_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    log.info(
+        "Loaded %d hits (fofa=%d, shodan=%d)",
+        len(all_hits),
+        sum(1 for h in all_hits if h.get("_source") == "fofa"),
+        sum(1 for h in all_hits if h.get("_source") == "shodan"),
+    )
 
     started = datetime.now(UTC).isoformat()
     sources_used = sorted(set(h.get("_source", "") for h in all_hits if h.get("_source")))
@@ -68,7 +80,9 @@ async def main():
         return
 
     # --- Validate ---
-    log.info("Validating %d credentials (concurrency=%d)...", len(creds), settings.validate_concurrency)
+    log.info(
+        "Validating %d credentials (concurrency=%d)...", len(creds), settings.validate_concurrency
+    )
     results = await validate_all(creds)
 
     if settings.gpt_key:
@@ -92,13 +106,16 @@ async def main():
     }
     lines_out = [json.dumps(meta, ensure_ascii=False, default=str).translate(_UNSAFE) + "\n"]
     for r in results:
-        lines_out.append(json.dumps(r.model_dump(), ensure_ascii=False, default=str).translate(_UNSAFE) + "\n")
+        lines_out.append(
+            json.dumps(r.model_dump(), ensure_ascii=False, default=str).translate(_UNSAFE) + "\n"
+        )
     partial_path.write_text("".join(lines_out), encoding="utf-8")
     log.info("Partial result (pre-balance) saved to %s", partial_path)
 
     # --- Balance ---
     if valid:
         from aipocket.services.balance import enrich_results
+
         log.info("Querying balance for %d valid credentials...", len(valid))
         results = await enrich_results(results)
         valid = [r for r in results if r.valid]
@@ -120,7 +137,9 @@ async def main():
 
     path = write_result(result)
     log.info("Result written to %s", path)
-    log.info("=== SUMMARY: %d hits → %d creds → %d valid ===", len(all_hits), len(creds), len(valid))
+    log.info(
+        "=== SUMMARY: %d hits → %d creds → %d valid ===", len(all_hits), len(creds), len(valid)
+    )
 
 
 if __name__ == "__main__":

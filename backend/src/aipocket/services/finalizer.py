@@ -83,9 +83,10 @@ async def finalize_results(
 
         rejected.append(result)
 
-    for result in final_verified:
-        await dedup.cache_valid(result)
-        await save_final_high_value(result)
+    # Rejected/transient outcomes are marked here (they carry no balance data).
+    # Caching + high-value persistence of the final-verified set is deferred to
+    # the scanner via :func:`commit_final_results` so it runs AFTER balance
+    # enrichment and the saved/cached record carries the enriched balance.
     for result in rejected:
         await dedup.mark_rejected(result.credential)
     for result in rate_limited_unconfirmed:
@@ -96,3 +97,15 @@ async def finalize_results(
         rejected=rejected,
         rate_limited_unconfirmed=rate_limited_unconfirmed,
     )
+
+
+async def commit_final_results(results: list[ValidationResult], *, dedup: DedupStore) -> None:
+    """Cache + persist final-verified results. Call AFTER balance enrichment.
+
+    Kept separate from :func:`finalize_results` so the cached ValidationResult
+    and the high-value record both include balance/tier evidence rather than the
+    pre-enrichment snapshot.
+    """
+    for result in results:
+        await dedup.cache_valid(result)
+        await save_final_high_value(result)

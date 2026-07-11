@@ -25,6 +25,7 @@ def set_run_dir(run_dir: Path | None) -> None:
     global _CURRENT_RUN_DIR
     _CURRENT_RUN_DIR = run_dir
 
+
 EXTRACT_SYSTEM = (
     "You are a security credential extraction tool. Extract leaked API keys and their "
     "corresponding API URLs/base URLs from the given text. Return ONLY a JSON array, "
@@ -74,7 +75,9 @@ def _make_client(max_connections: int | None = None) -> httpx.AsyncClient:
     )
 
 
-async def _chat(client: httpx.AsyncClient, system: str, user_content: str, max_tokens: int = 1000) -> str:
+async def _chat(
+    client: httpx.AsyncClient, system: str, user_content: str, max_tokens: int = 1000
+) -> str:
     base = settings.gpt_base_url.rstrip("/")
     if base.endswith("/v1/chat/completions"):
         pass
@@ -105,10 +108,13 @@ async def _chat(client: httpx.AsyncClient, system: str, user_content: str, max_t
         last_status = r.status_code
         last_body = r.text[:500]
         if r.status_code in RETRY_STATUS and attempt < MAX_RETRIES:
-            wait = 2 ** attempt  # 1s, 2s, 4s
+            wait = 2**attempt  # 1s, 2s, 4s
             log.warning(
                 "GPT _chat transient %d (attempt %d/%d), retrying in %ds",
-                r.status_code, attempt + 1, MAX_RETRIES, wait,
+                r.status_code,
+                attempt + 1,
+                MAX_RETRIES,
+                wait,
             )
             await asyncio.sleep(wait)
             continue
@@ -116,10 +122,14 @@ async def _chat(client: httpx.AsyncClient, system: str, user_content: str, max_t
 
     log.warning(
         "GPT _chat non-200: status=%s url=%s body[:500]=%r",
-        last_status, base, last_body,
+        last_status,
+        base,
+        last_body,
     )
     raise httpx.HTTPStatusError(
-        f"HTTP {last_status}", request=httpx.Request("POST", base), response=httpx.Response(last_status),
+        f"HTTP {last_status}",
+        request=httpx.Request("POST", base),
+        response=httpx.Response(last_status),
     )
 
 
@@ -276,28 +286,41 @@ async def _extract_batch(
         except httpx.TimeoutException as e:
             log.warning(
                 "GPT extract batch %d/%d TIMEOUT (%s): url=%s payload_len=%d",
-                batch_idx, total_batches, type(e).__name__, settings.gpt_base_url, len(payload),
+                batch_idx,
+                total_batches,
+                type(e).__name__,
+                settings.gpt_base_url,
+                len(payload),
             )
             _dump_failed_batch(batch, batch_idx)
             return []
         except httpx.HTTPStatusError as e:
             log.warning(
                 "GPT extract batch %d/%d HTTP %s after retries: body[:300]=%r",
-                batch_idx, total_batches, e.response.status_code, e.response.text[:300],
+                batch_idx,
+                total_batches,
+                e.response.status_code,
+                e.response.text[:300],
             )
             _dump_failed_batch(batch, batch_idx)
             return []
         except httpx.HTTPError as e:
             log.warning(
                 "GPT extract batch %d/%d failed (%s): %s",
-                batch_idx, total_batches, type(e).__name__, e,
+                batch_idx,
+                total_batches,
+                type(e).__name__,
+                e,
             )
             _dump_failed_batch(batch, batch_idx)
             return []
         except (KeyError, ValueError) as e:
             log.warning(
                 "GPT extract batch %d/%d malformed response (%s): %s",
-                batch_idx, total_batches, type(e).__name__, e,
+                batch_idx,
+                total_batches,
+                type(e).__name__,
+                e,
             )
             return []
     creds: list[Credential] = []
@@ -312,14 +335,23 @@ async def _extract_batch(
 async def extract_with_gpt(raw_hits: list[dict[str, Any]]) -> list[Credential]:
     if not settings.gpt_key or not settings.gpt_base_url:
         return []
-    hits = [h for h in raw_hits if (h.get("header") or h.get("banner") or h.get("cert") or h.get("body"))]
+    hits = [
+        h
+        for h in raw_hits
+        if (h.get("header") or h.get("banner") or h.get("cert") or h.get("body"))
+    ]
     if not hits:
         return []
 
     batches = [hits[i : i + _batch_size()] for i in range(0, len(hits), _batch_size())]
     total = len(batches)
-    log.info("GPT extract: %d hits → %d batches (batch_size=%d, concurrency=%d)",
-             len(hits), total, _batch_size(), _concurrency())
+    log.info(
+        "GPT extract: %d hits → %d batches (batch_size=%d, concurrency=%d)",
+        len(hits),
+        total,
+        _batch_size(),
+        _concurrency(),
+    )
 
     sem = asyncio.Semaphore(_concurrency())
     seen: set[tuple[str, str]] = set()
@@ -381,19 +413,36 @@ async def _recheck_batch(
         try:
             resp = await _chat(client, RECHECK_SYSTEM, payload, max_tokens=200 + 80 * len(batch))
         except httpx.TimeoutException as e:
-            log.warning("GPT recheck batch %d/%d TIMEOUT (%s)", batch_idx, total_batches, type(e).__name__)
+            log.warning(
+                "GPT recheck batch %d/%d TIMEOUT (%s)", batch_idx, total_batches, type(e).__name__
+            )
             return batch, False
         except httpx.HTTPStatusError as e:
             log.warning(
                 "GPT recheck batch %d/%d HTTP %s: body[:300]=%r",
-                batch_idx, total_batches, e.response.status_code, e.response.text[:300],
+                batch_idx,
+                total_batches,
+                e.response.status_code,
+                e.response.text[:300],
             )
             return batch, False
         except httpx.HTTPError as e:
-            log.warning("GPT recheck batch %d/%d failed (%s): %s", batch_idx, total_batches, type(e).__name__, e)
+            log.warning(
+                "GPT recheck batch %d/%d failed (%s): %s",
+                batch_idx,
+                total_batches,
+                type(e).__name__,
+                e,
+            )
             return batch, False
         except (KeyError, ValueError) as e:
-            log.warning("GPT recheck batch %d/%d malformed (%s): %s", batch_idx, total_batches, type(e).__name__, e)
+            log.warning(
+                "GPT recheck batch %d/%d malformed (%s): %s",
+                batch_idx,
+                total_batches,
+                type(e).__name__,
+                e,
+            )
             return batch, False
 
     verdicts = _extract_json_array(resp)
@@ -419,7 +468,13 @@ async def _recheck_batch(
             result.gateway = gateway
 
     if rejected:
-        log.info("GPT recheck batch %d/%d: rejected %d/%d", batch_idx, total_batches, rejected, len(batch))
+        log.info(
+            "GPT recheck batch %d/%d: rejected %d/%d",
+            batch_idx,
+            total_batches,
+            rejected,
+            len(batch),
+        )
     return batch, True
 
 
@@ -432,19 +487,18 @@ async def _run_recheck_wave(
     """Run a wave of recheck batches; return list of FAILED batches."""
     total = len(batches)
     sem = asyncio.Semaphore(concurrency)
-    tasks = [
-        _recheck_batch(client, sem, b, idx + 1, total)
-        for idx, b in enumerate(batches)
-    ]
+    tasks = [_recheck_batch(client, sem, b, idx + 1, total) for idx, b in enumerate(batches)]
     results = await asyncio.gather(*tasks)
     failed = []
-    for (batch, success) in results:
+    for batch, success in results:
         if not success:
             failed.append(batch)
     if failed:
         log.warning(
             "GPT recheck %s: %d/%d batches failed, will retry",
-            label, len(failed), total,
+            label,
+            len(failed),
+            total,
         )
     return failed
 
@@ -463,12 +517,18 @@ async def recheck_all_with_gpt(results: list[ValidationResult]) -> list[Validati
 
     log.info(
         "GPT re-checking %d valid results (%d batches, batch_size=%d, concurrency=%d)...",
-        len(valid_results), total, batch_size, concurrency,
+        len(valid_results),
+        total,
+        batch_size,
+        concurrency,
     )
 
     # Cooldown between GPT extract and re-check to reduce 529 rate-limit storms
     if settings.gpt_recheck_cooldown > 0:
-        log.info("Cooling down %.1fs before GPT re-check to avoid rate-limit...", settings.gpt_recheck_cooldown)
+        log.info(
+            "Cooling down %.1fs before GPT re-check to avoid rate-limit...",
+            settings.gpt_recheck_cooldown,
+        )
         await asyncio.sleep(settings.gpt_recheck_cooldown)
 
     # Wave 1: process all batches with configured concurrency
@@ -481,7 +541,9 @@ async def recheck_all_with_gpt(results: list[ValidationResult]) -> list[Validati
         retry_delay = 8.0
         log.info(
             "Retrying %d failed batches after %.0fs delay (concurrency=%d)...",
-            len(failed), retry_delay, retry_concurrency,
+            len(failed),
+            retry_delay,
+            retry_concurrency,
         )
         await asyncio.sleep(retry_delay)
         async with _make_client(max_connections=retry_concurrency * 2) as client:
@@ -495,7 +557,8 @@ async def recheck_all_with_gpt(results: list[ValidationResult]) -> list[Validati
                 single_concurrency = max(1, retry_concurrency // 2)
                 log.info(
                     "Final retry: %d items individually (concurrency=%d) after 10s...",
-                    len(single_batches), single_concurrency,
+                    len(single_batches),
+                    single_concurrency,
                 )
                 await asyncio.sleep(10.0)
                 async with _make_client(max_connections=single_concurrency * 2) as client:

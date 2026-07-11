@@ -199,10 +199,7 @@ def import_high_value(conn, results_root: Path, dry_run: bool) -> int:
             ON CONFLICT (apikey) DO UPDATE
               SET run_id = EXCLUDED.run_id, saved_at = EXCLUDED.saved_at, record = EXCLUDED.record
             """,
-            [
-                (e["apikey"], e.get("run_id"), e.get("saved_at"), Jsonb(e))
-                for e in by_key.values()
-            ],
+            [(e["apikey"], e.get("run_id"), e.get("saved_at"), Jsonb(e)) for e in by_key.values()],
         )
     conn.commit()
     log.info("imported %d high-value keys", len(by_key))
@@ -237,7 +234,9 @@ def import_cves(conn, dry_run: bool) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Backfill JSONL/JSON history into PostgreSQL")
-    parser.add_argument("--results", default=None, help="results/ root (default: settings.results_dir)")
+    parser.add_argument(
+        "--results", default=None, help="results/ root (default: settings.results_dir)"
+    )
     parser.add_argument("--dry-run", action="store_true", help="report counts without writing")
     args = parser.parse_args()
 

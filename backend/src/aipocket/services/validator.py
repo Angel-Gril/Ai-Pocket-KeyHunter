@@ -258,6 +258,28 @@ async def _forged_key_probe(
     return ""
 
 
+def _forged_probe_provider(result: ValidationResult) -> str:
+    """Map a validated result to the protocol tag :func:`_forged_key_probe` expects.
+
+    The forged no-auth probe must speak the SAME protocol the real key proved out
+    with, otherwise a strict non-OpenAI honeypot rejects the wrong-protocol probe
+    and looks clean. Only Anthropic and Azure diverge from the OpenAI default;
+    everything else (including google/gemini/vertex, which validate against their
+    own official endpoints) uses the OpenAI-style probe ("").
+    """
+    provider = result.provider_info.provider if result.provider_info else ""
+    if provider == "anthropic":
+        return "anthropic"
+    if provider == "azure_openai":
+        return "azure_openai"
+    # OpenAI-compatible gateways can carry an Anthropic-shaped key; the credential
+    # bundle's protocol family (when present) still dictates the wire protocol.
+    bundle = result.credential.bundle
+    if bundle is not None and bundle.provider_hint == "anthropic":
+        return "anthropic"
+    return ""
+
+
 async def verify_no_auth(
     results: list[ValidationResult],
 ) -> tuple[set[str], set[str]]:
@@ -294,7 +316,13 @@ async def verify_no_auth(
     # We re-use the host's own validated model + api_url from its first valid
     # result — that endpoint/model already returned a completion, so a forged
     # key returning 200 there is unambiguous.
-    seen_hosts: dict[str, tuple[str, str]] = {}  # host -> (api_url, model)
+    # host -> (api_url, model, provider). The provider tag is threaded into the
+    # forged probe so it speaks the HOST's own protocol (Anthropic x-api-key +
+    # /messages, Azure api-key). Without it every forged probe would default to
+    # OpenAI's Authorization: Bearer + /chat/completions and a no-auth honeypot
+    # on a non-OpenAI protocol (e.g. a strict *.openai.azure.com endpoint) would
+    # reject the wrong-protocol probe and escape detection.
+    seen_hosts: dict[str, tuple[str, str, str]] = {}
     for r in results:
         if not r.valid:
             continue
@@ -303,8 +331,9 @@ async def verify_no_auth(
             continue
         api_url = _normalize_apiurl(r.credential.apiurl)
         model = r.model_available or "gpt-4o-mini"
+        provider = _forged_probe_provider(r)
         if api_url:
-            seen_hosts[host] = (api_url, model)
+            seen_hosts[host] = (api_url, model, provider)
 
     if not seen_hosts:
         return set(), set()
@@ -312,14 +341,16 @@ async def verify_no_auth(
     sem = asyncio.Semaphore(settings.validate_concurrency)
     timeout = httpx.Timeout(settings.validate_timeout)
 
-    async def _probe_forged(host: str, api_url: str, model: str) -> str:
+    async def _probe_forged(host: str, api_url: str, model: str, provider: str) -> str:
         """Probe one host with a forged key; return a verdict tag.
 
         Thin wrapper over :func:`_forged_key_probe` that carries the per-host
         ``log.warning`` calls (those need ``host``/``api_url`` for triage).
         """
         async with sem, httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            verdict = await _forged_key_probe(client, api_url, model, timeout=timeout)
+            verdict = await _forged_key_probe(
+                client, api_url, model, provider=provider, timeout=timeout
+            )
         if verdict == "suspicious_429":
             log.warning(
                 "suspicious host (forged-key 429): %s (%s) — host "
@@ -342,7 +373,7 @@ async def verify_no_auth(
             )
         return verdict
 
-    tasks = [_probe_forged(h, u, m) for h, (u, m) in seen_hosts.items()]
+    tasks = [_probe_forged(h, u, m, p) for h, (u, m, p) in seen_hosts.items()]
     verdicts = await asyncio.gather(*tasks)
     no_auth = {h for h, v in zip(seen_hosts, verdicts, strict=True) if v == "noauth"}
     suspicious = {

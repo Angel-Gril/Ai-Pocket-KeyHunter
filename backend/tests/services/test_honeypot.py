@@ -59,13 +59,15 @@ class TestSteganographyDetection:
 
     def test_real_nexus_pattern(self):
         # Real pattern from Nexus AI: alternating 200C/200D with 200B separators
-        steg = "".join([
-            "\u200c\u200c\u200d\u200d\u200b",
-            "\u200c\u200c\u200c\u200c\u200b",
-            "\u200d\u200d\u200d\u200d\u200b",
-            "\u200c\u200c\u200c\u200d\u200b",
-            "\u200d\u200d\u200c\u200d\u200b",
-        ])
+        steg = "".join(
+            [
+                "\u200c\u200c\u200d\u200d\u200b",
+                "\u200c\u200c\u200c\u200c\u200b",
+                "\u200d\u200d\u200d\u200d\u200b",
+                "\u200c\u200c\u200c\u200d\u200b",
+                "\u200d\u200d\u200c\u200d\u200b",
+            ]
+        )
         snippet = f"That's a thoughtful inquiry. There are multiple perspectives{steg} to consider."
         r = _make_result(snippet)
         results = [r]
@@ -136,8 +138,7 @@ class TestPromptInjectionDetection:
     def test_normal_technical_response(self):
         # Ensure technical content about HTTP doesn't trigger
         snippet = (
-            "To make a POST request, you can use curl: "
-            "curl -X POST https://api.example.com/v1/data"
+            "To make a POST request, you can use curl: curl -X POST https://api.example.com/v1/data"
         )
         r = _make_result(snippet)
         results = [r]
@@ -206,11 +207,15 @@ class TestRejectNoAuthHosts:
         """Multiple distinct keys on one no-auth host → ALL rejected."""
         # Distinct keys on the same host
         r1 = ValidationResult(
-            credential=Credential(apikey="key-one-aaaaaaaaaaaa", apiurl="http://hp.example", host="hp.example"),
+            credential=Credential(
+                apikey="key-one-aaaaaaaaaaaa", apiurl="http://hp.example", host="hp.example"
+            ),
             valid=True,
         )
         r2 = ValidationResult(
-            credential=Credential(apikey="key-two-bbbbbbbbbbbb", apiurl="http://hp.example", host="hp.example"),
+            credential=Credential(
+                apikey="key-two-bbbbbbbbbbbb", apiurl="http://hp.example", host="hp.example"
+            ),
             valid=True,
         )
         rejected = _reject_no_auth_hosts([r1, r2], {"hp.example"})
@@ -228,16 +233,20 @@ class TestRejectNoAuthHosts:
         # Distinct apikeys so cross-host dedup doesn't trip on them.
         r_hp = _make_result("Clean response", host="hp.example")
         r_hp.credential = Credential(
-            apikey="sk-hpkey-aaaaaaaaaaaa", apiurl="http://hp.example", host="hp.example",
+            apikey="sk-hpkey-aaaaaaaaaaaa",
+            apiurl="http://hp.example",
+            host="hp.example",
         )
         r_real = _make_result("Clean response", host="real.example.com")
         r_real.credential = Credential(
-            apikey="sk-realkey-bbbbbbbbb", apiurl="http://real.example.com", host="real.example.com",
+            apikey="sk-realkey-bbbbbbbbb",
+            apiurl="http://real.example.com",
+            host="real.example.com",
         )
         results = [r_hp, r_real]
         filter_honeypots(results, no_auth_hosts={"hp.example"})
         assert results[0].valid is False  # on no-auth host
-        assert results[1].valid is True   # real host untouched
+        assert results[1].valid is True  # real host untouched
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +261,7 @@ class TestQuarantineSuspiciousHosts:
         r = _make_result("hi", host="shady.example")
         marked = _quarantine_suspicious_hosts([r], {"shady.example"})
         assert marked == 1
-        assert r.valid is True          # NOT voided
+        assert r.valid is True  # NOT voided
         assert r.suspicious is True
         assert "suspicious-host" in r.suspicious_reason
 
@@ -275,17 +284,19 @@ class TestQuarantineSuspiciousHosts:
         """End-to-end: suspicious host → valid stays True but suspicious set."""
         r_sus = _make_result("Clean response", host="shady.example")
         r_sus.credential = Credential(
-            apikey="sk-suskey-aaaaaaaaaaa", apiurl="http://shady.example",
+            apikey="sk-suskey-aaaaaaaaaaa",
+            apiurl="http://shady.example",
             host="shady.example",
         )
         r_real = _make_result("Clean response", host="real.example.com")
         r_real.credential = Credential(
-            apikey="sk-realkey-bbbbbbb", apiurl="http://real.example.com",
+            apikey="sk-realkey-bbbbbbb",
+            apiurl="http://real.example.com",
             host="real.example.com",
         )
         results = [r_sus, r_real]
         filter_honeypots(results, suspicious_hosts={"shady.example"})
-        assert results[0].valid is True       # not voided
+        assert results[0].valid is True  # not voided
         assert results[0].suspicious is True  # but flagged
         assert results[1].valid is True
         assert results[1].suspicious is False

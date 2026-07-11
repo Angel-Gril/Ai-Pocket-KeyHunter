@@ -57,8 +57,14 @@ def test_cli_scan_persists_results(tmp_path, monkeypatch):
         # Mimic real run_scan which writes JSONL internally
         if run_dir:
             write_scan_metadata(
-                {"started_at": "t0", "finished_at": "t1", "total_hosts": 0,
-                 "total_credentials": 0, "total_valid": 0, "queries_used": []},
+                {
+                    "started_at": "t0",
+                    "finished_at": "t1",
+                    "total_hosts": 0,
+                    "total_credentials": 0,
+                    "total_valid": 0,
+                    "queries_used": [],
+                },
                 run_dir,
             )
             write_valid_results([], run_dir)

@@ -34,7 +34,9 @@ def load_records(path: Path) -> list[Record]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("final_run", type=Path)
-    parser.add_argument("--high-value", type=Path, default=Path("results/high_value_keys/keys.jsonl"))
+    parser.add_argument(
+        "--high-value", type=Path, default=Path("results/high_value_keys/keys.jsonl")
+    )
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 
@@ -50,7 +52,15 @@ def main() -> int:
         for record in existing
         if secret_fingerprint(record["apikey"]) not in final_fingerprints
     )
-    print(json.dumps({"existing": len(existing), "final": len(final_fingerprints), "stale": stale_fingerprints}))
+    print(
+        json.dumps(
+            {
+                "existing": len(existing),
+                "final": len(final_fingerprints),
+                "stale": stale_fingerprints,
+            }
+        )
+    )
 
     if args.apply:
         retained = [

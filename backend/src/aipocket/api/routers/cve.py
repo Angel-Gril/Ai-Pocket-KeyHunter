@@ -7,6 +7,7 @@ import asyncio
 from fastapi import APIRouter, Depends
 
 from aipocket.core.config import settings
+
 from ..deps import get_current_user
 from ..errors import ApiError
 from ..schemas import CveSyncResponse

@@ -17,9 +17,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-
-from aipocket.services.analyzer import extract_with_gpt, set_run_dir
 from aipocket.core.config import settings
+from aipocket.services.analyzer import extract_with_gpt, set_run_dir
 from aipocket.services.extractor import extract_credentials
 from aipocket.services.validator import validate_all
 
@@ -56,7 +55,7 @@ async def main():
         if not lines:
             continue
         meta = json.loads(lines[0])
-        hits = [json.loads(l) for l in lines[1:] if l.strip()]
+        hits = [json.loads(line) for line in lines[1:] if line.strip()]
         all_failed_hits.extend(hits)
         log.info("  %s: %d hits (batch_idx=%s)", f.name, len(hits), meta.get("batch_idx"))
 
@@ -66,12 +65,18 @@ async def main():
     consolidated_path = run_dir / "retry_failed_hits_consolidated.jsonl"
     _UNSAFE = str.maketrans({"\u2028": " ", "\u2029": " "})
     with consolidated_path.open("w", encoding="utf-8") as cf:
-        meta_line = json.dumps(
-            {"saved_at": datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
-             "total": len(all_failed_hits),
-             "source_files": [f.name for f in failed_files]},
-            ensure_ascii=False, default=str,
-        ).translate(_UNSAFE) + "\n"
+        meta_line = (
+            json.dumps(
+                {
+                    "saved_at": datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
+                    "total": len(all_failed_hits),
+                    "source_files": [f.name for f in failed_files],
+                },
+                ensure_ascii=False,
+                default=str,
+            ).translate(_UNSAFE)
+            + "\n"
+        )
         cf.write(meta_line)
         for hit in all_failed_hits:
             cf.write(json.dumps(hit, ensure_ascii=False, default=str).translate(_UNSAFE) + "\n")
@@ -115,7 +120,11 @@ async def main():
         return
 
     # --- 6. Validate ---
-    log.info("Validating %d credentials (concurrency=%d)...", len(all_creds), settings.validate_concurrency)
+    log.info(
+        "Validating %d credentials (concurrency=%d)...",
+        len(all_creds),
+        settings.validate_concurrency,
+    )
     results = await validate_all(all_creds)
     valid_results = [r for r in results if r.valid]
     log.info("Validation done: %d valid / %d total", len(valid_results), len(results))
@@ -125,10 +134,13 @@ async def main():
         return
 
     # --- 7. Append to existing valid JSONL ---
-    existing_entries = [json.loads(line) for line in valid_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    existing_entries = [
+        json.loads(line)
+        for line in valid_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     existing_keys = {
-        (c["credential"]["apikey"], c["credential"]["apiurl"])
-        for c in existing_entries
+        (c["credential"]["apikey"], c["credential"]["apiurl"]) for c in existing_entries
     }
 
     new_entries = []
@@ -151,11 +163,17 @@ async def main():
     _UNSAFE = str.maketrans({"\u2028": " ", "\u2029": " "})
     output_lines = []
     for entry in existing_entries:
-        output_lines.append(json.dumps(entry, ensure_ascii=False, default=str).translate(_UNSAFE) + "\n")
+        output_lines.append(
+            json.dumps(entry, ensure_ascii=False, default=str).translate(_UNSAFE) + "\n"
+        )
     valid_path.write_text("".join(output_lines), encoding="utf-8")
 
-    log.info("Appended %d new valid credentials to %s (total now: %d)",
-             len(new_entries), valid_path.name, len(existing_entries))
+    log.info(
+        "Appended %d new valid credentials to %s (total now: %d)",
+        len(new_entries),
+        valid_path.name,
+        len(existing_entries),
+    )
 
     # --- 8. Summary ---
     log.info("=== RETRY SUMMARY ===")

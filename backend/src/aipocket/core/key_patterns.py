@@ -29,7 +29,10 @@ KEY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # sk- is a strong signal — accept short keys (self-hosted gateways
     # like New-API let admins set custom tokens of any length).
     ("sk_key", re.compile(r"\b(sk-[A-Za-z0-9_\-]{6,})\b")),
-    ("glm_jwt", re.compile(r"\b(eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,})\b")),
+    (
+        "glm_jwt",
+        re.compile(r"\b(eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,})\b"),
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -97,6 +100,6 @@ def is_noise(val: str) -> bool:
     # separate short fragments.
     for seg in re.findall(r"[a-z]{8,}", v):
         for i in range(len(seg) - 7):
-            if seg[i:i + 8] in _SEQUENTIAL_ALPHA:
+            if seg[i : i + 8] in _SEQUENTIAL_ALPHA:
                 return True
     return False

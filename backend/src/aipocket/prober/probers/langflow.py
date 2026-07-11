@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from aipocket.core.models import Credential
+
 from ..base import Prober
 
 log = logging.getLogger(__name__)
@@ -32,14 +33,16 @@ class LangflowProber(Prober):
         # Unauthenticated endpoints — many Langflow instances have auto_login or
         # no auth configured at all (especially dev/demo deployments).
         for path in (
-            "/api/v1/flows",          # flow definitions — nodes embed API keys
-            "/api/v1/config",         # server configuration
-            "/api/v1/variables",      # stored variables (credentials)
-            "/api/v1/credentials",    # credential components
-            "/api/all-flows",         # some versions expose this
+            "/api/v1/flows",  # flow definitions — nodes embed API keys
+            "/api/v1/config",  # server configuration
+            "/api/v1/variables",  # stored variables (credentials)
+            "/api/v1/credentials",  # credential components
+            "/api/all-flows",  # some versions expose this
         ):
             resp = await self._get(self._url(hit, path))
-            found = self._extract_from_response(resp, hit, f"langflow_{path.strip('/').replace('/', '_')}")
+            found = self._extract_from_response(
+                resp, hit, f"langflow_{path.strip('/').replace('/', '_')}"
+            )
             creds.extend(found)
 
         return creds

@@ -17,6 +17,7 @@ import logging
 from pathlib import Path
 
 from aipocket.core.config import settings
+
 from .errors import ApiError
 from .masking import mask_keys_csv
 from .schemas import (
@@ -193,7 +194,9 @@ def check_shodan() -> ShodanCheckResponse:
         raise ApiError(str(e), code="bad_request") from e
 
     if not info:
-        return ShodanCheckResponse(n_keys=len(settings.shodan_key_list), n_dead=len(settings.shodan_key_list))
+        return ShodanCheckResponse(
+            n_keys=len(settings.shodan_key_list), n_dead=len(settings.shodan_key_list)
+        )
 
     keys = [
         ShodanKeyInfo(

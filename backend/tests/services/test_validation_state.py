@@ -12,7 +12,11 @@ from aipocket.core.validation_state import (
     is_final_positive,
     is_quarantined,
 )
-from aipocket.services.finalizer import FinalizedResults, finalize_results
+from aipocket.services.finalizer import (
+    FinalizedResults,
+    commit_final_results,
+    finalize_results,
+)
 from aipocket.services.high_value_writer import should_save
 
 
@@ -112,9 +116,10 @@ async def test_finalizer_only_persists_final_verified(monkeypatch) -> None:
         status_code=401,
     )
 
+    dedup = _Dedup()
     finalized = await finalize_results(
         [auth, limited, rejected],
-        dedup=_Dedup(),
+        dedup=dedup,
         no_auth_hosts=set(),
         suspicious_hosts=set(),
     )
@@ -125,4 +130,10 @@ async def test_finalizer_only_persists_final_verified(monkeypatch) -> None:
         "rate_limited_unconfirmed"
     ]
     assert [r.validation_state for r in finalized.rejected] == ["auth_rejected"]
-    assert cached and cached[0].validation_state == "final_verified"
+    # Caching/persistence is deferred to commit_final_results (post-balance).
+    assert cached == []
+    assert saved == []
+
+    await commit_final_results(finalized.final_verified, dedup=dedup)
+    assert [r.validation_state for r in cached] == ["final_verified"]
+    assert [r.validation_state for r in saved] == ["final_verified"]

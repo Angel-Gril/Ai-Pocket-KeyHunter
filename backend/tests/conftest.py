@@ -101,7 +101,11 @@ def fofa_row_factory():
 
 @pytest.fixture
 def fofa_response_factory():
-    def _make(rows: list[list[str]], fields: str = "host,ip,port,header,banner,product,title", size: int = 100):
+    def _make(
+        rows: list[list[str]],
+        fields: str = "host,ip,port,header,banner,product,title",
+        size: int = 100,
+    ):
         return {
             "error": False,
             "consumed_fpoint": 0,

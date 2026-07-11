@@ -12,7 +12,6 @@ from aipocket.services.providers import (
     resolve_provider,
 )
 
-
 EXPECTED_PROVIDERS = {
     "openai",
     "anthropic",

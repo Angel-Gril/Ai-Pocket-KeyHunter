@@ -71,7 +71,9 @@ def get_pool() -> ConnectionPool:
             open=False,
         )
         pool.open()
-        log.info("PostgreSQL pool opened (min=%d max=%d)", settings.pg_pool_min, settings.pg_pool_max)
+        log.info(
+            "PostgreSQL pool opened (min=%d max=%d)", settings.pg_pool_min, settings.pg_pool_max
+        )
         _pool = pool
         return _pool
 

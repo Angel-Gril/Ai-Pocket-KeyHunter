@@ -6,7 +6,7 @@ import pytest
 
 from aipocket.core.config import Settings
 from aipocket.core.models import Credential, ScanRunResult, ValidationResult
-from aipocket.services.writer import write_raw_hits, write_result, load_latest, new_run_dir
+from aipocket.services.writer import load_latest, new_run_dir, write_raw_hits, write_result
 
 
 @pytest.fixture
@@ -21,7 +21,13 @@ def sample_result():
         total_valid=1,
         queries_used=["q1", "q2"],
         results=[
-            ValidationResult(credential=c1, valid=True, status_code=200, tier="tier5", model_available="gpt-4o-mini"),
+            ValidationResult(
+                credential=c1,
+                valid=True,
+                status_code=200,
+                tier="tier5",
+                model_available="gpt-4o-mini",
+            ),
             ValidationResult(credential=c2, valid=False, error="connect"),
         ],
     )
@@ -154,7 +160,10 @@ async def test_load_latest_returns_valid_entries(tmp_path, monkeypatch):
     run_dir = tmp_path / "run_2026_01_01_00-00-00"
     run_dir.mkdir()
     valid_path = run_dir / "valid_20260101T000000Z.jsonl"
-    entry = {"credential": {"apikey": "sk-proj-test123", "apiurl": "https://api.openai.com"}, "valid": True}
+    entry = {
+        "credential": {"apikey": "sk-proj-test123", "apiurl": "https://api.openai.com"},
+        "valid": True,
+    }
     valid_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
 
     result = load_latest()

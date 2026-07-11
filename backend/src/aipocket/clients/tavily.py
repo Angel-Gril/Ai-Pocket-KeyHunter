@@ -20,43 +20,113 @@ CVSS_RE = re.compile(r"CVSS\s*(?:v[23](?:\.\d)?)?\s*[:/]\s*([0-9]\.[0-9])", re.I
 # Products that STORE or PROXY multiple API keys — one compromise = key jackpot
 KNOWN_AI_PRODUCTS = [
     # --- P0: Gateway/Aggregator (stores dozens~hundreds of provider keys) ---
-    "one-api", "new-api", "litellm", "openrouter",
-    "siliconflow", "silicon flow", "302ai", "302.ai",
-    "portkey", "lobe-chat", "lobechat",
-    "praisonai", "praison",  # PraisonAI Gateway
+    "one-api",
+    "new-api",
+    "litellm",
+    "openrouter",
+    "siliconflow",
+    "silicon flow",
+    "302ai",
+    "302.ai",
+    "portkey",
+    "lobe-chat",
+    "lobechat",
+    "praisonai",
+    "praison",  # PraisonAI Gateway
     "gitlab ai gateway",
     # --- P1: AI Platforms (stores provider keys in config/DB) ---
-    "dify", "flowise", "librechat", "open webui", "openwebui",
-    "fastgpt", "anythingllm", "langflow", "mlflow",
-    "langchain-chatchat", "langchain chatchat",
+    "dify",
+    "flowise",
+    "librechat",
+    "open webui",
+    "openwebui",
+    "fastgpt",
+    "anythingllm",
+    "langflow",
+    "mlflow",
+    "langchain-chatchat",
+    "langchain chatchat",
     "wandb",  # hardcoded LITELLM_MASTER_KEY
     # --- P2: Chat UIs (often deployed with naked provider keys in env) ---
-    "chatgpt-next-web", "nextchat", "cherry-studio",
-    "chat-ollama", "chatbox",
+    "chatgpt-next-web",
+    "nextchat",
+    "cherry-studio",
+    "chat-ollama",
+    "chatbox",
     # --- Chinese AI platforms (direct key targets) ---
-    "deepseek", "chatglm", "qwen", "dashscope", "moonshot",
+    "deepseek",
+    "chatglm",
+    "qwen",
+    "dashscope",
+    "moonshot",
 ]
 
 # Only CVE types that lead to API key extraction
 CVE_TYPE_KEYWORDS = {
-    "API key泄露": ["api key", "apikey", "api_key", "credential leak", "secret leak",
-                   "token leak", "hardcoded", "env var", "environment variable",
-                   "exfiltrat", "leaking", "expose key", "expose credential",
-                   "default credential", "default password", "plaintext"],
-    "认证绕过": ["authentication bypass", "auth bypass", "bypass authentication",
-                "idor", "unauthorized access", "no authentication",
-                "without authentication", "unauthenticated", "cors"],
-    "SSRF": ["ssrf", "server-side request forgery", "internal endpoint",
-             "metadata endpoint", "169.254", "redirect", "internal service"],
-    "信息泄露": ["information disclosure", "info leak", "data leak",
-                "config leak", "path traversal", "directory traversal",
-                "env exposure", ".env"],
-    "SQL注入": ["sql injection", "sqli", "database", "read/modify",
-               "cypher injection"],
-    "RCE": ["remote code execution", "code execution", "rce", "arbitrary code",
-             "command execution", "command injection"],
-    "权限提升": ["privilege escalation", "privesc", "role elevation",
-                "proxy_admin", "admin access"],
+    "API key泄露": [
+        "api key",
+        "apikey",
+        "api_key",
+        "credential leak",
+        "secret leak",
+        "token leak",
+        "hardcoded",
+        "env var",
+        "environment variable",
+        "exfiltrat",
+        "leaking",
+        "expose key",
+        "expose credential",
+        "default credential",
+        "default password",
+        "plaintext",
+    ],
+    "认证绕过": [
+        "authentication bypass",
+        "auth bypass",
+        "bypass authentication",
+        "idor",
+        "unauthorized access",
+        "no authentication",
+        "without authentication",
+        "unauthenticated",
+        "cors",
+    ],
+    "SSRF": [
+        "ssrf",
+        "server-side request forgery",
+        "internal endpoint",
+        "metadata endpoint",
+        "169.254",
+        "redirect",
+        "internal service",
+    ],
+    "信息泄露": [
+        "information disclosure",
+        "info leak",
+        "data leak",
+        "config leak",
+        "path traversal",
+        "directory traversal",
+        "env exposure",
+        ".env",
+    ],
+    "SQL注入": ["sql injection", "sqli", "database", "read/modify", "cypher injection"],
+    "RCE": [
+        "remote code execution",
+        "code execution",
+        "rce",
+        "arbitrary code",
+        "command execution",
+        "command injection",
+    ],
+    "权限提升": [
+        "privilege escalation",
+        "privesc",
+        "role elevation",
+        "proxy_admin",
+        "admin access",
+    ],
 }
 
 # Queries laser-focused on key-leaking attack surfaces
@@ -140,9 +210,13 @@ def _parse_cve_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
 
     description = content[:500].strip().replace("\n", " ")
     garbage_signals = [
-        "cookie", "opens in a new window", "opens in a new tab",
-        "this website utilizes technologies", "survey opens",
-        "change history", "change records found show changes",
+        "cookie",
+        "opens in a new window",
+        "opens in a new tab",
+        "this website utilizes technologies",
+        "survey opens",
+        "change history",
+        "change records found show changes",
     ]
     desc_lower = description.lower()
     if any(sig in desc_lower for sig in garbage_signals):
@@ -157,7 +231,9 @@ def _parse_cve_from_result(result: dict[str, Any]) -> dict[str, Any] | None:
         "product": product,
         "type": cve_type,
         "description": description,
-        "huntable": "高" if cve_type in ("API key泄露", "认证绕过", "SSRF") or cvss >= 8.0 else "中",
+        "huntable": "高"
+        if cve_type in ("API key泄露", "认证绕过", "SSRF") or cvss >= 8.0
+        else "中",
         "date": datetime.now(UTC).strftime("%Y-%m-%d"),
         "source_url": url,
     }
@@ -207,7 +283,9 @@ async def search_cves(
                 parsed = _parse_cve_from_result(result)
                 if parsed and parsed["id"] not in found:
                     found[parsed["id"]] = parsed
-                    log.info("  found %s | %s | %s", parsed["id"], parsed["product"], parsed["type"])
+                    log.info(
+                        "  found %s | %s | %s", parsed["id"], parsed["product"], parsed["type"]
+                    )
 
     return list(found.values())
 
@@ -230,7 +308,9 @@ def merge_cves(
             continue
         updated = dict(current)
         if cve.get("updated_at", "") >= current.get("updated_at", ""):
-            updated.update({key: value for key, value in cve.items() if value not in (None, "", 0, 0.0)})
+            updated.update(
+                {key: value for key, value in cve.items() if value not in (None, "", 0, 0.0)}
+            )
         if updated != current:
             by_id[cve["id"]] = updated
             changed_records.append(updated)
