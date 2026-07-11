@@ -72,10 +72,11 @@ function RunRow({ run }: Readonly<{ run: RunSummary }>) {
       </div>
 
       <div className="flex flex-1 items-center justify-end gap-7">
-        <Stat value={run.hits} label="命中" className="text-text-secondary" />
-        <Stat value={run.valid_count} label="可用" className="text-success" />
+        <Stat value={run.raw_hits} label="原始命中" className="text-text-secondary" />
+        <Stat value={run.unique_targets} label="唯一目标" className="text-text-secondary" />
+        <Stat value={run.final_verified} label="最终可用" className="text-success" />
         <Stat value={run.suspicious_count} label="可疑" className="text-info" />
-        <Stat value={run.high_value} label="高价值" className="text-warning" />
+        <Stat value={run.high_value_final} label="高价值" className="text-warning" />
       </div>
 
       <div className="flex size-[34px] shrink-0 items-center justify-center rounded-sm bg-surface-overlay text-text-secondary transition-colors group-hover:text-text-primary">

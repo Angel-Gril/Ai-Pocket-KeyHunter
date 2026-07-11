@@ -78,6 +78,13 @@ class ScanRunResult(BaseModel):
     total_hosts: int
     # Per-source hit counts, e.g. {"fofa": 320, "shodan": 540}
     hits_by_source: dict[str, int] = Field(default_factory=dict)
+    raw_hits_count: int = 0
+    unique_targets: int = 0
+    candidates: int = 0
+    active_requests: int = 0
+    final_verified: int = 0
+    suspicious: int = 0
+    high_value_final: int = 0
     total_credentials: int
     total_valid: int
     queries_used: list[str]

@@ -102,9 +102,13 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _hits_count(run: Path) -> int:
-    """Raw discovery-hit count = lines across the run's ``scan_*.jsonl`` file(s)."""
-    return sum(_count_lines(f) for f in run.glob("scan_*.jsonl"))
+def _scan_metadata(run: Path) -> dict[str, Any]:
+    """Read the structured metadata header from the newest scan JSONL file."""
+    files = sorted(run.glob("scan_*.jsonl"), reverse=True)
+    if not files:
+        return {}
+    records = _read_jsonl(files[0])
+    return records[0] if records else {}
 
 
 def _sources_of(valid_files: list[Path]) -> list[str]:
@@ -172,8 +176,8 @@ def list_runs() -> list[dict[str, Any]]:
     """All runs, grouped by day (newest first).
 
     Returns ``[{"day": "2026-07-06", "runs": [{"run_id", "started_at",
-    "valid_count", "suspicious_count", "has_log", "hits", "sources",
-    "high_value"}, ...]}, ...]``.
+    "valid_count", "suspicious_count", "has_log", "raw_hits",
+    "unique_targets", "final_verified", "sources", "high_value_final"}, ...]}, ...]``.
 
     Reads PG (SQL aggregation) when enabled; otherwise walks the results/ tree.
     """
@@ -190,7 +194,7 @@ def _list_runs_pg() -> list[dict[str, Any]]:
     with pool.connection() as conn:
         runs = conn.execute(
             """
-            SELECT run_id, started_at, total_hosts,
+            SELECT run_id, started_at, total_hosts, total_credentials,
                    (log IS NOT NULL AND log <> '') AS has_log
             FROM runs ORDER BY run_id DESC
             """
@@ -236,9 +240,14 @@ def _list_runs_pg() -> list[dict[str, Any]]:
             "valid_count": valid_by.get(rid, 0),
             "suspicious_count": susp_by.get(rid, 0),
             "has_log": bool(run["has_log"]),
-            "hits": run["total_hosts"] or 0,
+            "raw_hits": run["total_hosts"] or 0,
+            "unique_targets": run["total_hosts"] or 0,
+            "candidates": run.get("total_credentials", 0) or 0,
+            "active_requests": run.get("total_credentials", 0) or 0,
+            "final_verified": valid_by.get(rid, 0),
+            "suspicious": susp_by.get(rid, 0),
             "sources": sorted(src_by.get(rid, set())),
-            "high_value": hv_by.get(rid, 0),
+            "high_value_final": hv_by.get(rid, 0),
         }
         by_day.setdefault(_day_from_run_id(rid), []).append(entry)
     return [{"day": day, "runs": entries} for day, entries in by_day.items()]
@@ -270,15 +279,22 @@ def _list_runs_files() -> list[dict[str, Any]]:
     for run, run_started in zip(runs, started, strict=True):
         valid_files = list(run.glob("valid_*.jsonl"))
         susp_files = list(run.glob("suspicious_*.jsonl"))
+        metadata = _scan_metadata(run)
+        candidates = int(metadata.get("total_credentials", 0))
         entry = {
             "run_id": run.name,
             "started_at": run_started,
             "valid_count": sum(_count_lines(f) for f in valid_files),
             "suspicious_count": sum(_count_lines(f) for f in susp_files),
             "has_log": (run / "run.log").exists(),
-            "hits": _hits_count(run),
+            "raw_hits": int(metadata.get("raw_hits", 0)),
+            "unique_targets": int(metadata.get("unique_targets", metadata.get("total_hosts", 0))),
+            "candidates": candidates,
+            "active_requests": int(metadata.get("active_requests", candidates)),
+            "final_verified": sum(_count_lines(f) for f in valid_files),
+            "suspicious": sum(_count_lines(f) for f in susp_files),
             "sources": _sources_of(valid_files),
-            "high_value": hv_counts.get(run_started, 0),
+            "high_value_final": hv_counts.get(run_started, 0),
         }
         by_day.setdefault(_day_from_run_id(run.name), []).append(entry)
 

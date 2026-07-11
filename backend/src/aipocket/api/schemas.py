@@ -112,14 +112,13 @@ class ScanStartRequest(BaseModel):
 
 
 class ScanProgress(BaseModel):
-    hosts: int = 0
-    credentials: int = 0
-    validated: int = 0
-    valid: int = 0
-    # Validation denominator ("Validating N credentials"); 0 until that phase.
-    total: int = 0
-    # High-value keys saved so far this run (live from the save log line).
-    high_value: int = 0
+    raw_hits: int = 0
+    unique_targets: int = 0
+    candidates: int = 0
+    active_requests: int = 0
+    final_verified: int = 0
+    suspicious: int = 0
+    high_value_final: int = 0
 
 
 class ScanStatusResponse(BaseModel):

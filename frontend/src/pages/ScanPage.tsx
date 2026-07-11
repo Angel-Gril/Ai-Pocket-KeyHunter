@@ -226,8 +226,8 @@ export default function ScanPage() {
     },
   })
 
-  const total = progress?.total ?? 0
-  const validated = progress?.validated ?? 0
+  const total = progress?.candidates ?? 0
+  const validated = progress?.active_requests ?? 0
   const percent = useMemo(() => {
     if (total <= 0) return 0
     return Math.min(100, Math.round((validated / total) * 100))
@@ -310,27 +310,28 @@ export default function ScanPage() {
         </div>
 
         <div className="flex gap-4">
-          <MetricCard icon={Server} label="已扫描 HOST" value={String(progress?.hosts ?? 0)} />
+          <MetricCard icon={Server} label="原始命中" value={String(progress?.raw_hits ?? 0)} />
+          <MetricCard icon={Layers} label="唯一目标" value={String(progress?.unique_targets ?? 0)} />
           <MetricCard
             icon={KeyRound}
             iconClass="text-info"
             valueClass="text-info"
-            label="已验证 KEY"
+            label="主动请求"
             value={`${validated} / ${total}`}
           />
           <MetricCard
             icon={CircleCheck}
             iconClass="text-success"
             valueClass="text-success"
-            label="发现可用"
-            value={String(progress?.valid ?? 0)}
+            label="最终可用"
+            value={String(progress?.final_verified ?? 0)}
           />
           <MetricCard
             icon={Gem}
             iconClass="text-warning"
             valueClass="text-warning"
             label="高价值"
-            value={String(progress?.high_value ?? 0)}
+            value={String(progress?.high_value_final ?? 0)}
           />
         </div>
 

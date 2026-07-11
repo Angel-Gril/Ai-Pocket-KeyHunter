@@ -71,12 +71,15 @@ export interface ExportRequest {
 }
 
 export interface ScanProgress {
-  hosts: number
-  credentials: number
-  validated: number
+  raw_hits: number
+  unique_targets: number
+  candidates: number
+  active_requests: number
+  final_verified: number
+  suspicious: number
+  high_value_final: number
   valid: number
   total: number
-  high_value: number
 }
 
 export type ScanState = "idle" | "running" | "stopping" | "finished" | "interrupted"
@@ -204,9 +207,15 @@ export interface RunSummary {
   valid_count: number
   suspicious_count: number
   has_log: boolean
-  hits: number
+  raw_hits: number
+  unique_targets: number
+  candidates: number
+  active_requests: number
+  final_verified: number
+  suspicious: number
   sources: string[]
-  high_value: number
+  high_value_final: number
+  hits: number
 }
 
 export interface RunDay {

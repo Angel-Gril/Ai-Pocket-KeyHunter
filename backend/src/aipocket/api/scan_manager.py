@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import threading
 from collections import deque
 from datetime import UTC, datetime
@@ -35,16 +34,6 @@ log = logging.getLogger(__name__)
 _LOG_FMT = logging.Formatter(
     "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"
 )
-
-# Progress regexes matched against scanner log lines (best-effort; the scanner
-# emits these today — see scanner.py). If the wording changes, progress simply
-# stays at its last value; the scan itself is unaffected.
-_RE_TOTAL_HITS = re.compile(r"Total hits:\s*(\d+)")
-_RE_VALIDATING = re.compile(r"Validating\s+(\d+)\s+credential")
-_RE_EXTRACTED = re.compile(r"Extracted\s+(\d+)\s+candidate")
-# Emitted once per saved high-value key by high_value_writer.save_high_value_key.
-_RE_HIGH_VALUE = re.compile(r"high_value_key saved:")
-
 
 class _BufferHandler(logging.Handler):
     """Logging handler that appends formatted lines to the manager's buffer.
@@ -87,15 +76,19 @@ class ScanManager:
         self._seq = 0
         self._handlers: list[logging.Handler] = []
 
-        # Progress counters, updated from log parsing + final result.
-        self._hosts = 0
-        self._credentials = 0
-        self._validated = 0
-        self._valid = 0
-        # `_total` is the validation denominator ("Validating N credentials");
-        # `_high_value` increments live from the per-key high-value save log line.
-        self._total = 0
-        self._high_value = 0
+        self._progress = self._empty_progress()
+
+    @staticmethod
+    def _empty_progress() -> dict[str, int]:
+        return {
+            "raw_hits": 0,
+            "unique_targets": 0,
+            "candidates": 0,
+            "active_requests": 0,
+            "final_verified": 0,
+            "suspicious": 0,
+            "high_value_final": 0,
+        }
 
     # -- introspection -----------------------------------------------------
     @property
@@ -112,14 +105,7 @@ class ScanManager:
                 "started_at": self._started_at,
                 "finished_at": self._finished_at,
                 "error": self._error,
-                "progress": {
-                    "hosts": self._hosts,
-                    "credentials": self._credentials,
-                    "validated": self._validated,
-                    "valid": self._valid,
-                    "total": self._total,
-                    "high_value": self._high_value,
-                },
+                "progress": dict(self._progress),
                 "log_seq": self._seq,
             }
 
@@ -138,27 +124,6 @@ class ScanManager:
         with self._lock:
             self._seq += 1
             self._buffer.append((self._seq, msg))
-            self._parse_progress(msg)
-
-    def _parse_progress(self, msg: str) -> None:
-        m = _RE_TOTAL_HITS.search(msg)
-        if m:
-            self._hosts = int(m.group(1))
-        m = _RE_EXTRACTED.search(msg)
-        if m:
-            self._credentials = max(self._credentials, int(m.group(1)))
-        m = _RE_VALIDATING.search(msg)
-        if m:
-            # This line reports the batch size to validate. The scanner has no
-            # per-key progress log, so `validated` mirrors this batch size (its
-            # long-standing meaning) and `total` records the same denominator;
-            # the frontend treats a running scan as indeterminate and leans on
-            # the live `hosts`/`valid`/`high_value` counters for feedback.
-            n = int(m.group(1))
-            self._validated = n
-            self._total = n
-        if _RE_HIGH_VALUE.search(msg):
-            self._high_value += 1
 
     # -- lifecycle ---------------------------------------------------------
     def start(self, source: str) -> dict:
@@ -182,8 +147,7 @@ class ScanManager:
         self._finished_at = None
         self._error = None
         self._state = "running"
-        self._hosts = self._credentials = self._validated = self._valid = 0
-        self._total = self._high_value = 0
+        self._progress = self._empty_progress()
 
     def _attach_log_handlers(self) -> None:
         # Attach to the "aipocket" logger (not root), so only our own modules'
@@ -227,9 +191,16 @@ class ScanManager:
             result = await run_scan(run_dir=self._run_dir, sources=sources)
             with self._lock:
                 self._state = "finished"
-                self._valid = result.total_valid
-                self._credentials = result.total_credentials
-                self._hosts = result.total_hosts
+                self._progress = {
+                    "raw_hits": result.raw_hits_count or len(result.raw_hits),
+                    "unique_targets": result.unique_targets or result.total_hosts,
+                    "candidates": result.candidates or result.total_credentials,
+                    "active_requests": result.active_requests or len(result.results),
+                    "final_verified": result.final_verified or result.total_valid,
+                    "suspicious": result.suspicious
+                    or sum(1 for item in result.results if item.suspicious),
+                    "high_value_final": result.high_value_final,
+                }
             log.info(
                 "Web scan finished: %d valid / %d creds",
                 result.total_valid,

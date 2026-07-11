@@ -123,9 +123,16 @@ def test_list_runs_extended_fields(results_root):
             _rec("sk-proj-bbbbbbbbbbbb", backend="shodan"),
         ],
     )
-    # raw hits file the extended list_runs counts
     (run / "scan_20260706T000000Z.jsonl").write_text(
-        "{}\n{}\n{}\n", encoding="utf-8"
+        json.dumps(
+            {
+                "raw_hits": 9,
+                "unique_targets": 3,
+                "total_credentials": 2,
+            }
+        )
+        + "\n{}\n{}\n",
+        encoding="utf-8",
     )
     # global high-value log; the entry's saved_at falls after this run's start
     hv = results_root / "high_value_keys"
@@ -137,9 +144,15 @@ def test_list_runs_extended_fields(results_root):
     )
 
     entry = results_reader.list_runs()[0]["runs"][0]
-    assert entry["hits"] == 3
+    assert entry["raw_hits"] == 9
+    assert entry["unique_targets"] == 3
+    assert entry["candidates"] == 2
+    assert entry["active_requests"] == 2
+    assert entry["final_verified"] == 2
+    assert entry["suspicious"] == 0
+    assert entry["high_value_final"] == 1
+    assert "hits" not in entry
     assert entry["sources"] == ["fofa", "shodan"]
-    assert entry["high_value"] == 1
     # backward-compatible keys still present
     assert entry["valid_count"] == 2
     assert entry["has_log"] is True
@@ -257,7 +270,7 @@ def test_scan_manager_initial_state():
     assert st["run_id"] is None
 
 
-def test_scan_manager_log_buffer_and_progress():
+def test_scan_manager_log_buffer_does_not_parse_progress_from_prose():
     from aipocket.api.scan_manager import ScanManager
 
     mgr = ScanManager()
@@ -268,10 +281,15 @@ def test_scan_manager_log_buffer_and_progress():
     assert len(lines) == 3
     assert last == 3
     st = mgr.status()
-    assert st["progress"]["hosts"] == 42
-    assert st["progress"]["validated"] == 7
-    assert st["progress"]["total"] == 7
-    assert st["progress"]["high_value"] == 1
+    assert st["progress"] == {
+        "raw_hits": 0,
+        "unique_targets": 0,
+        "candidates": 0,
+        "active_requests": 0,
+        "final_verified": 0,
+        "suspicious": 0,
+        "high_value_final": 0,
+    }
     # since filter
     lines2, _ = mgr.logs_since(1)
     assert len(lines2) == 2
