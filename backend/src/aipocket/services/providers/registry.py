@@ -282,3 +282,7 @@ def resolve_provider(*, apiurl: str = "", apikey: str = "") -> ProviderResolutio
 
 def uses_openai_adapter(*, apiurl: str = "", apikey: str = "") -> bool:
     return resolve_provider(apiurl=apiurl, apikey=apikey).provider == "openai"
+
+
+def uses_azure_openai_adapter(*, apiurl: str = "", apikey: str = "") -> bool:
+    return resolve_provider(apiurl=apiurl, apikey=apikey).provider == "azure_openai"

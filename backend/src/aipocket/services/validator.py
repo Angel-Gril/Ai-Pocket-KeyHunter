@@ -12,6 +12,10 @@ import httpx
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 from aipocket.services.providers import provider_registry, resolve_provider
+from aipocket.services.providers.azure_openai import (
+    AzureInferencePolicy,
+    validate_azure_openai,
+)
 from aipocket.services.providers.openai import InferencePolicy, validate_openai
 
 log = logging.getLogger(__name__)
@@ -204,6 +208,17 @@ async def _forged_key_probe(
             "model": model,
             "messages": [{"role": "user", "content": "hello"}],
             "max_tokens": 5,
+        }
+    elif provider == "azure_openai":
+        endpoint = api_url
+        headers = {
+            "api-key": "0" * 32,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "input": "hello",
+            "max_output_tokens": 1,
         }
     else:
         endpoint = api_url
@@ -432,6 +447,19 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
                 result.rate_limit_headers[f"{limit.model}:rpm"] = str(limit.rpm)
             if limit.tpm is not None:
                 result.rate_limit_headers[f"{limit.model}:tpm"] = str(limit.tpm)
+        return result
+
+    if resolution.provider == "azure_openai" and cred.bundle is not None:
+        validation = await validate_azure_openai(
+            client,
+            cred,
+            AzureInferencePolicy.READ_ONLY,
+        )
+        result.valid = validation.valid
+        result.status_code = validation.status_code
+        result.error = validation.error
+        result.provider_info.models_available = list(validation.models)
+        result.model_available = validation.models[0] if validation.models else ""
         return result
 
     probe_models = list(resolution.default_model_hints)

@@ -208,8 +208,14 @@ def _context(entries: list[_Entry], urls: tuple[str, ...]) -> CredentialContext:
     return CredentialContext(
         project=values.get("PROJECT_ID", ""),
         azure_resource=resource,
-        deployment=values.get("AZURE_OPENAI_DEPLOYMENT", ""),
-        api_version=values.get("OPENAI_API_VERSION", ""),
+        deployment=values.get(
+            "AZURE_OPENAI_DEPLOYMENT",
+            values.get("AZURE_OPENAI_DEPLOYMENT_NAME", ""),
+        ),
+        api_version=values.get(
+            "AZURE_OPENAI_API_VERSION",
+            values.get("OPENAI_API_VERSION", ""),
+        ),
         service_account_email=values.get("CLIENT_EMAIL", ""),
     )
 

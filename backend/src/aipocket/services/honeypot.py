@@ -28,8 +28,9 @@ from __future__ import annotations
 import logging
 import re
 from collections import defaultdict
+from urllib.parse import urlsplit
 
-from aipocket.core.models import ValidationResult
+from aipocket.core.models import Credential, ValidationResult
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,23 @@ _BASE64_HEX_PATTERN = re.compile(
 )
 
 
-def _is_blocked_key_format(apikey: str) -> str | None:
+def _has_bound_azure_evidence(credential: Credential | None) -> bool:
+    if credential is None or credential.bundle is None:
+        return False
+    host = (urlsplit(credential.apiurl).hostname or "").lower().rstrip(".")
+    return (
+        len(credential.apikey) == 32
+        and credential.bundle.provider_hint == "azure_openai"
+        and host.endswith(".openai.azure.com")
+        and credential.apiurl in credential.bundle.endpoint_candidates
+    )
+
+
+def _is_blocked_key_format(
+    apikey: str,
+    *,
+    credential: Credential | None = None,
+) -> str | None:
     """Return reason string if key matches a known non-LLM format, else None."""
     for name, pat in _KEY_BLOCKLIST:
         if pat.match(apikey):
@@ -70,10 +87,12 @@ def _is_blocked_key_format(apikey: str) -> str | None:
 
     # Vendor-prefixed keys have real structure (sk-…, AIza…) and are validated
     # by their own routing/probing path — never let the bare-hex filter touch them.
-    if not apikey.startswith(("sk-", "AIza")):
-        # Pure 32-128 hex → likely session token / opaque .env secret.
-        if _HEX_TOKEN_PATTERN.match(apikey):
-            return "blocked-key-format:hex-token-32-128"
+    if (
+        not apikey.startswith(("sk-", "AIza"))
+        and _HEX_TOKEN_PATTERN.match(apikey)
+        and not _has_bound_azure_evidence(credential)
+    ):
+        return "blocked-key-format:hex-token-32-128"
 
     # Base64-encoded hex string detection
     if _BASE64_HEX_PATTERN.match(apikey):
@@ -121,7 +140,7 @@ def pre_filter_credentials(creds: list) -> list:
         k = cred.apikey
 
         # 1. Format blocklist
-        reason = _is_blocked_key_format(k)
+        reason = _is_blocked_key_format(k, credential=cred)
         if reason:
             rejected_format += 1
             continue
@@ -479,7 +498,7 @@ def filter_honeypots(
     for r in results:
         if not r.valid:
             continue
-        reason = _is_blocked_key_format(r.credential.apikey)
+        reason = _is_blocked_key_format(r.credential.apikey, credential=r.credential)
         if reason:
             r.valid = False
             r.error = reason

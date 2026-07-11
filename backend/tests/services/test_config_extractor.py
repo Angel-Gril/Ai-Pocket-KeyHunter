@@ -9,6 +9,7 @@ from aipocket.services.config_extractor import extract_config_bundles
 
 OPENAI_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx"
 SECOND_KEY = "sk-proj-zxy987wvu654tsr321qpo098nml765kji432hgf210edc"
+AZURE_KEY = "0123456789abcdef0123456789abcdef"
 
 
 @pytest.mark.parametrize(
@@ -110,6 +111,40 @@ def test_extracts_azure_context_variables() -> None:
     assert bundle.provider_hint == "azure_openai"
     assert bundle.context.azure_resource == "resource"
     assert bundle.context.deployment == "gpt-4o"
+    assert bundle.context.api_version == "2024-10-21"
+
+
+def test_binds_opaque_azure_key_to_v1_endpoint_without_rewriting_path() -> None:
+    content = "\n".join(
+        (
+            f"AZURE_OPENAI_API_KEY={AZURE_KEY}",
+            "AZURE_OPENAI_ENDPOINT=https://resource.openai.azure.com/openai/v1",
+        )
+    )
+
+    bundle = extract_config_bundles(content, format_hint="env")[0]
+
+    assert bundle.secret_value.reveal() == AZURE_KEY
+    assert bundle.endpoint_candidates == (
+        "https://resource.openai.azure.com/openai/v1",
+    )
+    assert bundle.provider_hint == "azure_openai"
+    assert bundle.context.azure_resource == "resource"
+
+
+def test_binds_legacy_azure_deployment_and_version_variable_names() -> None:
+    content = "\n".join(
+        (
+            f"AZURE_OPENAI_API_KEY={AZURE_KEY}",
+            "AZURE_OPENAI_ENDPOINT=https://resource.openai.azure.com",
+            "AZURE_OPENAI_DEPLOYMENT_NAME=chat",
+            "AZURE_OPENAI_API_VERSION=2024-10-21",
+        )
+    )
+
+    bundle = extract_config_bundles(content, format_hint="env")[0]
+
+    assert bundle.context.deployment == "chat"
     assert bundle.context.api_version == "2024-10-21"
 
 

@@ -1,5 +1,6 @@
 """Tests for honeypot detection — steganography and prompt injection."""
 
+from aipocket.core.credentials import CredentialBundle
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 from aipocket.services.honeypot import (
     _detect_prompt_injection,
@@ -321,3 +322,52 @@ class TestHexTokenBlocklist:
         # by the hex rule (the <15-char noise filter in pre_filter handles junk).
         key = "a" * 16
         assert _is_blocked_key_format(key) is None
+
+    def test_opaque_azure_key_allowed_only_with_bound_resource_endpoint(self):
+        key = "0123456789abcdef0123456789abcdef"
+        bundle = CredentialBundle.create(
+            key,
+            provider_hint="azure_openai",
+            endpoint_candidates=("https://resource.openai.azure.com/openai/v1",),
+        )
+        credential = Credential(
+            apikey=key,
+            apiurl="https://resource.openai.azure.com/openai/v1",
+            bundle=bundle,
+        )
+
+        assert _is_blocked_key_format(key, credential=credential) is None
+
+    def test_opaque_hex_stays_blocked_with_unrelated_endpoint(self):
+        key = "0123456789abcdef0123456789abcdef"
+        bundle = CredentialBundle.create(
+            key,
+            provider_hint="azure_openai",
+            endpoint_candidates=("https://example.com/openai/v1",),
+        )
+        credential = Credential(
+            apikey=key,
+            apiurl="https://example.com/openai/v1",
+            bundle=bundle,
+        )
+
+        assert _is_blocked_key_format(key, credential=credential) == (
+            "blocked-key-format:hex-token-32-128"
+        )
+
+    def test_long_hex_stays_blocked_even_with_azure_evidence(self):
+        key = "a" * 64
+        bundle = CredentialBundle.create(
+            key,
+            provider_hint="azure_openai",
+            endpoint_candidates=("https://resource.openai.azure.com/openai/v1",),
+        )
+        credential = Credential(
+            apikey=key,
+            apiurl="https://resource.openai.azure.com/openai/v1",
+            bundle=bundle,
+        )
+
+        assert _is_blocked_key_format(key, credential=credential) == (
+            "blocked-key-format:hex-token-32-128"
+        )
