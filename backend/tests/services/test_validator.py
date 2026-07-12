@@ -280,6 +280,48 @@ async def test_validate_all_runs_concurrently():
     assert {r.provider_info.provider for r in results} == {"openai", "anthropic"}
 
 
+@respx.mock
+async def test_fetch_models_list_uses_anthropic_headers() -> None:
+    """UI list_models must use x-api-key + anthropic-version, not Bearer."""
+    from aipocket.services.validator import _fetch_models_list, _normalize_apiurl
+
+    route = respx.get("https://api.anthropic.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "claude-sonnet-4-6"}, {"id": "claude-opus-4-6"}]},
+        )
+    )
+    # Bearer-only would 401 — ensure we never send only that style for sk-ant.
+    cred = Credential(
+        apikey="sk-ant-api03-" + "A" * 40,
+        apiurl="https://api.anthropic.com/v1",
+    )
+    chat_url = _normalize_apiurl(cred.apiurl)
+    async with httpx.AsyncClient() as client:
+        models = await _fetch_models_list(client, cred, chat_url)
+
+    assert models == ["claude-sonnet-4-6", "claude-opus-4-6"]
+    assert route.called
+    req = route.calls.last.request
+    assert req.headers.get("x-api-key") == cred.apikey
+    assert req.headers.get("anthropic-version") == "2023-06-01"
+    assert not (req.headers.get("authorization") or "").lower().startswith("bearer")
+
+
+@respx.mock
+async def test_list_models_key_tester_returns_anthropic_models() -> None:
+    from aipocket.api.key_tester import list_models
+
+    respx.get("https://api.anthropic.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "claude-haiku-4-5-20251001"}]})
+    )
+    models = await list_models(
+        "sk-ant-api03-" + "B" * 40,
+        "https://api.anthropic.com/v1",
+    )
+    assert models == ["claude-haiku-4-5-20251001"]
+
+
 async def test_one_provider_error_does_not_abort_other_credentials(monkeypatch):
     good = Credential(apikey="test-good-key", apiurl="https://gateway.example")
     crashing = Credential(apikey="test-crashing-key", apiurl="https://gateway.example")

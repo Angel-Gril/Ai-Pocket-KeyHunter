@@ -12,7 +12,11 @@ import httpx
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 from aipocket.core.validation_state import apply_state
-from aipocket.services.providers import provider_registry, resolve_provider
+from aipocket.services.providers import (
+    provider_registry,
+    resolve_provider,
+    uses_anthropic_adapter,
+)
 from aipocket.services.providers.anthropic import validate_anthropic
 from aipocket.services.providers.azure_openai import (
     AzureInferencePolicy,
@@ -663,12 +667,39 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
     return result
 
 
+def _models_list_request(cred: Credential, chat_url: str) -> tuple[str, dict[str, str]]:
+    """Build models URL + auth headers for the credential's protocol.
+
+    OpenAI-compatible gateways use ``Authorization: Bearer``. Anthropic official
+    (and Anthropic-protocol hosts) require ``x-api-key`` + ``anthropic-version``;
+    Bearer alone returns 401, which previously made the UI show an empty model list
+    even for live ``sk-ant-…`` keys.
+    """
+    base = chat_url.replace("/chat/completions", "").replace("/messages", "").rstrip("/")
+    models_url = base + "/models"
+    is_anthropic = uses_anthropic_adapter(
+        apiurl=cred.apiurl or chat_url, apikey=cred.apikey
+    ) or cred.apikey.startswith("sk-ant-")
+    if is_anthropic:
+        # Account-scoped model list lives on the official host for Console keys.
+        if (
+            cred.apikey.startswith("sk-ant-")
+            or "anthropic.com" in (cred.apiurl or chat_url).lower()
+        ):
+            models_url = "https://api.anthropic.com/v1/models"
+        headers = {
+            "x-api-key": cred.apikey,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        return models_url, headers
+    return models_url, {"Authorization": f"Bearer {cred.apikey}"}
+
+
 async def _fetch_models_list(
     client: httpx.AsyncClient, cred: Credential, chat_url: str
 ) -> list[str]:
-    base = chat_url.replace("/chat/completions", "")
-    models_url = base + "/models"
-    headers = {"Authorization": f"Bearer {cred.apikey}"}
+    models_url, headers = _models_list_request(cred, chat_url)
     try:
         r = await client.get(models_url, headers=headers)
     except httpx.HTTPError:
@@ -737,6 +768,23 @@ async def _probe_anthropic(
                 result.response_snippet = _snippet(body)
                 result.provider_info.models_verified.append(model)
                 apply_state(result, "inference_verified")
+                return result
+
+        # Auth succeeded but org has no spendable credits — key is real.
+        if r.status_code == 400:
+            body = _parse_json_body(r)
+            err_text = ""
+            if isinstance(body, dict):
+                err = body.get("error")
+                if isinstance(err, dict):
+                    err_text = str(err.get("message") or "")
+                elif isinstance(err, str):
+                    err_text = err
+            low = err_text.lower()
+            if "credit balance" in low or "too low" in low or "billing" in low:
+                result.error = err_text or "credit balance too low"
+                result.model_available = model
+                apply_state(result, "authentication_confirmed")
                 return result
 
         if r.status_code == 429:

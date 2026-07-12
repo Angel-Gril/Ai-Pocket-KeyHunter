@@ -8,21 +8,26 @@ Also supports:
 * A single ``valid_*.jsonl`` file
 * A ``run_*`` directory (all ``valid_*.jsonl`` inside)
 * A results root (all ``run_*/valid_*.jsonl``)
-* ``--pg``: update PostgreSQL ``results.record`` directly (when PG is source of truth)
+* ``--pg``: update PostgreSQL ``results.record`` (+ ``high_value_keys``) directly
+* ``--only-anthropic``: only ``sk-ant-*`` / anthropic.com rows
+* ``--force``: re-probe even when gateway/balance already look set
 
-Usage (on VPS after deploying the OpenRouter probe)::
+Anthropic notes: ordinary ``sk-ant-api…`` keys have **no** remaining-balance API.
+The probe confirms liveness via ``/v1/models`` and stores ``balance=N/A``.
+Admin keys may also record 30d spend in ``rate_limit_headers.balance_detail``.
 
-    # One file
-    uv run python scripts/oneoff/reprobe_balance.py /data/results/run_2026_07_10_12-00-00/valid_....jsonl
+Usage (local)::
 
-    # Whole results tree
-    uv run python scripts/oneoff/reprobe_balance.py /data/results
+    uv run python scripts/oneoff/reprobe_balance.py /data/aipocket/results --sync-pg
+    uv run python scripts/oneoff/reprobe_balance.py --pg --only-anthropic
 
-    # PostgreSQL only
-    uv run python scripts/oneoff/reprobe_balance.py --pg
+Usage (Docker — after rebuilding backend with the new probe)::
 
-    # JSONL + sync updated rows into PG
-    uv run python scripts/oneoff/reprobe_balance.py /data/results --sync-pg
+    docker compose build backend && docker compose up -d backend
+    docker compose exec backend uv run python scripts/oneoff/reprobe_balance.py --pg
+    docker compose exec backend uv run python scripts/oneoff/reprobe_balance.py --pg --only-anthropic
+    docker compose exec backend uv run python scripts/oneoff/reprobe_balance.py \\
+        /data/aipocket/results --sync-pg
 """
 
 from __future__ import annotations
@@ -47,45 +52,69 @@ log = logging.getLogger("reprobe_balance")
 _UNSAFE = str.maketrans({"\u2028": " ", "\u2029": " "})
 
 
-def needs_reprobe(entry: dict[str, Any]) -> bool:
+# Sources that resolve a row without a numeric remaining balance.
+_RESOLVED_NO_NUMERIC = frozenset(
+    {
+        "key_no_limit",
+        "api_key_no_balance",
+        "admin_org_alive",
+        "admin_cost_report",
+        "admin_unauthorized",
+        "unauthorized",
+        "oauth_org_alive",
+    }
+)
+
+
+def needs_reprobe(entry: dict[str, Any], *, force: bool = False) -> bool:
     """True when balance was never resolved (or gateway is unsupported)."""
+    if force:
+        return True
     gw = entry.get("gateway")
     if gw in (None, "", "unsupported"):
         return True
     bal = entry.get("balance")
-    return bal in (None, "")
+    # Non-empty balance (including the Anthropic "N/A" sentinel) is done.
+    if bal not in (None, ""):
+        return False
+    # Gateway already resolved with no monetary figure (e.g. Anthropic API key).
+    return False
 
 
 def _apply_balance(entry: dict[str, Any], result: dict[str, Any]) -> bool:
     """Mutate *entry* with a successful probe result. Returns True if applied."""
     if result.get("gateway") in (None, "", "unsupported"):
         return False
-    # Accept numeric 0 as a real balance; reject empty string (unknown).
+    # Accept numeric 0 as a real balance; reject empty string (unknown)
+    # unless the probe explicitly reports a resolved no-balance source.
     balance_usd = result.get("balance_usd", "")
-    if balance_usd == "" and result.get("source") == "key_no_limit":
-        # Mark gateway so we don't thrash, but leave balance blank.
-        entry["gateway"] = result["gateway"]
-        if isinstance(entry.get("provider_info"), dict):
-            entry["provider_info"]["balance_provider"] = result["gateway"]
-        return True
-    if balance_usd == "":
+    source = str(result.get("source", ""))
+    if balance_usd == "" and source not in _RESOLVED_NO_NUMERIC:
         return False
 
     entry["gateway"] = result["gateway"]
-    entry["balance"] = str(balance_usd)
+    if balance_usd != "":
+        entry["balance"] = str(balance_usd)
+    if result.get("tier"):
+        entry["tier"] = str(result["tier"])
     headers = entry.get("rate_limit_headers")
     if not isinstance(headers, dict):
         headers = {}
         entry["rate_limit_headers"] = headers
     raw = result.get("raw", {})
-    headers["balance_detail"] = str(
-        {
-            "gateway": result["gateway"],
-            "balance_usd": balance_usd,
-            "source": result.get("source", ""),
-            "raw": raw if not isinstance(raw, dict) or len(str(raw)) < 500 else "...(truncated)",
-        }
-    )
+    detail: dict[str, Any] = {
+        "gateway": result["gateway"],
+        "balance_usd": balance_usd,
+        "source": source,
+        "credential_kind": result.get("credential_kind", ""),
+        "alive": result.get("alive"),
+        "spend_usd_30d": result.get("spend_usd_30d"),
+        "model_count": result.get("model_count"),
+        "organization_id": result.get("organization_id", ""),
+        "note": result.get("note", ""),
+        "raw": raw if not isinstance(raw, dict) or len(str(raw)) < 500 else "...(truncated)",
+    }
+    headers["balance_detail"] = str({k: v for k, v in detail.items() if v not in (None, "")})
     if isinstance(entry.get("provider_info"), dict):
         entry["provider_info"]["balance_provider"] = result["gateway"]
     return True
@@ -155,13 +184,20 @@ async def reprobe_jsonl_files(
     *,
     concurrency: int,
     sync_pg: bool,
+    force: bool,
+    only_anthropic: bool,
 ) -> int:
     total_updated = 0
     timeout = httpx.Timeout(15.0)
     async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=True) as client:
         for path in paths:
             entries = _load_jsonl(path)
-            indices = [i for i, e in enumerate(entries) if needs_reprobe(e)]
+            indices = [
+                i
+                for i, e in enumerate(entries)
+                if needs_reprobe(e, force=force)
+                and _matches_filter(e, only_anthropic=only_anthropic)
+            ]
             print(f"\n{path}: {len(entries)} rows, {len(indices)} need re-probe")
             if not indices:
                 continue
@@ -180,7 +216,55 @@ async def reprobe_jsonl_files(
     return total_updated
 
 
-async def reprobe_pg(*, concurrency: int) -> int:
+def _matches_filter(entry: dict[str, Any], *, only_anthropic: bool) -> bool:
+    if not only_anthropic:
+        return True
+    cred = entry.get("credential") or {}
+    apikey = ""
+    apiurl = ""
+    if isinstance(cred, dict):
+        apikey = str(cred.get("apikey") or "")
+        apiurl = str(cred.get("apiurl") or "")
+    apikey = apikey or str(entry.get("apikey") or "")
+    apiurl = apiurl or str(entry.get("apiurl") or "")
+    return apikey.startswith("sk-ant-") or "anthropic.com" in apiurl.lower()
+
+
+def _pg_needs_sql(*, force: bool, only_anthropic: bool) -> tuple[str, tuple[Any, ...]]:
+    """Build SELECT for PG re-probe candidates."""
+    clauses = ["kind = 'valid'"]
+    params: list[Any] = []
+    if not force:
+        clauses.append(
+            """(
+                COALESCE(record->>'gateway', '') IN ('', 'unsupported')
+                OR COALESCE(record->>'balance', '') = ''
+            )"""
+        )
+    if only_anthropic:
+        clauses.append(
+            """(
+                COALESCE(apikey, '') LIKE 'sk-ant-%%'
+                OR COALESCE(record->'credential'->>'apikey', '') LIKE 'sk-ant-%%'
+                OR COALESCE(record->'credential'->>'apiurl', '') ILIKE '%%anthropic.com%%'
+                OR COALESCE(record->>'apiurl', '') ILIKE '%%anthropic.com%%'
+            )"""
+        )
+    sql = f"""
+        SELECT id, record
+        FROM results
+        WHERE {" AND ".join(clauses)}
+        ORDER BY id
+    """
+    return sql, tuple(params)
+
+
+async def reprobe_pg(
+    *,
+    concurrency: int,
+    force: bool = False,
+    only_anthropic: bool = False,
+) -> int:
     """Re-probe rows stored in PostgreSQL ``results`` (kind=valid)."""
     from psycopg.types.json import Jsonb
 
@@ -192,32 +276,30 @@ async def reprobe_pg(*, concurrency: int) -> int:
         return 0
 
     pool = get_pool()
+    sql, params = _pg_needs_sql(force=force, only_anthropic=only_anthropic)
     with pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, record
-            FROM results
-            WHERE kind = 'valid'
-              AND (
-                COALESCE(record->>'gateway', '') IN ('', 'unsupported')
-                OR COALESCE(record->>'balance', '') = ''
-              )
-            ORDER BY id
-            """
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
 
-    print(f"PG rows needing re-probe: {len(rows)}")
-    if not rows:
-        return 0
-
-    entries: list[dict[str, Any]] = []
-    ids: list[int] = []
+    # Secondary filter for force=False empty-balance rows that already resolved
+    # to a non-unsupported gateway (e.g. anthropic N/A from a prior pass).
+    candidates: list[tuple[int, dict[str, Any]]] = []
     for row in rows:
         rec = row["record"]
         if isinstance(rec, str):
             rec = json.loads(rec)
-        entries.append(dict(rec))
-        ids.append(row["id"])
+        entry = dict(rec)
+        if not needs_reprobe(entry, force=force):
+            continue
+        if not _matches_filter(entry, only_anthropic=only_anthropic):
+            continue
+        candidates.append((row["id"], entry))
+
+    print(f"PG rows needing re-probe: {len(candidates)} (sql matched {len(rows)})")
+    if not candidates:
+        return 0
+
+    ids = [c[0] for c in candidates]
+    entries = [c[1] for c in candidates]
 
     sem = asyncio.Semaphore(concurrency)
     timeout = httpx.Timeout(15.0)
@@ -242,8 +324,136 @@ async def reprobe_pg(*, concurrency: int) -> int:
                 [(Jsonb(rec), rid) for rid, rec in updated_ids],
             )
         conn.commit()
-    print(f"PG updated: {len(updated_ids)}/{len(rows)}")
-    return len(updated_ids)
+    print(f"PG updated: {len(updated_ids)}/{len(candidates)}")
+
+    # Keep high_value_keys in sync when the same apikey is stored there.
+    _sync_high_value_from_entries([rec for _, rec in updated_ids])
+
+    # Also re-probe high_value_keys rows that may not appear in results.
+    hv_n = await reprobe_high_value_keys(
+        concurrency=concurrency,
+        force=force,
+        only_anthropic=only_anthropic,
+    )
+    return len(updated_ids) + hv_n
+
+
+async def reprobe_high_value_keys(
+    *,
+    concurrency: int,
+    force: bool = False,
+    only_anthropic: bool = False,
+) -> int:
+    """Re-probe high_value_keys table rows missing balance/gateway."""
+    from psycopg.types.json import Jsonb
+
+    from aipocket.core.config import settings
+    from aipocket.core.db import get_pool
+
+    if not settings.pg_enabled:
+        return 0
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT apikey, record FROM high_value_keys ORDER BY saved_at DESC NULLS LAST"
+        ).fetchall()
+
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for row in rows:
+        rec = row["record"]
+        if isinstance(rec, str):
+            rec = json.loads(rec)
+        entry = dict(rec)
+        # Ensure apikey is present for probing even if nested oddly.
+        if not (entry.get("credential") or {}).get("apikey") and not entry.get("apikey"):
+            entry["apikey"] = row["apikey"]
+        if not needs_reprobe(entry, force=force):
+            continue
+        if not _matches_filter(entry, only_anthropic=only_anthropic):
+            continue
+        candidates.append((row["apikey"], entry))
+
+    print(f"high_value_keys needing re-probe: {len(candidates)}")
+    if not candidates:
+        return 0
+
+    entries = [c[1] for c in candidates]
+    keys = [c[0] for c in candidates]
+    sem = asyncio.Semaphore(concurrency)
+    timeout = httpx.Timeout(15.0)
+    updated: list[tuple[str, dict[str, Any]]] = []
+    async with httpx.AsyncClient(timeout=timeout, verify=False, follow_redirects=True) as client:
+
+        async def one(i: int) -> None:
+            ok = await _probe_entry(client, sem, entries[i])
+            if ok:
+                updated.append((keys[i], entries[i]))
+
+        await asyncio.gather(*[one(i) for i in range(len(entries))])
+
+    if not updated:
+        print("No high_value_keys updated.")
+        return 0
+
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "UPDATE high_value_keys SET record = %s WHERE apikey = %s",
+                [(Jsonb(rec), apikey) for apikey, rec in updated],
+            )
+        conn.commit()
+    print(f"high_value_keys updated: {len(updated)}/{len(candidates)}")
+    return len(updated)
+
+
+def _sync_high_value_from_entries(entries: list[dict[str, Any]]) -> None:
+    """Best-effort update of high_value_keys.record balance/gateway fields."""
+    from psycopg.types.json import Jsonb
+
+    from aipocket.core.config import settings
+    from aipocket.core.db import get_pool
+
+    if not settings.pg_enabled:
+        return
+    pool = get_pool()
+    updated = 0
+    with pool.connection() as conn:
+        for entry in entries:
+            cred = entry.get("credential") or {}
+            apikey = cred.get("apikey") if isinstance(cred, dict) else None
+            apikey = apikey or entry.get("apikey")
+            if not apikey:
+                continue
+            rows = conn.execute(
+                "SELECT record FROM high_value_keys WHERE apikey = %s",
+                (apikey,),
+            ).fetchall()
+            for row in rows:
+                rec = row["record"]
+                if isinstance(rec, str):
+                    rec = json.loads(rec)
+                rec = dict(rec)
+                rec["gateway"] = entry.get("gateway", rec.get("gateway"))
+                rec["balance"] = entry.get("balance", rec.get("balance"))
+                if entry.get("tier"):
+                    rec["tier"] = entry["tier"]
+                if "rate_limit_headers" in entry:
+                    rec["rate_limit_headers"] = entry["rate_limit_headers"]
+                if isinstance(entry.get("provider_info"), dict):
+                    pi = dict(rec.get("provider_info") or {})
+                    pi["balance_provider"] = entry["provider_info"].get(
+                        "balance_provider", pi.get("balance_provider")
+                    )
+                    rec["provider_info"] = pi
+                conn.execute(
+                    "UPDATE high_value_keys SET record = %s WHERE apikey = %s",
+                    (Jsonb(rec), apikey),
+                )
+                updated += 1
+        conn.commit()
+    if updated:
+        print(f"  high_value_keys synced: {updated} row(s)")
 
 
 def _sync_entries_to_pg(entries: list[dict[str, Any]]) -> None:
@@ -296,7 +506,15 @@ def _sync_entries_to_pg(entries: list[dict[str, Any]]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Re-probe missing balances (e.g. OpenRouter)")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Re-probe missing balances (OpenRouter, Anthropic N/A, gateways, …). "
+            "Docker example:\n"
+            "  docker compose exec backend uv run python "
+            "scripts/oneoff/reprobe_balance.py --pg --only-anthropic"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "target",
         nargs="?",
@@ -315,6 +533,16 @@ def main() -> None:
         help="After rewriting JSONL, push updated balance fields into PG",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-probe even when gateway/balance already look resolved",
+    )
+    parser.add_argument(
+        "--only-anthropic",
+        action="store_true",
+        help="Only re-probe sk-ant-* / anthropic.com credentials",
+    )
+    parser.add_argument(
         "-c",
         "--concurrency",
         type=int,
@@ -330,7 +558,13 @@ def main() -> None:
     )
 
     if args.pg:
-        n = asyncio.run(reprobe_pg(concurrency=args.concurrency))
+        n = asyncio.run(
+            reprobe_pg(
+                concurrency=args.concurrency,
+                force=args.force,
+                only_anthropic=args.only_anthropic,
+            )
+        )
         print(f"\nDone. Total updated: {n}")
         return
 
@@ -348,7 +582,15 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Files to process: {len(paths)}")
-    n = asyncio.run(reprobe_jsonl_files(paths, concurrency=args.concurrency, sync_pg=args.sync_pg))
+    n = asyncio.run(
+        reprobe_jsonl_files(
+            paths,
+            concurrency=args.concurrency,
+            sync_pg=args.sync_pg,
+            force=args.force,
+            only_anthropic=args.only_anthropic,
+        )
+    )
     print(f"\nDone. Total updated: {n}")
 
 

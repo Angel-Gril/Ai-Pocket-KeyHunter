@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -16,6 +17,12 @@ if TYPE_CHECKING:
     from .dedup import DedupStore
 
 log = logging.getLogger(__name__)
+
+_ANTHROPIC_API_BASE = "https://api.anthropic.com/v1"
+_ANTHROPIC_VERSION = "2023-06-01"
+# Anthropic does not expose remaining prepaid balance via API key.
+# We surface a stable sentinel so UI/reprobe treat the row as resolved.
+_ANTHROPIC_BALANCE_NA = "N/A"
 
 
 async def _safe_get(
@@ -64,6 +71,9 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
         # domain-matched openrouter.ai bases must not fall through to generic
         # gateway probes that would burn requests and return unsupported.
         ("openrouter", _probe_openrouter, base),
+        # Anthropic next: official keys have no remaining-balance endpoint.
+        # Probe marks gateway + N/A (API) or admin org spend (Admin keys).
+        ("anthropic", _probe_anthropic, base),
         ("litellm", _probe_litellm, base),
         ("oneapi", _probe_oneapi, base),
         ("newapi", _probe_newapi, base),
@@ -85,6 +95,193 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
             result["gateway"] = gateway
             return result
     return {"gateway": "unsupported", "balance_usd": ""}
+
+
+def _anthropic_headers(key: str) -> dict[str, str]:
+    headers = {
+        "anthropic-version": _ANTHROPIC_VERSION,
+        "Content-Type": "application/json",
+    }
+    if key.startswith("sk-ant-oat") or key.startswith("sk-ant-sid"):
+        headers["Authorization"] = f"Bearer {key}"
+    else:
+        headers["x-api-key"] = key
+    return headers
+
+
+def _sum_anthropic_cost_usd(payload: dict[str, Any]) -> float | None:
+    """Sum Cost Report amounts (cents as decimal strings) into USD."""
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return None
+    total_cents = 0.0
+    found = False
+    for bucket in data:
+        if not isinstance(bucket, dict):
+            continue
+        results = bucket.get("results")
+        if not isinstance(results, list):
+            continue
+        for row in results:
+            if not isinstance(row, dict):
+                continue
+            amount = row.get("amount")
+            if amount is None:
+                continue
+            try:
+                total_cents += float(amount)
+                found = True
+            except (TypeError, ValueError):
+                continue
+    if not found:
+        return None
+    return round(total_cents / 100.0, 4)
+
+
+async def _probe_anthropic(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    """Probe Anthropic official keys.
+
+    Remaining prepaid balance is **not** available via the public API for
+    ordinary ``sk-ant-api…`` keys (only Console UI). This probe:
+
+    * Confirms the key is alive via ``GET /v1/models`` and returns
+      ``balance_usd="N/A"`` with ``source=api_key_no_balance``.
+    * For Admin / OAuth org-scoped keys, reads ``/v1/organizations/me`` and
+      optionally the last-30d Cost Report (spend, not remaining balance).
+
+    Always hits the official Anthropic host — balance lives on the account,
+    not a reverse proxy. Non-Anthropic keys/hosts return ``{}`` so other
+    gateway probes can run.
+    """
+    is_ant_key = key.startswith("sk-ant-")
+    is_ant_host = "anthropic.com" in base.lower()
+    if not is_ant_key and not is_ant_host:
+        return {}
+
+    headers = _anthropic_headers(key)
+    kind = "api"
+    if key.startswith("sk-ant-admin"):
+        kind = "admin"
+    elif key.startswith("sk-ant-oat") or key.startswith("sk-ant-sid"):
+        kind = "oauth"
+
+    # Admin / OAuth: org scope + optional cost report (Admin API).
+    if kind in ("admin", "oauth"):
+        try:
+            org_resp = await client.get(f"{_ANTHROPIC_API_BASE}/organizations/me", headers=headers)
+        except httpx.HTTPError:
+            return {}
+        if org_resp.status_code != 200:
+            # Fall through so a misclassified sk-ant-admin on a gateway can still
+            # hit one-api / new-api probes when the official host rejects it.
+            if not is_ant_host:
+                return {}
+            return {
+                "balance_usd": _ANTHROPIC_BALANCE_NA,
+                "source": "admin_unauthorized",
+                "credential_kind": kind,
+                "alive": False,
+                "status_code": org_resp.status_code,
+            }
+        org_body: dict[str, Any] = {}
+        try:
+            parsed = org_resp.json()
+            if isinstance(parsed, dict):
+                org_body = parsed
+        except ValueError:
+            pass
+        org_id = str(org_body.get("id") or org_body.get("organization_id") or "")
+        org_name = str(org_body.get("name") or "")
+
+        spend_usd: float | None = None
+        cost_raw: dict[str, Any] | None = None
+        # Cost report is Admin-API; OAuth may lack permission — best-effort.
+        ending = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+            days=1
+        )
+        starting = ending - timedelta(days=30)
+        try:
+            cost_resp = await client.get(
+                f"{_ANTHROPIC_API_BASE}/organizations/cost_report",
+                headers=headers,
+                params={
+                    "starting_at": starting.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "ending_at": ending.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "bucket_width": "1d",
+                },
+            )
+            if cost_resp.status_code == 200:
+                try:
+                    raw = cost_resp.json()
+                except ValueError:
+                    raw = None
+                if isinstance(raw, dict):
+                    cost_raw = raw
+                    spend_usd = _sum_anthropic_cost_usd(raw)
+        except httpx.HTTPError:
+            pass
+
+        result: dict[str, Any] = {
+            "balance_usd": _ANTHROPIC_BALANCE_NA,
+            "source": "admin_cost_report" if spend_usd is not None else "admin_org_alive",
+            "credential_kind": kind,
+            "alive": True,
+            "tier": "org:admin",
+            "organization_id": org_id,
+            "organization_name": org_name,
+            "status_code": 200,
+        }
+        if spend_usd is not None:
+            result["spend_usd_30d"] = spend_usd
+        if cost_raw is not None:
+            result["raw"] = {"organization": org_body, "cost_report": cost_raw}
+        else:
+            result["raw"] = {"organization": org_body}
+        return result
+
+    # Ordinary Console API key — models list proves liveness; no balance API.
+    try:
+        models_resp = await client.get(f"{_ANTHROPIC_API_BASE}/models", headers=headers)
+    except httpx.HTTPError:
+        return {}
+    if models_resp.status_code in (401, 403):
+        if not is_ant_host and is_ant_key:
+            # Real-looking prefix on a third-party host; let gateway probes run.
+            return {}
+        return {
+            "balance_usd": _ANTHROPIC_BALANCE_NA,
+            "source": "unauthorized",
+            "credential_kind": "api",
+            "alive": False,
+            "status_code": models_resp.status_code,
+        }
+    if models_resp.status_code != 200:
+        return {}
+
+    models: list[str] = []
+    try:
+        body = models_resp.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        data = body.get("data", [])
+        if isinstance(data, list):
+            models = [
+                str(item["id"])
+                for item in data
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            ]
+
+    return {
+        "balance_usd": _ANTHROPIC_BALANCE_NA,
+        "source": "api_key_no_balance",
+        "credential_kind": "api",
+        "alive": True,
+        "model_count": len(models),
+        "models": models[:20],
+        "status_code": 200,
+        "note": "Anthropic Console API keys have no remaining-balance endpoint; check Console billing.",
+    }
 
 
 async def _probe_openrouter(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
