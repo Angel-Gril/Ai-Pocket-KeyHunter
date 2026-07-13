@@ -7,6 +7,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 import respx
+from aipocket.core.targets import canonicalize_hits
 
 from aipocket.prober.base import (
     WEAK_CREDENTIALS,
@@ -276,7 +277,7 @@ class TestStagedProbeDispatch:
         hit = {"host": "https://low.example.com", "title": "docs", "protocol": "https"}
         with respx.mock(assert_all_called=False) as router:
             router.route().mock(return_value=httpx.Response(200, text="unexpected"))
-            await probe_hosts([hit])
+            await probe_hosts(canonicalize_hits([hit]), frozenset())
         assert len(router.calls) == 0
 
     @pytest.mark.asyncio
@@ -291,7 +292,7 @@ class TestStagedProbeDispatch:
             patch.object(NewAPIProber, "probe", return_value=[]) as product_probe,
             respx.mock(assert_all_called=False),
         ):
-            await probe_hosts([hit])
+            await probe_hosts(canonicalize_hits([hit]), frozenset({"new-api"}))
         product_probe.assert_awaited_once()
 
 
@@ -325,17 +326,17 @@ class TestProbeBatching:
             respx.mock(assert_all_called=False),
             caplog.at_level(logging.INFO, logger="aipocket.prober.runner"),
         ):
-            creds = await probe_hosts(hits)
+            report = await probe_hosts(canonicalize_hits(hits), frozenset({"new-api"}))
 
         assert product_probe.await_count == 5
-        assert creds == []
+        assert report.credentials == ()
 
         text = "\n".join(r.message for r in caplog.records)
         assert "batch_size=2 → 3 batch(es)" in text
         assert "Prober batch 1/3:" in text
         assert "Prober batch 2/3:" in text
         assert "Prober batch 3/3:" in text
-        assert "Prober extracted 0 credentials from 5 hosts (3 batches)" in text
+        assert "Prober extracted 0 credentials from 5 attempted assignments (3 batches)" in text
 
     @pytest.mark.asyncio
     async def test_small_host_set_is_single_batch(self, monkeypatch, caplog):
@@ -352,7 +353,7 @@ class TestProbeBatching:
             respx.mock(assert_all_called=False),
             caplog.at_level(logging.INFO, logger="aipocket.prober.runner"),
         ):
-            await probe_hosts(hits)
+            await probe_hosts(canonicalize_hits(hits), frozenset({"new-api"}))
 
         assert product_probe.await_count == 3
         text = "\n".join(r.message for r in caplog.records)

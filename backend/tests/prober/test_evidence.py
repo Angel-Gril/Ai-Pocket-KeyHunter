@@ -11,6 +11,7 @@ from aipocket.core.models import Credential
 from aipocket.core.targets import DiscoveryTarget, TargetIdentity
 from aipocket.prober.base import Prober
 from aipocket.prober.budget import BudgetExhausted, RequestBudget
+from aipocket.prober import runner
 from aipocket.prober.evidence import TargetEvidence, score_target
 from aipocket.prober.runner import _eligible_targets
 
@@ -66,6 +67,7 @@ def test_request_budget_consumes_exactly_and_never_goes_negative() -> None:
 
     budget.consume()
     budget.consume()
+    assert budget.consumed == 2
 
     assert budget.remaining == 0
     with pytest.raises(BudgetExhausted):
@@ -107,7 +109,6 @@ async def test_tls_retry_consumes_an_additional_request(monkeypatch: pytest.Monk
     sem = asyncio.Semaphore(1)
 
     async def fail_tls(*args: object, **kwargs: object) -> httpx.Response:
-        budget.consume()
         raise httpx.ConnectError("certificate verify failed")
 
     class _InsecureClient:
@@ -118,7 +119,6 @@ async def test_tls_retry_consumes_an_additional_request(monkeypatch: pytest.Monk
             return None
 
         async def get(self, url: str, **kwargs: object) -> httpx.Response:
-            budget.consume()
             return httpx.Response(200)
 
     client = httpx.AsyncClient()
@@ -139,3 +139,84 @@ def test_runner_gates_targets_below_minimum_score() -> None:
     eligible = _eligible_targets([strong, weak], minimum_score=50)
 
     assert eligible == [(strong, score_target(strong))]
+
+
+def test_safe_recipe_allowlist_is_not_product_evidence() -> None:
+    hit = {
+        "host": "https://generic.example",
+        "title": "unrelated service",
+        "header": "",
+        "banner": "",
+        "_safe_recipe_products": ["flowise", "litellm"],
+    }
+
+    selected = runner._select_prober(hit, runner._all_probers())
+
+    assert selected is None
+
+
+def test_product_prober_requires_allowlist_membership() -> None:
+    target = _target(products=frozenset({"flowise"}))
+
+    assignments, rejected = runner._build_assignments([target], frozenset({"litellm"}))
+
+    assert rejected == []
+    assert [[prober.product_name for prober in item.probers] for item in assignments] == [
+        ["generic"]
+    ]
+
+
+def test_allowlisted_product_hint_selects_product_prober() -> None:
+    target = _target(products=frozenset({"flowise"}))
+
+    assignments, rejected = runner._build_assignments([target], frozenset({"flowise"}))
+
+    assert rejected == []
+    assert [[prober.product_name for prober in item.probers] for item in assignments] == [
+        ["flowise"]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_probe_report_distinguishes_attempted_and_evidence_rejected() -> None:
+    attempted = DiscoveryTarget(
+        identity=TargetIdentity("https", "attempted.example", 443),
+        content_evidence=("OPENAI_API_KEY=sk-proj-real-looking-key",),
+    )
+    rejected = DiscoveryTarget(
+        identity=TargetIdentity("https", "rejected.example", 443),
+        content_evidence=("Read our developer documentation",),
+    )
+
+    with respx.mock(assert_all_called=False) as router_mock:
+        router_mock.route().mock(return_value=httpx.Response(404))
+        report = await runner.probe_hosts([attempted, rejected], frozenset())
+
+    outcomes = {outcome.identity_hash: outcome for outcome in report.outcomes}
+    assert report.credentials == ()
+    assert outcomes[attempted.identity.identity_hash].status is runner.ProbeStatus.ATTEMPTED
+    assert outcomes[attempted.identity.identity_hash].request_count > 0
+    assert (
+        outcomes[rejected.identity.identity_hash].status
+        is runner.ProbeStatus.REJECTED_BY_EVIDENCE
+    )
+    assert outcomes[rejected.identity.identity_hash].request_count == 0
+
+
+@pytest.mark.asyncio
+async def test_request_budgets_are_isolated_on_shared_client() -> None:
+    first_budget = RequestBudget(limit=2)
+    second_budget = RequestBudget(limit=2)
+    sem = asyncio.Semaphore(2)
+
+    with respx.mock() as router_mock:
+        router_mock.get("https://first.example/").mock(return_value=httpx.Response(200))
+        router_mock.get("https://second.example/").mock(return_value=httpx.Response(200))
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            first = _TestProber(client, sem, first_budget)
+            second = _TestProber(client, sem, second_budget)
+            await first._get("https://first.example/")
+            await second._get("https://second.example/")
+
+    assert first_budget.consumed == 1
+    assert second_budget.consumed == 1

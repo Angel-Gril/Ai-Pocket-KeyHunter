@@ -280,29 +280,24 @@ async def _run_scan_inner(
         # Cross-run dedup: skip hosts already probed in a previous run.
         before_probe = len(ordered_targets)
         ordered_targets = await dedup.filter_unseen_targets("probe", ordered_targets)
-        probe_targets = [target.to_hit() for target in ordered_targets]
         if before_probe != len(ordered_targets):
             log.info(
                 "Dedup: host probe %d → %d (skipped %d seen)",
                 before_probe,
-                len(probe_targets),
-                before_probe - len(probe_targets),
+                len(ordered_targets),
+                before_probe - len(ordered_targets),
             )
-        # Recount after dedup so the probe-log numbers are self-consistent.
-        high_count = sum(1 for h in probe_targets if _has_signal(h))
+        high_count = sum(1 for target in ordered_targets if _has_signal(target.to_hit()))
 
         log.info(
             "Probing %d hosts (high-signal=%d, low-signal=%d)",
-            len(probe_targets),
+            len(ordered_targets),
             high_count,
-            len(probe_targets) - high_count,
+            len(ordered_targets) - high_count,
         )
 
-        # Advisory-gated coverage: attach ONLY product fingerprints that a
-        # reviewed, credential-relevant advisory maps to a safe (fingerprint /
-        # read-only) hunt recipe. This lets the runner route those hits to a
-        # product prober without ever emitting exploit payloads. Advisories that
-        # don't map to a known/read-only safe check add no active coverage.
+        # Reviewed safe products are an execution allowlist only. Product routing
+        # remains based on each target's own hints/fingerprint evidence.
         from .hunt_recipes import products_with_active_coverage_from_cves
         from .queries import load_cves
 
@@ -311,18 +306,32 @@ async def _run_scan_inner(
         except Exception as e:  # noqa: BLE001 — advisory gating must never block a scan
             log.warning("advisory hunt-recipe gating skipped (%s)", type(e).__name__)
             safe_products = frozenset()
-        if safe_products:
-            from aipocket.prober.runner import attach_safe_recipe_products
+        log.info(
+            "Advisory safe-recipe allowlist: %d product(s) enabled",
+            len(safe_products),
+        )
 
-            probe_targets = attach_safe_recipe_products(probe_targets, safe_products)
-            log.info(
-                "Advisory safe-recipe coverage: %d product fingerprint(s) enabled",
-                len(safe_products),
-            )
-
-        probed_creds = await probe_hosts(probe_targets)
-        for target in ordered_targets:
-            await dedup.mark_target("probe", target)
+        probe_report = await probe_hosts(ordered_targets, safe_products)
+        probed_creds = list(probe_report.credentials)
+        target_by_identity = {
+            target.identity.identity_hash: target for target in ordered_targets
+        }
+        outcome_counts: dict[str, int] = {}
+        for outcome in probe_report.outcomes:
+            label = outcome.status.value
+            outcome_counts[label] = outcome_counts.get(label, 0) + 1
+            if outcome.request_count <= 0:
+                continue
+            target = target_by_identity.get(outcome.identity_hash)
+            if target is not None:
+                await dedup.mark_target("probe", target)
+        log.info(
+            "Prober outcomes: attempted=%d rejected_by_evidence=%d skipped=%d failed=%d",
+            outcome_counts.get("attempted", 0),
+            outcome_counts.get("rejected_by_evidence", 0),
+            outcome_counts.get("skipped", 0),
+            outcome_counts.get("failed", 0),
+        )
         seen = _merge_credentials(creds, probed_creds, seen)
         log.info("After active probing: %d candidate credentials", len(creds))
 

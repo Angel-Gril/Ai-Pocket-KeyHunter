@@ -22,6 +22,10 @@ class RequestBudget:
     def remaining(self) -> int:
         return self.limit - self._consumed
 
+    @property
+    def consumed(self) -> int:
+        return self._consumed
+
     def consume(self) -> None:
         if self._consumed >= self.limit:
             raise BudgetExhausted(self.limit)

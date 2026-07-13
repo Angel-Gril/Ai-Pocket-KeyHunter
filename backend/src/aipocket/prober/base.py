@@ -164,10 +164,8 @@ class Prober(ABC):
         self._max_redirects = max_redirects
         self._intrusive_checks = intrusive_checks
         self._authorized_scope = frozenset(authorized_scope)
-        if budget is not None:
-            client.event_hooks["request"].append(self._account_request)
 
-    async def _account_request(self, request: httpx.Request) -> None:
+    def _consume_request(self) -> None:
         if self._budget is not None:
             self._budget.consume()
 
@@ -205,6 +203,7 @@ class Prober(ABC):
         kwargs.setdefault("timeout", PROBE_TIMEOUT)
         kwargs["follow_redirects"] = False
         try:
+            self._consume_request()
             async with self._sem:
                 response = await self._client.get(url, **kwargs)
             return await self._follow_same_origin(response, kwargs)
@@ -221,6 +220,7 @@ class Prober(ABC):
         kwargs.setdefault("timeout", PROBE_TIMEOUT)
         kwargs["follow_redirects"] = False
         try:
+            self._consume_request()
             async with self._sem:
                 return await self._client.post(url, **kwargs)
         except BudgetExhausted:
@@ -238,10 +238,10 @@ class Prober(ABC):
                     timeout=kwargs.pop("timeout", PROBE_TIMEOUT),
                     follow_redirects=False,
                     verify=False,
-                    event_hooks={"request": [self._account_request]},
                 ) as insecure,
                 self._sem,
             ):
+                self._consume_request()
                 if method == "GET":
                     return await insecure.get(url, **kwargs)
                 return await insecure.post(url, **kwargs)
@@ -267,6 +267,7 @@ class Prober(ABC):
             if normalized_origin(next_url) != origin:
                 return None
             try:
+                self._consume_request()
                 async with self._sem:
                     current = await self._client.get(next_url, **kwargs)
             except (BudgetExhausted, httpx.HTTPError):

@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 import httpx
 
 from aipocket.core.config import settings
 from aipocket.core.models import Credential
-from aipocket.core.targets import DiscoveryTarget, canonicalize_hits
+from aipocket.core.targets import DiscoveryTarget
 
 from .base import PROBE_TIMEOUT, Prober
 from .budget import RequestBudget
@@ -25,6 +27,34 @@ from .evidence import TargetEvidence, score_target
 log = logging.getLogger(__name__)
 
 HIGH_EVIDENCE_SCORE = 70
+
+
+class ProbeStatus(StrEnum):
+    ATTEMPTED = "attempted"
+    REJECTED_BY_EVIDENCE = "rejected_by_evidence"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeTargetOutcome:
+    identity_hash: str
+    status: ProbeStatus
+    request_count: int
+    prober: str
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeReport:
+    credentials: tuple[Credential, ...]
+    outcomes: tuple[ProbeTargetOutcome, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeAssignment:
+    target: DiscoveryTarget
+    probers: tuple[type[Prober], ...]
 
 
 def _prober_concurrency() -> int:
@@ -71,9 +101,6 @@ def _select_prober(hit: dict[str, Any], prober_classes: list[type[Prober]]) -> t
         for value in (hit.get("_product_hints") or [hit.get("_product", "")])
         if value
     }
-    # Advisory-gated safe recipes may attach product coverage only for known fingerprints.
-    for value in hit.get("_safe_recipe_products") or []:
-        hints.add(str(value).lower().replace("_", "-"))
     for cls in prober_classes:
         if cls.product_name.lower() in hints:
             return cls
@@ -86,18 +113,6 @@ def _select_prober(hit: dict[str, Any], prober_classes: list[type[Prober]]) -> t
     return None
 
 
-def attach_safe_recipe_products(
-    hits: list[dict[str, Any]], products: frozenset[str]
-) -> list[dict[str, Any]]:
-    """Annotate hits with advisory-approved product fingerprints (no exploit payloads)."""
-    if not products:
-        return hits
-    annotated: list[dict[str, Any]] = []
-    for hit in hits:
-        copy = dict(hit)
-        copy["_safe_recipe_products"] = sorted(products)
-        annotated.append(copy)
-    return annotated
 
 
 def _eligible_targets(
@@ -108,65 +123,109 @@ def _eligible_targets(
 
 
 def _build_assignments(
-    hits: list[dict[str, Any]],
-) -> list[tuple[type[Prober], dict[str, Any]]]:
-    """Fingerprint each hit and assign a prober (product or generic)."""
-    prober_classes = _all_probers()
-    assignments: list[tuple[type[Prober], dict[str, Any]]] = []
-    unmatched_hits: list[dict[str, Any]] = []
-    for hit in hits:
-        selected = (
-            _select_prober(hit, prober_classes)
-            if hit["_evidence_score"] >= HIGH_EVIDENCE_SCORE
-            else None
-        )
-        if selected is None:
-            unmatched_hits.append(hit)
-        else:
-            assignments.append((selected, hit))
-
-    # Route unmatched hosts to GenericPageProber — fetches index + .env + common
-    # config paths to catch keys (especially Claude/Anthropic) in page bodies.
+    targets: list[DiscoveryTarget], allowed_products: frozenset[str]
+) -> tuple[list[ProbeAssignment], list[ProbeTargetOutcome]]:
+    """Assign evidence-qualified targets without treating the allowlist as evidence."""
     from .probers import GenericPageProber
 
-    for hit in unmatched_hits:
-        assignments.append((GenericPageProber, hit))
+    prober_classes = _all_probers()
+    normalized_allowed = {
+        product.lower().replace("_", "-") for product in allowed_products
+    }
+    assignments: list[ProbeAssignment] = []
+    rejected: list[ProbeTargetOutcome] = []
+    product_count = 0
 
-    product_count = len(assignments) - len(unmatched_hits)
+    for target in targets:
+        evidence = score_target(target)
+        if evidence.score < settings.min_probe_evidence_score:
+            rejected.append(
+                ProbeTargetOutcome(
+                    identity_hash=target.identity.identity_hash,
+                    status=ProbeStatus.REJECTED_BY_EVIDENCE,
+                    request_count=0,
+                    prober="",
+                    reason=",".join(evidence.reasons) or f"score={evidence.score}",
+                )
+            )
+            continue
+
+        selected = (
+            _select_prober(target.to_hit(), prober_classes)
+            if evidence.score >= HIGH_EVIDENCE_SCORE
+            else None
+        )
+        if selected is not None and selected.product_name.lower() in normalized_allowed:
+            probers = (selected,)
+            product_count += 1
+        else:
+            probers = (GenericPageProber,)
+        assignments.append(ProbeAssignment(target=target, probers=probers))
+
     log.info(
-        "Prober: %d hits → %d probe tasks (product=%d, generic=%d)",
-        len(hits),
+        "Prober: %d targets → %d probe tasks (product=%d, generic=%d, rejected=%d)",
+        len(targets),
         len(assignments),
         product_count,
-        len(unmatched_hits),
+        len(assignments) - product_count,
+        len(rejected),
     )
-    return assignments
+    return assignments, rejected
 
 
 async def _probe_one(
     client: httpx.AsyncClient,
     sem: asyncio.Semaphore,
-    prober_cls: type[Prober],
-    hit: dict[str, Any],
-) -> list[Credential]:
-    host_label = str(hit.get("host", "?"))[:40]
-    p = prober_cls(
-        client,
-        sem,
-        RequestBudget(settings.max_requests_per_target),
-        max_redirects=settings.max_probe_redirects,
-        intrusive_checks=settings.intrusive_checks,
-        authorized_scope=settings.authorized_probe_scope_list,
-    )
+    assignment: ProbeAssignment,
+) -> tuple[list[Credential], ProbeTargetOutcome]:
+    target = assignment.target
+    hit = target.to_hit()
+    hit["_evidence_score"] = score_target(target).score
+    host_label = target.identity.url[:40]
+    budget = RequestBudget(settings.max_requests_per_target)
+    credentials: list[Credential] = []
+    prober_names: list[str] = []
+    status = ProbeStatus.SKIPPED
+    reason = "no-request-issued"
+
     try:
-        return await p.probe(hit)
-    except Exception as e:  # noqa: BLE001
-        log.debug("prober %s on %s crashed: %s", p.product_name, host_label, type(e).__name__)
-        return []
+        for prober_cls in assignment.probers:
+            if budget.remaining <= 0:
+                break
+            prober = prober_cls(
+                client,
+                sem,
+                budget,
+                max_redirects=settings.max_probe_redirects,
+                intrusive_checks=settings.intrusive_checks,
+                authorized_scope=settings.authorized_probe_scope_list,
+            )
+            prober_names.append(prober.product_name)
+            credentials.extend(await prober.probe(hit))
+        if budget.consumed > 0:
+            status = ProbeStatus.ATTEMPTED
+            reason = ""
+    except Exception as exc:  # noqa: BLE001 - isolate each target
+        status = ProbeStatus.FAILED
+        reason = type(exc).__name__
+        log.debug(
+            "prober %s on %s crashed: %s",
+            ",".join(prober_names) or "unknown",
+            host_label,
+            reason,
+        )
+
+    return credentials, ProbeTargetOutcome(
+        identity_hash=target.identity.identity_hash,
+        status=status,
+        request_count=budget.consumed,
+        prober=",".join(prober_names),
+        reason=reason,
+    )
 
 
 async def _run_probe_batch(
-    batch: list[tuple[type[Prober], dict[str, Any]]],
+    batch: list[ProbeAssignment],
     *,
     sem: asyncio.Semaphore,
     concurrency: int,
@@ -174,8 +233,8 @@ async def _run_probe_batch(
     batch_total: int,
     hosts_done_before: int,
     hosts_total: int,
-) -> list[list[Credential]]:
-    """Schedule and await one wave of probe tasks (bounded set of asyncio Tasks)."""
+) -> list[tuple[list[Credential], ProbeTargetOutcome]]:
+    """Schedule and await one bounded wave of target probe assignments."""
     batch_len = len(batch)
     start = hosts_done_before + 1
     end = hosts_done_before + batch_len
@@ -190,30 +249,26 @@ async def _run_probe_batch(
         concurrency,
     )
 
-    # One shared client per batch: avoids per-host client setup and caps open
-    # sockets to roughly the concurrency limit (not the full batch size).
     limits = httpx.Limits(
         max_connections=max(concurrency * 2, settings.max_requests_per_target),
         max_keepalive_connections=concurrency,
     )
-    results: list[list[Credential]] = []
+    results: list[tuple[list[Credential], ProbeTargetOutcome]] = []
     async with httpx.AsyncClient(
         timeout=PROBE_TIMEOUT,
         limits=limits,
         follow_redirects=False,
     ) as client:
         tasks = [
-            asyncio.create_task(_probe_one(client, sem, prober_cls, hit))
-            for prober_cls, hit in batch
+            asyncio.create_task(_probe_one(client, sem, assignment))
+            for assignment in batch
         ]
-        # Progress every ~half-batch (or 50 hosts), so the web log stays alive
-        # without flooding during large waves.
         progress_step = max(50, batch_len // 2) or 1
         batch_creds = 0
         for done, coro in enumerate(asyncio.as_completed(tasks), start=1):
             batch_result = await coro
             results.append(batch_result)
-            batch_creds += len(batch_result)
+            batch_creds += len(batch_result[0])
             if done % progress_step == 0 or done == batch_len:
                 overall = hosts_done_before + done
                 log.info(
@@ -229,7 +284,7 @@ async def _run_probe_batch(
         "Prober batch %d/%d done: +%d creds this batch (hosts %d/%d)",
         batch_idx,
         batch_total,
-        sum(len(r) for r in results),
+        sum(len(credentials) for credentials, _ in results),
         hosts_done_before + batch_len,
         hosts_total,
     )
@@ -248,30 +303,16 @@ def _dedupe_creds(batches: list[list[Credential]]) -> list[Credential]:
     return all_creds
 
 
-async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
-    """Probe all hits for exposed credentials.
+async def probe_hosts(
+    targets: list[DiscoveryTarget], allowed_products: frozenset[str]
+) -> ProbeReport:
+    """Probe canonical targets and report every routing/execution outcome."""
+    if not targets:
+        return ProbeReport(credentials=(), outcomes=())
 
-    Each hit is fingerprinted against all registered probers. Matching probers
-    run concurrently (bounded by a semaphore), scheduled in **batches** so
-    large scans (10k–30k hosts) do not materialize tens of thousands of
-    asyncio Tasks at once. Returns de-duplicated credentials tagged
-    ``source_type="fingerprint"``.
-    """
-    if not hits:
-        return []
-
-    eligible = _eligible_targets(canonicalize_hits(hits), settings.min_probe_evidence_score)
-    hits = []
-    for target, evidence in eligible:
-        hit = target.to_hit()
-        hit["_evidence_score"] = evidence.score
-        hits.append(hit)
-    if not hits:
-        return []
-
-    assignments = _build_assignments(hits)
+    assignments, rejected = _build_assignments(targets, allowed_products)
     if not assignments:
-        return []
+        return ProbeReport(credentials=(), outcomes=tuple(rejected))
 
     concurrency = _prober_concurrency()
     batch_size = _prober_batch_size()
@@ -287,6 +328,7 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
 
     sem = asyncio.Semaphore(concurrency)
     collected: list[list[Credential]] = []
+    outcomes = list(rejected)
     hosts_done = 0
 
     for batch_idx in range(1, batch_total + 1):
@@ -301,14 +343,16 @@ async def probe_hosts(hits: list[dict[str, Any]]) -> list[Credential]:
             hosts_done_before=hosts_done,
             hosts_total=total,
         )
-        collected.extend(batch_results)
+        for credentials, outcome in batch_results:
+            collected.append(credentials)
+            outcomes.append(outcome)
         hosts_done += len(batch)
 
     all_creds = _dedupe_creds(collected)
     log.info(
-        "Prober extracted %d credentials from %d hosts (%d batches)",
+        "Prober extracted %d credentials from %d attempted assignments (%d batches)",
         len(all_creds),
         total,
         batch_total,
     )
-    return all_creds
+    return ProbeReport(credentials=tuple(all_creds), outcomes=tuple(outcomes))

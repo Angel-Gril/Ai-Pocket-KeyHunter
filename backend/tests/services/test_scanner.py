@@ -197,12 +197,24 @@ async def test_run_scan_probes_unique_targets_and_reports_discovery_counts(tmp_p
         ],
     )
     monkeypatch.setattr("aipocket.core.config.settings.gpt_base_url", "")
-    probed: list[dict] = []
+    from aipocket.prober.runner import ProbeReport, ProbeStatus, ProbeTargetOutcome
 
-    async def capture_probe(hits):
-        probed.extend(hits)
-        return []
+    probed = []
 
+    async def capture_probe(targets, allowed_products):
+        probed.extend(targets)
+        return ProbeReport(
+            credentials=(),
+            outcomes=tuple(
+                ProbeTargetOutcome(
+                    identity_hash=target.identity.identity_hash,
+                    status=ProbeStatus.SKIPPED,
+                    request_count=0,
+                    prober="generic",
+                )
+                for target in targets
+            ),
+        )
     monkeypatch.setattr("aipocket.prober.probe_hosts", capture_probe)
     (tmp_path / "run_test").mkdir()
 
@@ -440,6 +452,55 @@ async def test_scanner_passes_forged_key_verdicts_to_finalizer(tmp_path, monkeyp
 
     assert result.total_valid == 0
 
+
+
+@pytest.mark.asyncio
+async def test_scanner_marks_only_probe_targets_with_real_requests(tmp_path, monkeypatch):
+    from aipocket.prober.runner import ProbeReport, ProbeStatus, ProbeTargetOutcome
+    from aipocket.services.dedup import NoopDedupStore
+
+    hits = [
+        {"host": "https://attempted.example", "protocol": "https"},
+        {"host": "https://rejected.example", "protocol": "https"},
+    ]
+    _scan_mocks(monkeypatch, tmp_path, fofa_hits=hits, shodan_hits=[])
+    monkeypatch.setattr("aipocket.core.config.settings.shodan_keys", "")
+
+    class TrackingDedup(NoopDedupStore):
+        def __init__(self):
+            self.marked: list[tuple[str, str]] = []
+
+        async def mark_target(self, stage, target):
+            self.marked.append((stage, target.identity.identity_hash))
+
+    store = TrackingDedup()
+    monkeypatch.setattr("aipocket.services.scanner.get_dedup_store", lambda: _returning(store))
+
+    async def fake_probe(targets, allowed_products):
+        return ProbeReport(
+            credentials=(),
+            outcomes=(
+                ProbeTargetOutcome(
+                    identity_hash=targets[0].identity.identity_hash,
+                    status=ProbeStatus.ATTEMPTED,
+                    request_count=1,
+                    prober="generic",
+                ),
+                ProbeTargetOutcome(
+                    identity_hash=targets[1].identity.identity_hash,
+                    status=ProbeStatus.REJECTED_BY_EVIDENCE,
+                    request_count=0,
+                    prober="",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr("aipocket.prober.probe_hosts", fake_probe)
+
+    await run_scan(max_queries=1)
+
+    expected = canonicalize_hits(hits)[0].identity.identity_hash
+    assert store.marked == [("probe", expected)]
 
 class _returning:
     """Awaitable wrapper so `await get_dedup_store()` returns the cached store."""
