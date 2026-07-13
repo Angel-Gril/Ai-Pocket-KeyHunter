@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -47,7 +47,8 @@ def set_run_dir(run_dir: Path | None) -> None:
 EXTRACT_SYSTEM = (
     "You are a security credential extraction tool. Extract leaked API keys and their "
     "corresponding API URLs/base URLs from the given text. Return ONLY a JSON array, "
-    'no explanation. Each element: {"host": "...", "apikey": "...", "apiurl": "...", "type": "openai|anthropic|google|deepseek|kimi|glm|qwen|siliconflow|generic"}. '
+    'no explanation. Each element: {"entry_id": "...", "apikey": "...", "apiurl": "...", "type": "openai|anthropic|google|deepseek|kimi|glm|qwen|siliconflow|generic"}. '
+    "Copy entry_id exactly from the ENTRY marker containing the credential. "
     "The apikey may be an OpenAI key (sk-proj.../sk-...), Anthropic key (sk-ant...), "
     "Google key (AIza...), DeepSeek key, Moonshot/Kimi key, GLM/Zhipu key, or a generic bearer token. "
     "Skip HTTP header field names, MIME types, and non-key strings. "
@@ -226,7 +227,12 @@ def _hit_to_blob(hit: dict[str, Any]) -> str:
     )
 
 
-def _blob_to_credential(item: dict[str, Any], fallback_host: str) -> Credential | None:
+def _blob_to_credential(
+    item: dict[str, Any], targets_by_id: dict[str, dict[str, Any]]
+) -> Credential | None:
+    target = targets_by_id.get(str(item.get("entry_id", "")))
+    if target is None:
+        return None
     apikey = item.get("apikey", "").strip()
     apiurl = item.get("apiurl", "").strip()
     if not apikey or len(apikey) < 12:
@@ -234,7 +240,7 @@ def _blob_to_credential(item: dict[str, Any], fallback_host: str) -> Credential 
     low = apikey.lower()
     if low.startswith(("access-control", "content-", "application/", "accept-", "cache-")):
         return None
-    host = item.get("host", "") or fallback_host
+    host = str(target.get("host", ""))
     derived_url = apiurl
     if not derived_url and host:
         derived_url = host.rstrip("/") if host.startswith("http") else "https://" + host.rstrip("/")
@@ -356,9 +362,10 @@ async def _extract_batch(
         _dump_failed_batch(batch, batch_idx)
         return GPTBatchReport((), frozenset(), entry_ids)
 
+    targets_by_id = {str(hit["_entry_id"]): hit for hit in batch if hit.get("_entry_id")}
     creds: list[Credential] = []
     for item in items:
-        cred = _blob_to_credential(item, batch[0].get("host", ""))
+        cred = _blob_to_credential(item, targets_by_id)
         if cred:
             creds.append(cred)
     log.info("GPT extract batch %d/%d: +%d creds", batch_idx, total_batches, len(creds))
@@ -393,7 +400,9 @@ async def extract_with_gpt(raw_hits: list[dict[str, Any]]) -> GPTExtractionRepor
     failed: set[str] = set()
 
     async with _make_client() as client:
-        tasks = [_extract_batch(client, sem, batch, idx + 1, total) for idx, batch in enumerate(batches)]
+        tasks = [
+            _extract_batch(client, sem, batch, idx + 1, total) for idx, batch in enumerate(batches)
+        ]
         reports = await asyncio.gather(*tasks)
 
     for report in reports:
