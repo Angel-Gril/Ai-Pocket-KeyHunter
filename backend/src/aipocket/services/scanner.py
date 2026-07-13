@@ -105,15 +105,19 @@ async def run_scan(
         fofa=settings.fofa_query_budget,
         shodan=settings.shodan_query_budget,
     )
+    from .scan_lock import acquire_scan_lease
+
+    lease = await acquire_scan_lease()
     try:
-        return await _run_scan_inner(
-            budgets,
-            run_dir,
-            skip_direct=skip_direct,
-            started=started,
-            dedup=dedup,
-            sources=sources,
-        )
+        async with lease:
+            return await _run_scan_inner(
+                budgets,
+                run_dir,
+                skip_direct=skip_direct,
+                started=started,
+                dedup=dedup,
+                sources=sources,
+            )
     finally:
         await dedup.close()
         current_run_id.reset(token)

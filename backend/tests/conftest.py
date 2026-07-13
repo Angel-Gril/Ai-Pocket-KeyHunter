@@ -8,6 +8,19 @@ from typing import Any
 
 import pytest
 
+
+class _TestScanLease:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return None
+
+
+async def _test_scan_lease():
+    return _TestScanLease()
+
+
 ROOT = Path(__file__).resolve().parents[1]
 
 # Neutralize PostgreSQL config for the whole test session BEFORE anything imports
@@ -20,6 +33,11 @@ ROOT = Path(__file__).resolve().parents[1]
 # off. Tests that exercise the PG paths opt in explicitly via a fake pool.
 os.environ["DATABASE_URL"] = ""
 os.environ["PG_DUAL_WRITE"] = "false"
+
+
+@pytest.fixture(autouse=True)
+def _disable_scan_lock_by_default(monkeypatch):
+    monkeypatch.setattr("aipocket.services.scan_lock.acquire_scan_lease", _test_scan_lease)
 
 
 @pytest.fixture(autouse=True)

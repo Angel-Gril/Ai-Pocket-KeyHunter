@@ -33,8 +33,13 @@ class Scheduler:
                     result.total_credentials,
                     settings.scheduler_interval,
                 )
-            except Exception:
-                log.exception("Scan run failed")
+            except Exception as exc:
+                from aipocket.services.scan_lock import ScanLockedError
+
+                if isinstance(exc, ScanLockedError):
+                    log.info("Scheduled scan skipped: another scan owns the lease")
+                else:
+                    log.exception("Scan run failed")
 
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=settings.scheduler_interval)

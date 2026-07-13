@@ -54,6 +54,7 @@ class Settings(BaseSettings):
 
     scheduler_enabled: bool = False
     scheduler_interval: int = 3600
+    scan_lock_ttl: int = 7200
 
     tavily_base_url: str = ""
     tavily_key: str = ""

@@ -7,7 +7,9 @@ frontend. Entry point for ``aipocket serve`` and uvicorn.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -19,6 +21,25 @@ from .errors import register_error_handlers
 from .scan_manager import ScanManager
 
 log = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    scheduler = None
+    task = None
+    if settings.scheduler_enabled:
+        from aipocket.scheduler import Scheduler
+
+        scheduler = Scheduler()
+        task = asyncio.create_task(scheduler.run_forever())
+        app.state.scheduler = scheduler
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            scheduler.stop()
+        if task is not None:
+            await task
 
 
 def _validate_startup_config() -> None:
@@ -58,6 +79,7 @@ def create_app() -> FastAPI:
         title="aipocket API",
         description="HTTP service layer over the aipocket scanner",
         version="0.1.0",
+        lifespan=_lifespan,
     )
 
     # Singleton scan manager shared across all requests.
