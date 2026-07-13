@@ -12,7 +12,7 @@ from aipocket.core.validation_state import (
 )
 
 from .dedup import DedupStore
-from .high_value_writer import try_save
+from .high_value_writer import should_save, try_save
 from .honeypot import filter_honeypots
 
 
@@ -100,13 +100,29 @@ async def finalize_results(
     )
 
 
-async def commit_final_results(results: list[ValidationResult], *, dedup: DedupStore) -> None:
+@dataclass(frozen=True, slots=True)
+class FinalCommitReport:
+    high_value_final: int
+
+
+async def commit_final_results(
+    results: list[ValidationResult], *, dedup: DedupStore
+) -> FinalCommitReport:
     """Cache + persist final-verified results. Call AFTER balance enrichment.
 
     Kept separate from :func:`finalize_results` so the cached ValidationResult
     and the high-value record both include balance/tier evidence rather than the
     pre-enrichment snapshot.
     """
+    high_value_fingerprints: set[str] = set()
     for result in results:
         await dedup.cache_valid(result)
+        if should_save(result):
+            fingerprint = (
+                result.credential.bundle.secret_fingerprint
+                if result.credential.bundle is not None
+                else result.credential.apikey
+            )
+            high_value_fingerprints.add(fingerprint)
         await save_final_high_value(result)
+    return FinalCommitReport(high_value_final=len(high_value_fingerprints))

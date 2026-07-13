@@ -564,7 +564,7 @@ async def _run_scan_inner(
 
     # Cache + persist high-value AFTER balance enrichment so the saved record
     # carries balance/tier evidence (not the pre-enrichment snapshot).
-    await commit_final_results(valid, dedup=dedup)
+    commit_report = await commit_final_results(valid, dedup=dedup)
 
     # Write valid_*.jsonl + suspicious_*.jsonl after honeypot + balance enrichment
     if run_dir:
@@ -585,7 +585,7 @@ async def _run_scan_inner(
         "active_requests": len(to_validate),
         "final_verified": len(valid),
         "suspicious": len(suspicious),
-        "high_value_final": 0,
+        "high_value_final": commit_report.high_value_final,
         "metrics_version": 2,
         "scan_mode": "incremental",
         "total_hosts": len(targets),
@@ -629,6 +629,7 @@ async def _run_scan_inner(
         active_requests=len(to_validate),
         final_verified=len(valid),
         suspicious=len(suspicious),
+        high_value_final=commit_report.high_value_final,
         total_credentials=len(creds),
         total_valid=len(valid),
         queries_used=queries_used,

@@ -233,7 +233,7 @@ def _list_runs_pg() -> list[dict[str, Any]]:
             """
             SELECT run_id, started_at, total_hosts, total_credentials, total_valid,
                    raw_hits, unique_targets, candidates, active_requests,
-                   final_verified, suspicious, high_value_final, sources,
+                   final_verified, suspicious, high_value_final, metrics_version, sources,
                    (log IS NOT NULL AND log <> '') AS has_log
             FROM runs ORDER BY run_id DESC
             """
@@ -300,7 +300,11 @@ def _list_runs_pg() -> list[dict[str, Any]]:
             "final_verified": _positive_int(run["final_verified"], run["total_valid"], valid_n),
             "suspicious": _positive_int(run["suspicious"], susp_n),
             "sources": sources,
-            "high_value_final": _positive_int(run["high_value_final"], hv_by.get(rid, 0)),
+            "high_value_final": (
+                int(run.get("high_value_final") or 0)
+                if int(run.get("metrics_version") or 1) >= 2
+                else _positive_int(run.get("high_value_final"), hv_by.get(rid, 0))
+            ),
         }
         by_day.setdefault(_day_from_run_id(rid), []).append(entry)
     return [{"day": day, "runs": entries} for day, entries in by_day.items()]
