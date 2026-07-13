@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,23 @@ log = logging.getLogger(__name__)
 # Set by scanner.run_scan() at the start of a run so GPT debug/failed-batch dumps
 # land inside the run folder. None → fall back to results/ root (scripts, tests).
 _CURRENT_RUN_DIR: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GPTBatchReport:
+    credentials: tuple[Credential, ...]
+    successful_entry_ids: frozenset[str]
+    failed_entry_ids: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class GPTExtractionReport:
+    credentials: tuple[Credential, ...]
+    successful_entry_ids: frozenset[str]
+    failed_entry_ids: frozenset[str]
+
+
+_EMPTY_EXTRACTION_REPORT = GPTExtractionReport((), frozenset(), frozenset())
 
 
 def set_run_dir(run_dir: Path | None) -> None:
@@ -133,19 +151,25 @@ async def _chat(
     )
 
 
-def _extract_json_array(text: str) -> list[dict[str, Any]]:
+def _parse_json_array(text: str) -> list[dict[str, Any]] | None:
     text = text.strip().strip("`")
     if text.startswith("json"):
         text = text[4:].strip()
     start = text.find("[")
     end = text.rfind("]")
     if start == -1 or end == -1:
-        return []
+        return None
     try:
         parsed = json.loads(text[start : end + 1])
-        return parsed if isinstance(parsed, list) else []
     except (ValueError, json.JSONDecodeError):
-        return []
+        return None
+    if not isinstance(parsed, list) or not all(isinstance(item, dict) for item in parsed):
+        return None
+    return parsed
+
+
+def _extract_json_array(text: str) -> list[dict[str, Any]]:
+    return _parse_json_array(text) or []
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -268,15 +292,16 @@ async def _extract_batch(
     batch: list[dict[str, Any]],
     batch_idx: int,
     total_batches: int,
-) -> list[Credential]:
+) -> GPTBatchReport:
+    entry_ids = frozenset(str(hit.get("_entry_id", "")) for hit in batch if hit.get("_entry_id"))
     payload_parts = []
-    for i, hit in enumerate(batch):
+    for hit in batch:
         blob = _hit_to_blob(hit)
         if len(blob) < 30:
             continue
-        payload_parts.append(f"--- ENTRY {i} ---\n{blob}")
+        payload_parts.append(f"--- ENTRY {hit.get('_entry_id', '')} ---\n{blob}")
     if not payload_parts:
-        return []
+        return GPTBatchReport((), entry_ids, frozenset())
     payload = "\n\n".join(payload_parts)
     if settings.gpt_debug:
         _dump_debug_payload(batch_idx, payload, batch)
@@ -293,7 +318,7 @@ async def _extract_batch(
                 len(payload),
             )
             _dump_failed_batch(batch, batch_idx)
-            return []
+            return GPTBatchReport((), frozenset(), entry_ids)
         except httpx.HTTPStatusError as e:
             log.warning(
                 "GPT extract batch %d/%d HTTP %s after retries: body[:300]=%r",
@@ -303,7 +328,7 @@ async def _extract_batch(
                 e.response.text[:300],
             )
             _dump_failed_batch(batch, batch_idx)
-            return []
+            return GPTBatchReport((), frozenset(), entry_ids)
         except httpx.HTTPError as e:
             log.warning(
                 "GPT extract batch %d/%d failed (%s): %s",
@@ -313,7 +338,7 @@ async def _extract_batch(
                 e,
             )
             _dump_failed_batch(batch, batch_idx)
-            return []
+            return GPTBatchReport((), frozenset(), entry_ids)
         except (KeyError, ValueError) as e:
             log.warning(
                 "GPT extract batch %d/%d malformed response (%s): %s",
@@ -322,26 +347,34 @@ async def _extract_batch(
                 type(e).__name__,
                 e,
             )
-            return []
+            _dump_failed_batch(batch, batch_idx)
+            return GPTBatchReport((), frozenset(), entry_ids)
+
+    items = _parse_json_array(resp)
+    if items is None:
+        log.warning("GPT extract batch %d/%d returned malformed JSON", batch_idx, total_batches)
+        _dump_failed_batch(batch, batch_idx)
+        return GPTBatchReport((), frozenset(), entry_ids)
+
     creds: list[Credential] = []
-    for item in _extract_json_array(resp):
+    for item in items:
         cred = _blob_to_credential(item, batch[0].get("host", ""))
         if cred:
             creds.append(cred)
     log.info("GPT extract batch %d/%d: +%d creds", batch_idx, total_batches, len(creds))
-    return creds
+    return GPTBatchReport(tuple(creds), entry_ids, frozenset())
 
 
-async def extract_with_gpt(raw_hits: list[dict[str, Any]]) -> list[Credential]:
+async def extract_with_gpt(raw_hits: list[dict[str, Any]]) -> GPTExtractionReport:
     if not settings.gpt_key or not settings.gpt_base_url:
-        return []
+        return _EMPTY_EXTRACTION_REPORT
     hits = [
         h
         for h in raw_hits
         if (h.get("header") or h.get("banner") or h.get("cert") or h.get("body"))
     ]
     if not hits:
-        return []
+        return _EMPTY_EXTRACTION_REPORT
 
     batches = [hits[i : i + _batch_size()] for i in range(0, len(hits), _batch_size())]
     total = len(batches)
@@ -356,20 +389,28 @@ async def extract_with_gpt(raw_hits: list[dict[str, Any]]) -> list[Credential]:
     sem = asyncio.Semaphore(_concurrency())
     seen: set[tuple[str, str]] = set()
     all_creds: list[Credential] = []
+    successful: set[str] = set()
+    failed: set[str] = set()
 
     async with _make_client() as client:
-        tasks = [_extract_batch(client, sem, b, idx + 1, total) for idx, b in enumerate(batches)]
-        results = await asyncio.gather(*tasks)
+        tasks = [_extract_batch(client, sem, batch, idx + 1, total) for idx, batch in enumerate(batches)]
+        reports = await asyncio.gather(*tasks)
 
-    for batch_creds in results:
-        for cred in batch_creds:
+    for report in reports:
+        successful.update(report.successful_entry_ids)
+        failed.update(report.failed_entry_ids)
+        for cred in report.credentials:
             key = (cred.apikey, cred.apiurl)
             if key not in seen:
                 seen.add(key)
                 all_creds.append(cred)
 
     log.info("GPT extracted %d additional credentials", len(all_creds))
-    return all_creds
+    return GPTExtractionReport(
+        credentials=tuple(all_creds),
+        successful_entry_ids=frozenset(successful),
+        failed_entry_ids=frozenset(failed),
+    )
 
 
 def _recheck_concurrency() -> int:

@@ -15,9 +15,10 @@ from pathlib import Path
 
 from aipocket.core.config import settings
 from aipocket.core.models import ScanRunResult
+from aipocket.core.targets import canonicalize_hits
 from aipocket.services.analyzer import extract_with_gpt, recheck_all_with_gpt
 from aipocket.services.extractor import extract_credentials
-from aipocket.services.scanner import _sample_hits_for_gpt, _trim_hits
+from aipocket.services.scanner import _prioritize_targets_for_gpt, _trim_hits
 from aipocket.services.validator import validate_all
 from aipocket.services.writer import write_result
 
@@ -61,15 +62,19 @@ async def main():
     log.info("Extracted %d candidate credentials (regex)", len(creds))
 
     # --- Extract (GPT) ---
-    sampled = _sample_hits_for_gpt(all_hits)
+    sampled = []
+    for target in _prioritize_targets_for_gpt(canonicalize_hits(all_hits))[:5000]:
+        hit = target.to_hit()
+        hit["_entry_id"] = target.identity.identity_hash
+        sampled.append(hit)
     fofa_s = sum(1 for h in sampled if h.get("_source") == "fofa")
     shodan_s = sum(1 for h in sampled if h.get("_source") == "shodan")
     log.info("GPT sampling: %d hits (fofa=%d, shodan=%d)", len(sampled), fofa_s, shodan_s)
 
-    gpt_creds = await extract_with_gpt(sampled)
-    if gpt_creds:
+    gpt_report = await extract_with_gpt(sampled)
+    if gpt_report.credentials:
         existing_keys = {(c.apikey, c.apiurl) for c in creds}
-        for gc in gpt_creds:
+        for gc in gpt_report.credentials:
             if (gc.apikey, gc.apiurl) not in existing_keys:
                 creds.append(gc)
                 existing_keys.add((gc.apikey, gc.apiurl))

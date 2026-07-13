@@ -513,3 +513,80 @@ class _returning:
             return self._store
 
         return _get().__await__()
+
+
+@pytest.mark.asyncio
+async def test_gpt_sampling_filters_seen_before_applying_limit() -> None:
+    from aipocket.services.dedup import NoopDedupStore
+    from aipocket.services.scanner import _select_gpt_targets
+
+    targets = canonicalize_hits(
+        [
+            {
+                "host": f"https://target-{index}.example",
+                "protocol": "https",
+                "banner": "rich response body",
+                "_source": "shodan",
+            }
+            for index in range(6)
+        ]
+    )
+
+    class SeenFirstTwo(NoopDedupStore):
+        async def filter_unseen_targets(self, stage, candidates):
+            assert stage == "gpt"
+            return candidates[2:]
+
+    selected = await _select_gpt_targets(targets, SeenFirstTwo(), limit=3)
+
+    assert [target.identity.hostname for target in selected] == [
+        "target-2.example",
+        "target-3.example",
+        "target-4.example",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scanner_marks_only_successful_gpt_entries(tmp_path, monkeypatch) -> None:
+    from aipocket.prober.runner import ProbeReport
+    from aipocket.services.analyzer import GPTExtractionReport
+    from aipocket.services.dedup import NoopDedupStore
+
+    hits = [
+        {
+            "host": f"https://gpt-{index}.example",
+            "protocol": "https",
+            "banner": "rich response body",
+        }
+        for index in range(2)
+    ]
+    _scan_mocks(monkeypatch, tmp_path, fofa_hits=hits, shodan_hits=[])
+    monkeypatch.setattr("aipocket.core.config.settings.shodan_keys", "")
+
+    class TrackingDedup(NoopDedupStore):
+        def __init__(self):
+            self.marked: list[tuple[str, str]] = []
+
+        async def mark_target(self, stage, target):
+            self.marked.append((stage, target.identity.identity_hash))
+
+    store = TrackingDedup()
+    monkeypatch.setattr("aipocket.services.scanner.get_dedup_store", lambda: _returning(store))
+    monkeypatch.setattr(
+        "aipocket.prober.probe_hosts",
+        lambda *args: _returning(ProbeReport(credentials=(), outcomes=())),
+    )
+
+    async def fake_extract(sampled):
+        return GPTExtractionReport(
+            credentials=(),
+            successful_entry_ids=frozenset({sampled[0]["_entry_id"]}),
+            failed_entry_ids=frozenset({sampled[1]["_entry_id"]}),
+        )
+
+    monkeypatch.setattr("aipocket.services.analyzer.extract_with_gpt", fake_extract)
+
+    await run_scan(max_queries=1)
+
+    targets = canonicalize_hits(hits)
+    assert store.marked == [("gpt", targets[0].identity.identity_hash)]

@@ -102,13 +102,15 @@ async def main():
 
     # Then: GPT extraction
     log.info("Running GPT extraction on %d failed hits...", len(all_failed_hits))
-    gpt_creds = await extract_with_gpt(all_failed_hits)
-    log.info("GPT extraction: %d new credentials", len(gpt_creds))
+    for index, hit in enumerate(all_failed_hits):
+        hit.setdefault("_entry_id", f"retry-{index}")
+    gpt_report = await extract_with_gpt(all_failed_hits)
+    log.info("GPT extraction: %d new credentials", len(gpt_report.credentials))
 
     # Merge regex + GPT (deduplicate)
     all_creds = list(regex_creds)
     seen = {(c.apikey, c.apiurl) for c in all_creds}
-    for c in gpt_creds:
+    for c in gpt_report.credentials:
         if (c.apikey, c.apiurl) not in seen:
             all_creds.append(c)
             seen.add((c.apikey, c.apiurl))

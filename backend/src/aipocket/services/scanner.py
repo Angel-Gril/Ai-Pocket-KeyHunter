@@ -337,31 +337,38 @@ async def _run_scan_inner(
 
     from .analyzer import extract_with_gpt
 
-    sampled = _sample_hits_for_gpt(target_hits)
-    # Cross-run dedup: hosts already GPT-extracted in a previous run are skipped.
-    before_gpt = len(sampled)
-    sampled_identities = {hit["host"] for hit in sampled}
-    sampled_targets = [target for target in targets if target.identity.url in sampled_identities]
-    sampled_targets = await dedup.filter_unseen_targets("gpt", sampled_targets)
-    sampled = [target.to_hit() for target in sampled_targets]
+    before_gpt = len(_prioritize_targets_for_gpt(targets))
+    sampled_targets = await _select_gpt_targets(targets, dedup)
+    sampled = []
+    target_by_entry_id: dict[str, DiscoveryTarget] = {}
+    for target in sampled_targets:
+        entry_id = target.identity.identity_hash
+        hit = target.to_hit()
+        hit["_entry_id"] = entry_id
+        sampled.append(hit)
+        target_by_entry_id[entry_id] = target
     if before_gpt != len(sampled):
         log.info(
-            "Dedup: GPT sampling %d → %d (skipped %d seen hosts)",
+            "Dedup: GPT candidates %d → %d selected unseen hosts",
             before_gpt,
             len(sampled),
-            before_gpt - len(sampled),
         )
-    fofa_sampled = sum(1 for h in sampled if h.get("_source") == "fofa")
-    shodan_sampled = sum(1 for h in sampled if h.get("_source") == "shodan")
+    fofa_sampled = sum(1 for h in sampled if "fofa" in str(h.get("_source", "")).split(","))
+    shodan_sampled = sum(
+        1 for h in sampled if "shodan" in str(h.get("_source", "")).split(",")
+    )
     log.info(
         "GPT sampling: %d hits (fofa=%d, shodan=%d)",
         len(sampled),
         fofa_sampled,
         shodan_sampled,
     )
-    gpt_creds = await extract_with_gpt(sampled)
-    for target in sampled_targets:
-        await dedup.mark_target("gpt", target)
+    gpt_report = await extract_with_gpt(sampled)
+    for entry_id in gpt_report.successful_entry_ids:
+        target = target_by_entry_id.get(entry_id)
+        if target is not None:
+            await dedup.mark_target("gpt", target)
+    gpt_creds = list(gpt_report.credentials)
     if gpt_creds:
         seen = _merge_credentials(creds, gpt_creds, seen)
         log.info("After GPT enrichment: %d candidate credentials", len(creds))
@@ -737,40 +744,38 @@ def _fetch_shodan(
     return all_hits, queries_used
 
 
-def _sample_hits_for_gpt(hits: list[dict], limit: int = 5000) -> list[dict]:
-    """Sample hits for GPT extraction with three-tier priority.
+def _prioritize_targets_for_gpt(targets: list[DiscoveryTarget]) -> list[DiscoveryTarget]:
+    """Order GPT candidates without applying the per-run limit."""
+    tier_key: list[DiscoveryTarget] = []
+    tier_shodan: list[DiscoveryTarget] = []
+    tier_rest: list[DiscoveryTarget] = []
 
-    Tier 1: Hits whose header/banner/body/cert text contains a credential-like pattern.
-    Tier 2: Shodan hits (they carry http.html as banner — the richest text source).
-    Tier 3: Remaining FOFA hits with header/banner content.
-
-    This ensures Shodan's page-body data is never starved out by the larger FOFA set.
-    """
-    seen_hosts: set[str] = set()
-    tier_key: list[dict] = []
-    tier_shodan: list[dict] = []
-    tier_rest: list[dict] = []
-
-    for h in hits:
-        host = h.get("host", "")
-        if host in seen_hosts:
-            continue
-        seen_hosts.add(host)
-
-        blob = (h.get("header", "") or "") + " " + (h.get("banner", "") or "")
-        if h.get("_source") == "shodan":
-            blob += " " + (h.get("cert", "") or "")
+    for target in targets:
+        hit = target.to_hit()
+        blob = (hit.get("header", "") or "") + " " + (hit.get("banner", "") or "")
+        if "shodan" in target.sources:
+            blob += " " + (hit.get("cert", "") or "")
         if _SK_PATTERN.search(blob):
-            tier_key.append(h)
-        elif h.get("_source") == "shodan" and (h.get("banner") or h.get("header")):
-            tier_shodan.append(h)
-        elif h.get("header") or h.get("banner") or h.get("body"):
-            tier_rest.append(h)
+            tier_key.append(target)
+        elif "shodan" in target.sources and (hit.get("banner") or hit.get("header")):
+            tier_shodan.append(target)
+        elif hit.get("header") or hit.get("banner") or hit.get("body"):
+            tier_rest.append(target)
+    return tier_key + tier_shodan + tier_rest
 
-    result = tier_key + tier_shodan + tier_rest
-    if len(result) > limit:
-        result = result[:limit]
-    return result
+
+async def _select_gpt_targets(
+    targets: list[DiscoveryTarget], dedup: DedupStore, limit: int = 5000
+) -> list[DiscoveryTarget]:
+    prioritized = _prioritize_targets_for_gpt(targets)
+    unseen = await dedup.filter_unseen_targets("gpt", prioritized)
+    return unseen[:limit]
+
+
+def _sample_hits_for_gpt(hits: list[dict], limit: int = 5000) -> list[dict]:
+    """Compatibility for one-off scripts: canonicalize, prioritize, then limit."""
+    targets = _prioritize_targets_for_gpt(canonicalize_hits(hits))
+    return [target.to_hit() for target in targets[:limit]]
 
 
 def _trim_hits(hits: list[dict], limit: int = 500) -> list[dict]:
