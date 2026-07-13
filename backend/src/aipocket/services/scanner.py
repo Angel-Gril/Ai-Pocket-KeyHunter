@@ -355,11 +355,13 @@ async def _run_scan_inner(
         for outcome in probe_report.outcomes:
             label = outcome.status.value
             outcome_counts[label] = outcome_counts.get(label, 0) + 1
-            if outcome.request_count <= 0:
-                continue
             target = target_by_identity.get(outcome.identity_hash)
-            if target is not None:
+            if target is None:
+                continue
+            if outcome.request_count > 0:
                 await dedup.mark_target("probe", target)
+            elif mode == "full":
+                await dedup.clear_target("probe", target)
         log.info(
             "Prober outcomes: attempted=%d rejected_by_evidence=%d skipped=%d failed=%d",
             outcome_counts.get("attempted", 0),
@@ -408,6 +410,9 @@ async def _run_scan_inner(
         target = target_by_entry_id.get(entry_id)
         if target is not None:
             await dedup.mark_target("gpt", target)
+    for entry_id in gpt_report.failed_entry_ids:
+        if mode == "full" and (target := target_by_entry_id.get(entry_id)) is not None:
+            await dedup.clear_target("gpt", target)
     gpt_creds = list(gpt_report.credentials)
     if gpt_creds:
         observe_credentials(ExtractionMethod.GPT, gpt_creds)

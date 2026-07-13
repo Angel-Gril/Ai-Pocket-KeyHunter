@@ -63,6 +63,7 @@ class DedupStore(Protocol):
     async def mark_host(self, host: str) -> None: ...
     async def filter_unseen_hosts(self, hosts: list[dict]) -> list[dict]: ...
     async def mark_target(self, stage: str, target: DiscoveryTarget) -> None: ...
+    async def clear_target(self, stage: str, target: DiscoveryTarget) -> None: ...
     async def filter_unseen_targets(
         self, stage: str, targets: list[DiscoveryTarget]
     ) -> list[DiscoveryTarget]: ...
@@ -90,6 +91,9 @@ class NoopDedupStore:
         return hosts
 
     async def mark_target(self, stage: str, target: DiscoveryTarget) -> None:
+        pass
+
+    async def clear_target(self, stage: str, target: DiscoveryTarget) -> None:
         pass
 
     async def filter_unseen_targets(
@@ -147,6 +151,9 @@ class RedisDedupStore:
             ex=settings.dedup_host_ttl,
         )
 
+    async def clear_target(self, stage: str, target: DiscoveryTarget) -> None:
+        await self._r.delete(self._k(f"target:{stage}:{target.identity.identity_hash}"))
+
     async def filter_unseen_targets(
         self, stage: str, targets: list[DiscoveryTarget]
     ) -> list[DiscoveryTarget]:
@@ -187,11 +194,7 @@ class RedisDedupStore:
         if outcome not in {"rejected", "transient"}:
             raise ValueError(f"unknown failure outcome: {outcome}")
         key = _cred_key(cred)
-        ttl = (
-            settings.dedup_rejected_ttl
-            if outcome == "rejected"
-            else settings.dedup_transient_ttl
-        )
+        ttl = settings.dedup_rejected_ttl if outcome == "rejected" else settings.dedup_transient_ttl
         async with self._r.pipeline(transaction=True) as pipe:
             pipe.delete(self._k(f"cred:ok:{key}"), self._k(f"cred:bal:{key}"))
             pipe.set(self._k(f"cred:outcome:{key}"), outcome, ex=ttl)
