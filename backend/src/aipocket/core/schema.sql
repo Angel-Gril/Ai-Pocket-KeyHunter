@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS runs (
     final_verified   INTEGER NOT NULL DEFAULT 0,
     suspicious       INTEGER NOT NULL DEFAULT 0,
     high_value_final INTEGER NOT NULL DEFAULT 0,
+    metrics_version  INTEGER NOT NULL DEFAULT 2,
+    scan_mode        TEXT NOT NULL DEFAULT 'incremental',
     log               TEXT                     -- run.log full text, written when the run ends
 );
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS raw_hits INTEGER NOT NULL DEFAULT 0;
@@ -38,6 +40,8 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS active_requests INTEGER NOT NULL DEFAU
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS final_verified INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS suspicious INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS high_value_final INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS metrics_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS scan_mode TEXT NOT NULL DEFAULT 'incremental';
 
 -- One row per valid/suspicious ValidationResult. `seq` (0-based within
 -- (run_id, kind)) replaces the old JSONL file line index used by reveal/export.
@@ -63,14 +67,38 @@ CREATE TABLE IF NOT EXISTS query_metrics (
     unique_targets   INTEGER NOT NULL DEFAULT 0,
     active_requests  INTEGER NOT NULL DEFAULT 0,
     candidates       INTEGER NOT NULL DEFAULT 0,
+    prefilter_survivors INTEGER NOT NULL DEFAULT 0,
     auth_confirmed   INTEGER NOT NULL DEFAULT 0,
     final_verified   INTEGER NOT NULL DEFAULT 0,
     noauth_rejected  INTEGER NOT NULL DEFAULT 0,
     query_credits    INTEGER NOT NULL DEFAULT 0,
+    attribution_version INTEGER NOT NULL DEFAULT 2,
     PRIMARY KEY (run_id, source, query)
 );
 CREATE INDEX IF NOT EXISTS idx_query_metrics_run ON query_metrics (run_id);
 CREATE INDEX IF NOT EXISTS idx_query_metrics_source_query ON query_metrics (source, query);
+ALTER TABLE query_metrics ADD COLUMN IF NOT EXISTS prefilter_survivors INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE query_metrics ADD COLUMN IF NOT EXISTS attribution_version INTEGER NOT NULL DEFAULT 1;
+
+CREATE TABLE IF NOT EXISTS extraction_method_aggregates (
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    method TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    PRIMARY KEY (run_id, method)
+);
+
+CREATE TABLE IF NOT EXISTS validation_outcome_aggregates (
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    query TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    validation_state TEXT NOT NULL,
+    error_class TEXT NOT NULL,
+    status_code INTEGER,
+    count INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_validation_outcomes_run
+    ON validation_outcome_aggregates (run_id);
 
 -- High-value keys accumulated across all runs, deduped by apikey (last write
 -- wins via UPSERT). record == high_value_writer._build_entry() output.

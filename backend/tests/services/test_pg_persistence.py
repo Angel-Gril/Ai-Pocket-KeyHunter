@@ -21,7 +21,12 @@ from typing import Any
 
 import pytest
 
-from aipocket.core.metrics import QueryFunnel, QueryMetric
+from aipocket.core.metrics import (
+    ExtractionMethodAggregate,
+    QueryFunnel,
+    QueryMetric,
+    ValidationOutcomeAggregate,
+)
 from aipocket.core.models import Credential, ValidationResult
 
 
@@ -228,13 +233,81 @@ class TestPersistRunPg:
             "product=example",
             4,
             3,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
+            0,  # active_requests
+            0,  # candidates
+            0,  # prefilter_survivors
+            0,  # auth_confirmed
+            1,  # final_verified
+            0,  # noauth_rejected
+            0,  # query_credits
+            2,  # attribution_version
         )
+
+    def test_persists_low_cardinality_outcomes_without_secret_material(self, fake_pg):
+        pool = fake_pg()
+        from aipocket.services.writer import persist_run_pg
+
+        outcomes = [
+            ValidationOutcomeAggregate(
+                source="fofa",
+                query="q1",
+                provider="openai",
+                validation_state="final_verified",
+                error_class="none",
+                status_code=200,
+                count=1,
+            ),
+            ValidationOutcomeAggregate(
+                source="fofa",
+                query="q1",
+                provider="openai",
+                validation_state="auth_rejected",
+                error_class="auth",
+                status_code=401,
+                count=1,
+            ),
+        ]
+        methods = [ExtractionMethodAggregate(method="regex", count=2)]
+        secret = "sk-proj-must-not-be-persisted"
+
+        persist_run_pg(
+            "run_outcomes",
+            {"started_at": "2026-01-01T00:00:00Z", "active_requests": 2},
+            [],
+            [],
+            validation_outcomes=outcomes,
+            observation_counts=methods,
+        )
+
+        outcome_rows = pool.sql_containing("INSERT INTO validation_outcome_aggregates")
+        assert len(outcome_rows) == 2
+        method_rows = pool.sql_containing("INSERT INTO extraction_method_aggregates")
+        assert len(method_rows) == 1
+        assert secret not in repr(outcome_rows)
+        assert secret not in repr(method_rows)
+
+    def test_rejects_outcome_count_invariant_break(self, fake_pg):
+        fake_pg()
+        from aipocket.services.writer import persist_run_pg
+
+        with pytest.raises(ValueError, match="active_requests"):
+            persist_run_pg(
+                "run_bad_outcomes",
+                {"started_at": "2026-01-01T00:00:00Z", "active_requests": 2},
+                [],
+                [],
+                validation_outcomes=[
+                    ValidationOutcomeAggregate(
+                        source="fofa",
+                        query="q1",
+                        provider="unknown",
+                        validation_state="transient_error",
+                        error_class="timeout",
+                        status_code=None,
+                        count=1,
+                    )
+                ],
+            )
 
 
 # ---------------------------------------------------------------------------

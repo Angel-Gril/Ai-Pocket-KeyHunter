@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from aipocket.core.config import settings
-from aipocket.core.metrics import QueryMetric
+from aipocket.core.metrics import (
+    ExtractionMethodAggregate,
+    QueryMetric,
+    ValidationOutcomeAggregate,
+)
 from aipocket.core.models import ScanRunResult, ValidationResult
 
 log = logging.getLogger(__name__)
@@ -70,6 +74,8 @@ def persist_run_pg(
     valid: list[ValidationResult],
     suspicious: list[ValidationResult],
     query_metrics: list[QueryMetric] | None = None,
+    validation_outcomes: list[ValidationOutcomeAggregate] | None = None,
+    observation_counts: list[ExtractionMethodAggregate] | None = None,
 ) -> None:
     """Write one run's metadata + valid/suspicious results in a SINGLE transaction.
 
@@ -82,6 +88,13 @@ def persist_run_pg(
 
     from aipocket.core.db import get_pool
 
+    active_requests = int(metadata.get("active_requests", 0))
+    if (
+        validation_outcomes is not None
+        and sum(row.count for row in validation_outcomes) != active_requests
+    ):
+        raise ValueError("validation outcome count must equal active_requests")
+
     pool = get_pool()
     with pool.connection() as conn, conn.transaction():
         conn.execute(
@@ -90,8 +103,9 @@ def persist_run_pg(
                               hits_by_source, queries_used, total_hosts,
                               total_credentials, total_valid, raw_hits,
                               unique_targets, candidates, active_requests,
-                              final_verified, suspicious, high_value_final)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              final_verified, suspicious, high_value_final,
+                              metrics_version, scan_mode)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (run_id) DO UPDATE SET
                 finished_at = EXCLUDED.finished_at,
                 state = EXCLUDED.state,
@@ -107,7 +121,9 @@ def persist_run_pg(
                 active_requests = EXCLUDED.active_requests,
                 final_verified = EXCLUDED.final_verified,
                 suspicious = EXCLUDED.suspicious,
-                high_value_final = EXCLUDED.high_value_final
+                high_value_final = EXCLUDED.high_value_final,
+                metrics_version = EXCLUDED.metrics_version,
+                scan_mode = EXCLUDED.scan_mode
             """,
             (
                 run_id,
@@ -127,6 +143,8 @@ def persist_run_pg(
                 metadata.get("final_verified", 0),
                 metadata.get("suspicious", 0),
                 metadata.get("high_value_final", 0),
+                metadata.get("metrics_version", 2),
+                metadata.get("scan_mode", "incremental"),
             ),
         )
         # Replace this run's result rows so a re-persist is idempotent.
@@ -149,19 +167,22 @@ def persist_run_pg(
                 """
                 INSERT INTO query_metrics (
                     run_id, source, query, raw_hits, unique_targets,
-                    active_requests, candidates, auth_confirmed, final_verified,
-                    noauth_rejected, query_credits
+                    active_requests, candidates, prefilter_survivors,
+                    auth_confirmed, final_verified, noauth_rejected, query_credits,
+                    attribution_version
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (run_id, source, query) DO UPDATE SET
                     raw_hits = EXCLUDED.raw_hits,
                     unique_targets = EXCLUDED.unique_targets,
                     active_requests = EXCLUDED.active_requests,
                     candidates = EXCLUDED.candidates,
+                    prefilter_survivors = EXCLUDED.prefilter_survivors,
                     auth_confirmed = EXCLUDED.auth_confirmed,
                     final_verified = EXCLUDED.final_verified,
                     noauth_rejected = EXCLUDED.noauth_rejected,
-                    query_credits = EXCLUDED.query_credits
+                    query_credits = EXCLUDED.query_credits,
+                    attribution_version = EXCLUDED.attribution_version
                 """,
                 (
                     run_id,
@@ -171,10 +192,41 @@ def persist_run_pg(
                     funnel.unique_targets,
                     funnel.active_requests,
                     funnel.candidates,
+                    funnel.prefilter_survivors,
                     funnel.auth_confirmed,
                     funnel.final_verified,
                     funnel.noauth_rejected,
                     funnel.query_credits,
+                    metric.attribution_version,
+                ),
+            )
+        conn.execute("DELETE FROM extraction_method_aggregates WHERE run_id = %s", (run_id,))
+        for aggregate in observation_counts or []:
+            conn.execute(
+                """
+                INSERT INTO extraction_method_aggregates (run_id, method, count)
+                VALUES (%s, %s, %s)
+                """,
+                (run_id, aggregate.method, aggregate.count),
+            )
+        conn.execute("DELETE FROM validation_outcome_aggregates WHERE run_id = %s", (run_id,))
+        for aggregate in validation_outcomes or []:
+            conn.execute(
+                """
+                INSERT INTO validation_outcome_aggregates (
+                    run_id, source, query, provider, validation_state,
+                    error_class, status_code, count
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    run_id,
+                    aggregate.source,
+                    aggregate.query,
+                    aggregate.provider,
+                    aggregate.validation_state,
+                    aggregate.error_class,
+                    aggregate.status_code,
+                    aggregate.count,
                 ),
             )
     log.info("PG run persisted: %s (%d valid, %d suspicious)", run_id, len(valid), len(suspicious))

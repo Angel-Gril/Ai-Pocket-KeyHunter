@@ -8,7 +8,12 @@ from pathlib import Path
 
 from aipocket.clients.fofa import FofaClient
 from aipocket.core.config import settings
-from aipocket.core.metrics import QueryUsage
+from aipocket.core.metrics import (
+    ExtractionMethodAggregate,
+    QueryUsage,
+    ValidationOutcomeAggregate,
+    classify_error,
+)
 from aipocket.core.models import Credential, ScanRunResult, ValidationResult
 from aipocket.core.observations import ExtractionMethod, ObservationRegistry
 from aipocket.core.targets import DiscoveryTarget, canonicalize_hits
@@ -400,6 +405,8 @@ async def _run_scan_inner(
             "final_verified": 0,
             "suspicious": 0,
             "high_value_final": 0,
+            "metrics_version": 2,
+            "scan_mode": "incremental",
             "queries_used": queries_used,
         }
         if run_dir:
@@ -497,6 +504,35 @@ async def _run_scan_inner(
         suspicious_hosts=suspicious_urls,
     )
     valid = finalized.final_verified
+
+    outcome_groups: dict[tuple[str, str, str, str, str, int | None], int] = {}
+    for result in fresh_results:
+        observation = observations.get(result.credential)
+        if observation is None:
+            raise ValueError("fresh validation result has no canonical observation")
+        source, query = observation.primary_provenance
+        provider = result.provider_info.provider
+        key = (
+            source,
+            query,
+            provider,
+            result.validation_state,
+            classify_error(result.error, result.validation_state, result.status_code),
+            result.status_code,
+        )
+        outcome_groups[key] = outcome_groups.get(key, 0) + 1
+    validation_outcomes = [
+        ValidationOutcomeAggregate(*key, count=count)
+        for key, count in sorted(outcome_groups.items(), key=lambda item: repr(item[0]))
+    ]
+    method_counts: dict[str, int] = {}
+    for observation in observations.observations:
+        method_counts[observation.method.value] = method_counts.get(observation.method.value, 0) + 1
+    observation_counts = [
+        ExtractionMethodAggregate(method=method, count=count)  # type: ignore[arg-type]
+        for method, count in sorted(method_counts.items())
+    ]
+
     record_credentials("final_verified", [result.credential for result in valid])
     rejected_hosts = no_auth_urls - suspicious_urls
     record_credentials(
@@ -550,6 +586,8 @@ async def _run_scan_inner(
         "final_verified": len(valid),
         "suspicious": len(suspicious),
         "high_value_final": 0,
+        "metrics_version": 2,
+        "scan_mode": "incremental",
         "total_hosts": len(targets),
         "total_credentials": len(creds),
         "queries_used": queries_used,
@@ -575,6 +613,8 @@ async def _run_scan_inner(
             valid,
             suspicious,
             query_metrics.snapshot(),
+            validation_outcomes,
+            observation_counts,
         )
 
     return ScanRunResult(
