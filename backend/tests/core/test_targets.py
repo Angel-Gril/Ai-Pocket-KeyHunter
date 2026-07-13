@@ -33,6 +33,7 @@ def test_same_endpoint_from_sources_becomes_one_target():
     assert merged[0].identity == TargetIdentity("https", "example.com", 443)
     assert merged[0].sources == frozenset({"fofa", "shodan"})
     assert merged[0].query_ids == frozenset({"query-1", "query-2"})
+    assert merged[0].provenance_pairs == (("fofa", "query-1"), ("shodan", "query-2"))
     assert merged[0].advisory_ids == frozenset({"CVE-1", "CVE-2"})
     assert merged[0].product_hints == frozenset({"dify"})
     assert merged[0].content_evidence == ("server: a", "body-b")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from aipocket.core.models import Credential
+from aipocket.core.observations import ExtractionMethod, ObservationRegistry
 from aipocket.services.query_metrics import QueryMetricsCollector
 
 
@@ -31,3 +33,44 @@ def test_snapshot_is_immutable_and_does_not_change_after_later_increments() -> N
     assert first[0].funnel.candidates == 1
     assert collector.snapshot()[0].funnel.candidates == 3
     assert collector.snapshot()[0].funnel.auth_confirmed == 1
+
+
+def test_canonical_observation_is_counted_once_with_first_attribution() -> None:
+    registry = ObservationRegistry()
+    credential = Credential(
+        apikey="sk-proj-" + "a" * 24,
+        apiurl="https://api.example/v1/",
+        host="https://leak.example",
+    )
+    first = registry.observe(
+        credential,
+        ExtractionMethod.REGEX,
+        (("fofa", "query-1"), ("shodan", "query-2")),
+    )
+    registry.observe(
+        credential,
+        ExtractionMethod.PROBER,
+        (("shodan", "query-2"),),
+    )
+    registry.observe(
+        credential,
+        ExtractionMethod.GPT,
+        (("fofa", "query-1"),),
+    )
+
+    collector = QueryMetricsCollector()
+    collector.observe("candidates", first)
+    collector.observe("candidates", registry.observations[0])
+    rows = collector.snapshot()
+
+    assert len(registry.observations) == 1
+    assert registry.observations[0].method is ExtractionMethod.REGEX
+    assert registry.observations[0].primary_provenance == ("fofa", "query-1")
+    assert registry.observations[0].all_provenance == {
+        ("fofa", "query-1"),
+        ("shodan", "query-2"),
+    }
+    assert len(rows) == 1
+    assert rows[0].query == "query-1"
+    assert rows[0].funnel.candidates == 1
+    assert rows[0].attribution_version == 2

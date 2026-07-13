@@ -121,11 +121,14 @@ def load_query_history(source: str) -> tuple[QueryMetric, ...]:
                    sum(unique_targets) AS unique_targets,
                    sum(active_requests) AS active_requests,
                    sum(candidates) AS candidates,
+                   sum(prefilter_survivors) AS prefilter_survivors,
                    sum(auth_confirmed) AS auth_confirmed,
                    sum(final_verified) AS final_verified,
                    sum(noauth_rejected) AS noauth_rejected,
                    sum(query_credits) AS query_credits
-            FROM query_metrics WHERE source = %s GROUP BY source, query ORDER BY query
+            FROM query_metrics
+            WHERE source = %s AND attribution_version = 2
+            GROUP BY source, query ORDER BY query
             """,
             (source,),
         ).fetchall()

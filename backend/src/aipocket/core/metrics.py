@@ -12,6 +12,7 @@ class QueryFunnel(BaseModel):
     unique_targets: int = 0
     active_requests: int = 0
     candidates: int = 0
+    prefilter_survivors: int = 0
     auth_confirmed: int = 0
     final_verified: int = 0
     noauth_rejected: int = 0
@@ -24,6 +25,7 @@ class QueryMetric(BaseModel):
     source: str
     query: str
     funnel: QueryFunnel
+    attribution_version: int = 2
 
 
 @dataclass(frozen=True, slots=True)

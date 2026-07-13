@@ -32,7 +32,7 @@ class DiscoveryTarget:
     identity: TargetIdentity
     sources: frozenset[str] = field(default_factory=frozenset)
     query_ids: frozenset[str] = field(default_factory=frozenset)
-    provenance_pairs: frozenset[tuple[str, str]] = field(default_factory=frozenset)
+    provenance_pairs: tuple[tuple[str, str], ...] = ()
     advisory_ids: frozenset[str] = field(default_factory=frozenset)
     product_hints: frozenset[str] = field(default_factory=frozenset)
     aliases: frozenset[str] = field(default_factory=frozenset)
@@ -62,6 +62,18 @@ def _strings(hit: dict[str, Any], *keys: str) -> frozenset[str]:
         elif isinstance(value, (list, tuple, set, frozenset)):
             values.update(str(item).strip() for item in value if str(item).strip())
     return frozenset(values)
+
+
+def _strings_in_order(hit: dict[str, Any], *keys: str) -> tuple[str, ...]:
+    values: list[str] = []
+    for key in keys:
+        value = hit.get(key)
+        items = value if isinstance(value, (list, tuple)) else (value,)
+        for item in items:
+            text = str(item or "").strip()
+            if text and text not in values:
+                values.append(text)
+    return tuple(values)
 
 
 def _identity(hit: dict[str, Any]) -> TargetIdentity | None:
@@ -103,10 +115,10 @@ def canonicalize_hits(hits: list[dict[str, Any]]) -> list[DiscoveryTarget]:
             identity=identity,
             sources=_strings(hit, "_source"),
             query_ids=_strings(hit, "_query_id", "_query_ids"),
-            provenance_pairs=frozenset(
+            provenance_pairs=tuple(
                 (source, query)
-                for source in _strings(hit, "_source")
-                for query in _strings(hit, "_query_id")
+                for source in _strings_in_order(hit, "_source")
+                for query in _strings_in_order(hit, "_query_id")
             ),
             advisory_ids=_strings(hit, "_cve", "_cves"),
             product_hints=frozenset(v.lower() for v in _strings(hit, "_product", "_product_hints")),
@@ -122,7 +134,9 @@ def canonicalize_hits(hits: list[dict[str, Any]]) -> list[DiscoveryTarget]:
             identity=identity,
             sources=previous.sources | current.sources,
             query_ids=previous.query_ids | current.query_ids,
-            provenance_pairs=previous.provenance_pairs | current.provenance_pairs,
+            provenance_pairs=tuple(
+                dict.fromkeys(previous.provenance_pairs + current.provenance_pairs)
+            ),
             advisory_ids=previous.advisory_ids | current.advisory_ids,
             product_hints=previous.product_hints | current.product_hints,
             aliases=previous.aliases | current.aliases,

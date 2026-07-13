@@ -10,6 +10,7 @@ from aipocket.clients.fofa import FofaClient
 from aipocket.core.config import settings
 from aipocket.core.metrics import QueryUsage
 from aipocket.core.models import Credential, ScanRunResult, ValidationResult
+from aipocket.core.observations import ExtractionMethod, ObservationRegistry
 from aipocket.core.targets import DiscoveryTarget, canonicalize_hits
 
 from .dedup import DedupStore, get_dedup_store
@@ -192,7 +193,6 @@ async def _run_scan_inner(
     for target in targets:
         for source, query in target.provenance_pairs:
             query_metrics.increment(source, query, unique_targets=1)
-    target_hits = [target.to_hit() for target in targets]
     hits_by_source["fofa"] = len(fofa_hits)
     hits_by_source["shodan"] = len(shodan_hits)
 
@@ -213,6 +213,7 @@ async def _run_scan_inner(
     # -> GPT recheck -> balance
     # ------------------------------------------------------------------
     creds = extract_credentials(all_hits)
+    observations = ObservationRegistry()
     # Map a credential back to its discovery target for per-query funnel metrics.
     # regex-extracted creds carry the RAW hit host (e.g. "1.2.3.4:8080"), while
     # probed/GPT creds carry the canonical identity url ("https://1.2.3.4:8080").
@@ -223,18 +224,23 @@ async def _run_scan_inner(
         for alias in (target.identity.url, *target.aliases):
             target_by_alias.setdefault(alias, target)
 
-    def record_credentials(metric: str, credentials: list[Credential]) -> None:
+    def observe_credentials(method: ExtractionMethod, credentials: list[Credential]) -> None:
         for credential in credentials:
             target = (
                 target_by_alias.get(credential.host)
                 or target_by_alias.get(credential.apiurl)
                 or target_by_alias.get(credential.leak_host)
             )
-            if target is None:
-                continue
-            for source, query in target.provenance_pairs:
-                query_metrics.increment(source, query, **{metric: 1})
+            if target is not None and target.provenance_pairs:
+                observations.observe(credential, method, target.provenance_pairs)
 
+    def record_credentials(metric: str, credentials: list[Credential]) -> None:
+        for credential in credentials:
+            observation = observations.get(credential)
+            if observation is not None:
+                query_metrics.observe(metric, observation)
+
+    observe_credentials(ExtractionMethod.REGEX, creds)
     record_credentials("candidates", creds)
     seen = {_credential_identity(c) for c in creds}
     log.info("Extracted %d candidate credentials (regex)", len(creds))
@@ -250,6 +256,7 @@ async def _run_scan_inner(
 
     pre_filtered_count = len(creds)
     creds = pre_filter_credentials(creds)
+    record_credentials("prefilter_survivors", creds)
     log.info(
         "Pre-filter: %d → %d credentials (rejected %d bad formats)",
         pre_filtered_count,
@@ -313,9 +320,7 @@ async def _run_scan_inner(
 
         probe_report = await probe_hosts(ordered_targets, safe_products)
         probed_creds = list(probe_report.credentials)
-        target_by_identity = {
-            target.identity.identity_hash: target for target in ordered_targets
-        }
+        target_by_identity = {target.identity.identity_hash: target for target in ordered_targets}
         outcome_counts: dict[str, int] = {}
         for outcome in probe_report.outcomes:
             label = outcome.status.value
@@ -332,7 +337,10 @@ async def _run_scan_inner(
             outcome_counts.get("skipped", 0),
             outcome_counts.get("failed", 0),
         )
+        observe_credentials(ExtractionMethod.PROBER, probed_creds)
         seen = _merge_credentials(creds, probed_creds, seen)
+        record_credentials("candidates", probed_creds)
+        record_credentials("prefilter_survivors", probed_creds)
         log.info("After active probing: %d candidate credentials", len(creds))
 
     from .analyzer import extract_with_gpt
@@ -354,9 +362,7 @@ async def _run_scan_inner(
             len(sampled),
         )
     fofa_sampled = sum(1 for h in sampled if "fofa" in str(h.get("_source", "")).split(","))
-    shodan_sampled = sum(
-        1 for h in sampled if "shodan" in str(h.get("_source", "")).split(",")
-    )
+    shodan_sampled = sum(1 for h in sampled if "shodan" in str(h.get("_source", "")).split(","))
     log.info(
         "GPT sampling: %d hits (fofa=%d, shodan=%d)",
         len(sampled),
@@ -370,7 +376,10 @@ async def _run_scan_inner(
             await dedup.mark_target("gpt", target)
     gpt_creds = list(gpt_report.credentials)
     if gpt_creds:
+        observe_credentials(ExtractionMethod.GPT, gpt_creds)
         seen = _merge_credentials(creds, gpt_creds, seen)
+        record_credentials("candidates", gpt_creds)
+        record_credentials("prefilter_survivors", gpt_creds)
         log.info("After GPT enrichment: %d candidate credentials", len(creds))
 
     if not creds:
