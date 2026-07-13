@@ -30,7 +30,7 @@ async def test_no_auth_result_is_rejected_before_persistence(monkeypatch):
 
     assert finalized.final_verified == []
     dedup.cache_valid.assert_not_awaited()
-    dedup.mark_rejected.assert_awaited_once_with(result.credential)
+    dedup.mark_failure.assert_awaited_once_with(result.credential, "rejected")
     save.assert_not_awaited()
 
     # commit runs only over final_verified — nothing to persist here.
@@ -50,10 +50,24 @@ async def test_suspicious_429_remains_rate_limited_unconfirmed(monkeypatch):
     )
 
     assert finalized.rate_limited_unconfirmed == [result]
-    dedup.mark_transient.assert_awaited_once_with(result.credential)
+    dedup.mark_failure.assert_awaited_once_with(result.credential, "transient")
     dedup.cache_valid.assert_not_awaited()
     save.assert_not_awaited()
 
+
+
+async def test_transient_error_uses_transient_cache_outcome() -> None:
+    result = _result(host="timeout.example")
+    result.valid = False
+    result.validation_state = "transient_error"
+    dedup = AsyncMock()
+
+    finalized = await finalize_results(
+        [result], dedup=dedup, no_auth_hosts=set(), suspicious_hosts=set()
+    )
+
+    assert finalized.rejected == [result]
+    dedup.mark_failure.assert_awaited_once_with(result.credential, "transient")
 
 async def test_empty_run_does_not_inherit_previous_verdicts():
     finalized = await finalize_results(

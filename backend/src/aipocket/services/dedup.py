@@ -23,7 +23,7 @@ import contextlib
 import hashlib
 import json
 import logging
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from aipocket.core.config import settings
 
@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _PREFIX = "aipocket:dedup"
+
+FailureOutcome = Literal["rejected", "transient"]
 
 
 def _h(s: str) -> str:
@@ -68,10 +70,8 @@ class DedupStore(Protocol):
     # ---- credential-level validation cache ----
     async def get_cached_valid(self, cred: Credential) -> ValidationResult | None: ...
     async def cache_valid(self, result: ValidationResult) -> None: ...
-    async def is_recently_failed(self, cred: Credential) -> bool: ...
-    async def mark_failed(self, cred: Credential) -> None: ...
-    async def mark_rejected(self, cred: Credential) -> None: ...
-    async def mark_transient(self, cred: Credential) -> None: ...
+    async def get_failure_outcome(self, cred: Credential) -> FailureOutcome | None: ...
+    async def mark_failure(self, cred: Credential, outcome: FailureOutcome) -> None: ...
 
     # ---- balance cache ----
     async def get_cached_balance(self, cred: Credential) -> dict[str, Any] | None: ...
@@ -103,16 +103,10 @@ class NoopDedupStore:
     async def cache_valid(self, result: ValidationResult) -> None:
         pass
 
-    async def is_recently_failed(self, cred: Credential) -> bool:
-        return False
+    async def get_failure_outcome(self, cred: Credential) -> FailureOutcome | None:
+        return None
 
-    async def mark_failed(self, cred: Credential) -> None:
-        pass
-
-    async def mark_rejected(self, cred: Credential) -> None:
-        pass
-
-    async def mark_transient(self, cred: Credential) -> None:
+    async def mark_failure(self, cred: Credential, outcome: FailureOutcome) -> None:
         pass
 
     async def get_cached_balance(self, cred: Credential) -> dict[str, Any] | None:
@@ -175,27 +169,33 @@ class RedisDedupStore:
             return None
 
     async def cache_valid(self, result: ValidationResult) -> None:
-        await self._r.set(
-            self._k(f"cred:ok:{_cred_key(result.credential)}"),
-            result.model_dump_json(),
-            ex=settings.dedup_cred_ttl,
+        key = _cred_key(result.credential)
+        async with self._r.pipeline(transaction=True) as pipe:
+            pipe.delete(self._k(f"cred:outcome:{key}"))
+            pipe.set(
+                self._k(f"cred:ok:{key}"),
+                result.model_dump_json(),
+                ex=settings.dedup_cred_ttl,
+            )
+            await pipe.execute()
+
+    async def get_failure_outcome(self, cred: Credential) -> FailureOutcome | None:
+        raw = await self._r.get(self._k(f"cred:outcome:{_cred_key(cred)}"))
+        return raw if raw in {"rejected", "transient"} else None
+
+    async def mark_failure(self, cred: Credential, outcome: FailureOutcome) -> None:
+        if outcome not in {"rejected", "transient"}:
+            raise ValueError(f"unknown failure outcome: {outcome}")
+        key = _cred_key(cred)
+        ttl = (
+            settings.dedup_rejected_ttl
+            if outcome == "rejected"
+            else settings.dedup_transient_ttl
         )
-
-    async def is_recently_failed(self, cred: Credential) -> bool:
-        return bool(await self._r.get(self._k(f"cred:fail:{_cred_key(cred)}")))
-
-    async def mark_failed(self, cred: Credential) -> None:
-        await self._r.set(self._k(f"cred:fail:{_cred_key(cred)}"), "1", ex=settings.dedup_fail_ttl)
-
-    async def mark_rejected(self, cred: Credential) -> None:
-        await self._r.set(
-            self._k(f"cred:rejected:{_cred_key(cred)}"), "1", ex=settings.dedup_fail_ttl
-        )
-
-    async def mark_transient(self, cred: Credential) -> None:
-        await self._r.set(
-            self._k(f"cred:transient:{_cred_key(cred)}"), "1", ex=settings.dedup_fail_ttl
-        )
+        async with self._r.pipeline(transaction=True) as pipe:
+            pipe.delete(self._k(f"cred:ok:{key}"), self._k(f"cred:bal:{key}"))
+            pipe.set(self._k(f"cred:outcome:{key}"), outcome, ex=ttl)
+            await pipe.execute()
 
     async def get_cached_balance(self, cred: Credential) -> dict[str, Any] | None:
         raw = await self._r.get(self._k(f"cred:bal:{_cred_key(cred)}"))

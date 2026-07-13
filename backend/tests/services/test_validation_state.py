@@ -81,10 +81,7 @@ async def test_finalizer_only_persists_final_verified(monkeypatch) -> None:
         async def cache_valid(self, result: ValidationResult) -> None:
             cached.append(result)
 
-        async def mark_rejected(self, credential: Credential) -> None:
-            return None
-
-        async def mark_transient(self, credential: Credential) -> None:
+        async def mark_failure(self, credential: Credential, outcome: str) -> None:
             return None
 
     async def _save(result: ValidationResult) -> None:

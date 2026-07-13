@@ -99,7 +99,8 @@ class Settings(BaseSettings):
     dedup_redis_url: str = "redis://localhost:6379/0"
     dedup_host_ttl: int = 604800  # 7d — host already probed + GPT-extracted
     dedup_cred_ttl: int = 259200  # 3d — successful ValidationResult cached
-    dedup_fail_ttl: int = 21600  # 6h — failed cred, retried after this
+    dedup_rejected_ttl: int = 2592000  # 30d — deterministic validation rejection
+    dedup_transient_ttl: int = 21600  # 6h — network/rate-limit retry window
     dedup_balance_ttl: int = 86400  # 1d — balance query result cached
 
     # ===== PostgreSQL (persistent source of truth) =====

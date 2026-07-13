@@ -52,11 +52,11 @@ async def test_noop_filters_return_everything_and_cache_misses():
     assert await s.filter_unseen_hosts(hosts) == hosts
     assert await s.get_cached_valid(_cred()) is None
     assert await s.get_cached_balance(_cred()) is None
-    assert await s.is_recently_failed(_cred()) is False
+    assert await s.get_failure_outcome(_cred()) is None
     # All write ops are no-ops; just confirm they don't raise.
     await s.mark_host("a")
     await s.cache_valid(ValidationResult(credential=_cred(), valid=True))
-    await s.mark_failed(_cred())
+    await s.mark_failure(_cred(), "rejected")
     await s.cache_balance(_cred(), {"balance_usd": 1})
     await s.close()
 
@@ -74,7 +74,8 @@ def redis_store(monkeypatch):
     monkeypatch.setattr(settings, "dedup_enabled", True)
     monkeypatch.setattr(settings, "dedup_host_ttl", 604800)
     monkeypatch.setattr(settings, "dedup_cred_ttl", 259200)
-    monkeypatch.setattr(settings, "dedup_fail_ttl", 21600)
+    monkeypatch.setattr(settings, "dedup_rejected_ttl", 2592000, raising=False)
+    monkeypatch.setattr(settings, "dedup_transient_ttl", 21600, raising=False)
     monkeypatch.setattr(settings, "dedup_balance_ttl", 86400)
     return RedisDedupStore(client), client
 
@@ -135,28 +136,29 @@ async def test_valid_cache_miss_for_unknown_cred(redis_store):
     assert await store.get_cached_valid(_cred("sk-other")) is None
 
 
-async def test_failed_marker_round_trip(redis_store):
-    store, _ = redis_store
-    cred = _cred()
-    assert await store.is_recently_failed(cred) is False
-    await store.mark_failed(cred)
-    assert await store.is_recently_failed(cred) is True
-    # Different cred is unaffected.
-    assert await store.is_recently_failed(_cred("sk-other")) is False
-
-
-async def test_rejected_and_transient_markers_use_distinct_states(redis_store):
+async def test_failure_outcomes_round_trip_across_store_instances(redis_store):
     store, client = redis_store
     rejected = _cred("sk-rejected")
     transient = _cred("sk-transient")
 
-    await store.mark_rejected(rejected)
-    await store.mark_transient(transient)
+    assert await store.get_failure_outcome(rejected) is None
+    await store.mark_failure(rejected, "rejected")
+    await store.mark_failure(transient, "transient")
+
+    second = RedisDedupStore(client)
+    assert await second.get_failure_outcome(rejected) == "rejected"
+    assert await second.get_failure_outcome(transient) == "transient"
+    assert await second.get_failure_outcome(_cred("sk-other")) is None
 
     from aipocket.services.dedup import _PREFIX
 
-    assert await client.get(f"{_PREFIX}:cred:rejected:{_cred_key(rejected)}") == "1"
-    assert await client.get(f"{_PREFIX}:cred:transient:{_cred_key(transient)}") == "1"
+    rejected_key = f"{_PREFIX}:cred:outcome:{_cred_key(rejected)}"
+    transient_key = f"{_PREFIX}:cred:outcome:{_cred_key(transient)}"
+    assert await client.get(rejected_key) == "rejected"
+    assert await client.get(transient_key) == "transient"
+    rejected_ttl = await client.ttl(rejected_key)
+    transient_ttl = await client.ttl(transient_key)
+    assert rejected_ttl > transient_ttl > 0
 
 
 async def test_balance_round_trip(redis_store):

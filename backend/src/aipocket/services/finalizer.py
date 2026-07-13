@@ -88,9 +88,10 @@ async def finalize_results(
     # the scanner via :func:`commit_final_results` so it runs AFTER balance
     # enrichment and the saved/cached record carries the enriched balance.
     for result in rejected:
-        await dedup.mark_rejected(result.credential)
+        outcome = "transient" if result.validation_state == "transient_error" else "rejected"
+        await dedup.mark_failure(result.credential, outcome)
     for result in rate_limited_unconfirmed:
-        await dedup.mark_transient(result.credential)
+        await dedup.mark_failure(result.credential, "transient")
 
     return FinalizedResults(
         final_verified=final_verified,

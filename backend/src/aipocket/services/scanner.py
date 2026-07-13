@@ -422,26 +422,28 @@ async def _run_scan_inner(
             raw_hits=_trim_hits(all_hits),
         )
 
-    # Cross-run dedup: split creds into cache hits (reuse), recently-failed
-    # (skip this run), and the rest (validate fresh).
+    # Cross-run dedup: reuse valid results, skip cached failure outcomes, and
+    # validate every remaining canonical credential freshly.
     cached_results: list[ValidationResult] = []
     to_validate: list[Credential] = []
-    n_recent_fail = 0
-    for c in creds:
-        hit = await dedup.get_cached_valid(c)
+    failure_counts = {"rejected": 0, "transient": 0}
+    for credential in creds:
+        hit = await dedup.get_cached_valid(credential)
         if hit is not None:
             cached_results.append(hit)
             continue
-        if await dedup.is_recently_failed(c):
-            n_recent_fail += 1
+        failure = await dedup.get_failure_outcome(credential)
+        if failure is not None:
+            failure_counts[failure] += 1
             continue
-        to_validate.append(c)
+        to_validate.append(credential)
     log.info(
-        "Dedup: %d creds → %d cached / %d to validate / %d recently-failed (skipped)",
+        "Dedup: %d creds → %d cached / %d to validate / rejected=%d / transient=%d",
         len(creds),
         len(cached_results),
         len(to_validate),
-        n_recent_fail,
+        failure_counts["rejected"],
+        failure_counts["transient"],
     )
     record_credentials("active_requests", to_validate)
 

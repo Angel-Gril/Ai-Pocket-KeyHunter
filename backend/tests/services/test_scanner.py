@@ -390,7 +390,7 @@ async def test_dedup_recently_failed_cred_skipped_same_run(tmp_path, monkeypatch
     cred = Credential(
         apikey="sk-proj-abc123def456ghi789", apiurl="https://a.com", host="https://a.com"
     )
-    await store.mark_failed(cred)
+    await store.mark_failure(cred, "rejected")
     monkeypatch.setattr("aipocket.services.scanner.get_dedup_store", lambda: _returning(store))
 
     hits = [

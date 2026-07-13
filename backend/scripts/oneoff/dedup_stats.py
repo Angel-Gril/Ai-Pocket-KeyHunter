@@ -39,7 +39,7 @@ async def main() -> int:
     categories = {
         "host (probed+GPT-extracted)": f"{PREFIX}:host:",
         "cred:ok (valid cached)": f"{PREFIX}:cred:ok:",
-        "cred:fail (recently failed)": f"{PREFIX}:cred:fail:",
+        "cred:outcome (rejected/transient)": f"{PREFIX}:cred:outcome:",
         "cred:bal (balance cached)": f"{PREFIX}:cred:bal:",
     }
 
