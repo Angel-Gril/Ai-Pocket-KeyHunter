@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     shodan_page_delay: float = 1.0
 
     query_exploration_ratio: float = 0.2
-    query_request_budget: int = 1000
+    fofa_query_budget: int = 24
+    shodan_query_budget: int = 16
+    shodan_shard_host_budget: int = 1000
     shodan_credit_budget: int = 8
 
     scan_fast: bool = False

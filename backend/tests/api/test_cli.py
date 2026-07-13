@@ -44,7 +44,8 @@ def test_cli_watch_disabled_by_default(monkeypatch):
 def test_cli_scan_help():
     result = runner.invoke(app, ["scan", "--help"])
     assert result.exit_code == 0
-    assert "--max-queries" in result.stdout
+    assert "--fofa-queries" in result.stdout
+    assert "--shodan-queries" in result.stdout
     assert "--verbose" in result.stdout
 
 
@@ -53,7 +54,7 @@ def test_cli_scan_persists_results(tmp_path, monkeypatch):
     from aipocket.core.models import ScanRunResult
     from aipocket.services.writer import write_scan_metadata, write_valid_results
 
-    async def fake_run_scan(max_queries=None, run_dir=None, *, skip_direct=False):
+    async def fake_run_scan(query_budgets=None, run_dir=None, *, skip_direct=False):
         # Mimic real run_scan which writes JSONL internally
         if run_dir:
             write_scan_metadata(

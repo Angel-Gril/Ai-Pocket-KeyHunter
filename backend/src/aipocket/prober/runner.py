@@ -113,8 +113,6 @@ def _select_prober(hit: dict[str, Any], prober_classes: list[type[Prober]]) -> t
     return None
 
 
-
-
 def _eligible_targets(
     targets: list[DiscoveryTarget], minimum_score: int
 ) -> list[tuple[DiscoveryTarget, TargetEvidence]]:
@@ -129,9 +127,7 @@ def _build_assignments(
     from .probers import GenericPageProber
 
     prober_classes = _all_probers()
-    normalized_allowed = {
-        product.lower().replace("_", "-") for product in allowed_products
-    }
+    normalized_allowed = {product.lower().replace("_", "-") for product in allowed_products}
     assignments: list[ProbeAssignment] = []
     rejected: list[ProbeTargetOutcome] = []
     product_count = 0
@@ -155,7 +151,15 @@ def _build_assignments(
             if evidence.score >= HIGH_EVIDENCE_SCORE
             else None
         )
-        if selected is not None and selected.product_name.lower() in normalized_allowed:
+        requires_refetch = bool(target.hit.get("_requires_content_refetch"))
+        if (
+            requires_refetch
+            and selected is not None
+            and selected.product_name.lower() in normalized_allowed
+        ):
+            probers = (GenericPageProber, selected)
+            product_count += 1
+        elif selected is not None and selected.product_name.lower() in normalized_allowed:
             probers = (selected,)
             product_count += 1
         else:
@@ -259,10 +263,7 @@ async def _run_probe_batch(
         limits=limits,
         follow_redirects=False,
     ) as client:
-        tasks = [
-            asyncio.create_task(_probe_one(client, sem, assignment))
-            for assignment in batch
-        ]
+        tasks = [asyncio.create_task(_probe_one(client, sem, assignment)) for assignment in batch]
         progress_step = max(50, batch_len // 2) or 1
         batch_creds = 0
         for done, coro in enumerate(asyncio.as_completed(tasks), start=1):

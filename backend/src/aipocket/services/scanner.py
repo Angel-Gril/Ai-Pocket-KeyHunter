@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -68,8 +69,14 @@ def _credential_identity(credential: Credential) -> tuple[str, str]:
     return credential.apikey, credential.apiurl
 
 
+@dataclass(frozen=True, slots=True)
+class QueryBudgets:
+    fofa: int | None
+    shodan: int | None
+
+
 async def run_scan(
-    max_queries: int | None = None,
+    query_budgets: QueryBudgets | None = None,
     run_dir: Path | None = None,
     *,
     skip_direct: bool = False,
@@ -94,9 +101,13 @@ async def run_scan(
     # Cross-run dedup store (Redis-backed; degrades to no-op if unavailable).
     dedup = await get_dedup_store()
 
+    budgets = query_budgets or QueryBudgets(
+        fofa=settings.fofa_query_budget,
+        shodan=settings.shodan_query_budget,
+    )
     try:
         return await _run_scan_inner(
-            max_queries,
+            budgets,
             run_dir,
             skip_direct=skip_direct,
             started=started,
@@ -109,7 +120,7 @@ async def run_scan(
 
 
 async def _run_scan_inner(
-    max_queries: int | None,
+    query_budgets: QueryBudgets,
     run_dir: Path | None,
     *,
     skip_direct: bool,
@@ -157,7 +168,7 @@ async def _run_scan_inner(
         if want_fofa and settings.keys:
             sources_used.append("fofa")
             fofa_future = loop.run_in_executor(
-                pool, functools.partial(_fetch_fofa, max_queries, skip_direct=skip_direct)
+                pool, functools.partial(_fetch_fofa, query_budgets.fofa, skip_direct=skip_direct)
             )
         elif want_fofa:
             log.info("FOFA keys not configured — skipping FOFA source")
@@ -165,7 +176,8 @@ async def _run_scan_inner(
         if want_shodan and settings.shodan_key_list:
             sources_used.append("shodan")
             shodan_future = loop.run_in_executor(
-                pool, functools.partial(_fetch_shodan, max_queries, skip_direct=skip_direct)
+                pool,
+                functools.partial(_fetch_shodan, query_budgets.shodan, skip_direct=skip_direct),
             )
         elif want_shodan:
             log.info("Shodan keys not configured — skipping Shodan source")
@@ -700,6 +712,8 @@ def _fetch_fofa(
                         h.setdefault("_cves", q.get("advisory_ids", []))
                         h.setdefault("_product_hints", q.get("product_hints", []))
                         h.setdefault("_query_id", q["query"])
+                        if "body=" in q["query"].lower():
+                            h["_requires_content_refetch"] = True
                 all_hits.extend(hits)
             log.info("  FOFA accumulated %d hits", len(all_hits))
     log.info("FOFA total hits: %d", len(all_hits))
@@ -721,7 +735,7 @@ def _fetch_shodan(
             skip_direct=skip_direct,
             count=shodan.count,
             max_pages=settings.shodan_max_pages,
-            request_budget=settings.query_request_budget,
+            request_budget=settings.shodan_shard_host_budget,
             credit_budget=settings.shodan_credit_budget,
         )
         planned = plan_queries(

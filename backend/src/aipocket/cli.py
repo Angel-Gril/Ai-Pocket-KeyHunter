@@ -44,8 +44,11 @@ def _setup_logging(verbose: bool, log_file: Path | None = None):
 
 @app.command()
 def scan(
-    max_queries: int = typer.Option(
-        0, "--max-queries", "-n", help="Limit number of queries per source (0=all)"
+    fofa_queries: int = typer.Option(
+        0, "--fofa-queries", help="FOFA query budget (0=configured default)"
+    ),
+    shodan_queries: int = typer.Option(
+        0, "--shodan-queries", help="Shodan query budget (0=configured default)"
     ),
     fast: bool = typer.Option(
         False, "--fast", help="Fast GPT mode: higher concurrency + bigger batches"
@@ -87,12 +90,12 @@ def scan(
         settings.fofa_max_pages = 1
         settings.shodan_max_pages = 1
         log.info("Realtest mode: fofa_max_pages=1, shodan_max_pages=1")
-        if not max_queries:
-            max_queries = 3  # default: 3 product-fingerprint queries per source
-            log.info("Realtest mode: defaulting to -n 3 (override with --max-queries)")
+        if not fofa_queries and not shodan_queries:
+            fofa_queries = shodan_queries = 3
+            log.info("Realtest mode: defaulting to 3 queries per source")
 
     # Create the run folder first so the log file lands inside it.
-    from aipocket.services.scanner import run_scan
+    from aipocket.services.scanner import QueryBudgets, run_scan
     from aipocket.services.writer import new_run_dir
 
     run_dir = new_run_dir()
@@ -105,8 +108,11 @@ def scan(
 
     ensure_schema()
 
-    n = max_queries or None
-    result = asyncio.run(run_scan(max_queries=n, run_dir=run_dir, skip_direct=skip_direct))
+    budgets = QueryBudgets(
+        fofa=fofa_queries or settings.fofa_query_budget,
+        shodan=shodan_queries or settings.shodan_query_budget,
+    )
+    result = asyncio.run(run_scan(query_budgets=budgets, run_dir=run_dir, skip_direct=skip_direct))
     _print_summary(result)
     log.info("Run folder: %s", run_dir)
 

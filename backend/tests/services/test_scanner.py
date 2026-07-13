@@ -7,7 +7,7 @@ import pytest
 
 from aipocket.core.models import Credential, ValidationResult
 from aipocket.core.targets import canonicalize_hits
-from aipocket.services.scanner import _fetch_fofa, _fetch_shodan, _trim_hits, run_scan
+from aipocket.services.scanner import QueryBudgets, _fetch_fofa, _fetch_shodan, _trim_hits, run_scan
 
 FOFA_KEY = "Bearer sk-proj-abc123def456ghi789"
 
@@ -123,7 +123,7 @@ async def test_run_scan_fofa_and_shodan_both_run(tmp_path, monkeypatch):
 
     monkeypatch.setattr("aipocket.services.scanner.validate_all", fake_validate)
 
-    result = await run_scan(max_queries=1)
+    result = await run_scan(query_budgets=QueryBudgets(1, 1))
 
     # Both sources contributed
     assert "fofa" in result.sources
@@ -178,7 +178,7 @@ async def test_run_scan_same_key_from_both_sources_merges_backend(tmp_path, monk
 
     monkeypatch.setattr("aipocket.services.scanner.validate_all", fake_validate)
 
-    result = await run_scan(max_queries=1)
+    result = await run_scan(query_budgets=QueryBudgets(1, 1))
     assert result.total_credentials == 1
     # Backend should record both discovery sources
     assert "fofa" in result.results[0].credential.backend
@@ -215,10 +215,11 @@ async def test_run_scan_probes_unique_targets_and_reports_discovery_counts(tmp_p
                 for target in targets
             ),
         )
+
     monkeypatch.setattr("aipocket.prober.probe_hosts", capture_probe)
     (tmp_path / "run_test").mkdir()
 
-    result = await run_scan(max_queries=1, run_dir=tmp_path / "run_test")
+    result = await run_scan(query_budgets=QueryBudgets(1, 1), run_dir=tmp_path / "run_test")
 
     assert len(probed) == 1
     assert result.total_hosts == 1
@@ -251,7 +252,7 @@ async def test_run_scan_preserves_exact_source_query_pairs_for_merged_target(tmp
     run_dir = tmp_path / "run_test"
     run_dir.mkdir()
 
-    await run_scan(max_queries=1, run_dir=run_dir)
+    await run_scan(query_budgets=QueryBudgets(1, 1), run_dir=run_dir)
 
     rows = {
         (metric.source, metric.query): metric.funnel.unique_targets
@@ -274,7 +275,7 @@ async def test_run_scan_fofa_only_when_shodan_unconfigured(tmp_path, monkeypatch
 
     monkeypatch.setattr("aipocket.services.scanner.FofaClient", lambda: _make_mock_client([]))
 
-    result = await run_scan(max_queries=1)
+    result = await run_scan(query_budgets=QueryBudgets(1, 1))
     assert result.sources == ["fofa"] or result.sources == []  # fofa ran (0 hits)
     assert "shodan" not in result.sources
 
@@ -285,7 +286,7 @@ async def test_run_scan_no_source_configured_raises(tmp_path, monkeypatch):
     monkeypatch.setattr("aipocket.core.config.settings.shodan_keys", "")
     monkeypatch.setattr("aipocket.core.config.settings.results_dir", str(tmp_path))
     with pytest.raises(RuntimeError):
-        await run_scan(max_queries=1)
+        await run_scan(query_budgets=QueryBudgets(1, 1))
 
 
 def test_trim_hits_under_limit():
@@ -369,8 +370,8 @@ async def test_dedup_second_run_skips_cached_valid_credential(tmp_path, monkeypa
 
     monkeypatch.setattr("aipocket.services.scanner.validate_all", counting_validate)
 
-    await run_scan(max_queries=1)
-    await run_scan(max_queries=1)
+    await run_scan(query_budgets=QueryBudgets(1, 1))
+    await run_scan(query_budgets=QueryBudgets(1, 1))
 
     # First run validated the cred; second run served it from cache.
     assert len(validate_calls) == 1
@@ -415,7 +416,7 @@ async def test_dedup_recently_failed_cred_skipped_same_run(tmp_path, monkeypatch
 
     monkeypatch.setattr("aipocket.services.scanner.validate_all", counting_validate)
 
-    result = await run_scan(max_queries=1)
+    result = await run_scan(query_budgets=QueryBudgets(1, 1))
     # The failed cred was skipped, so nothing reached validate_all.
     assert validated == []
     assert result.total_valid == 0
@@ -448,10 +449,9 @@ async def test_scanner_passes_forged_key_verdicts_to_finalizer(tmp_path, monkeyp
     monkeypatch.setattr("aipocket.services.scanner.validate_all", fake_validate)
     monkeypatch.setattr("aipocket.services.validator.verify_no_auth", fake_verdicts)
 
-    result = await run_scan(max_queries=1)
+    result = await run_scan(query_budgets=QueryBudgets(1, 1))
 
     assert result.total_valid == 0
-
 
 
 @pytest.mark.asyncio
@@ -497,10 +497,11 @@ async def test_scanner_marks_only_probe_targets_with_real_requests(tmp_path, mon
 
     monkeypatch.setattr("aipocket.prober.probe_hosts", fake_probe)
 
-    await run_scan(max_queries=1)
+    await run_scan(query_budgets=QueryBudgets(1, 1))
 
     expected = canonicalize_hits(hits)[0].identity.identity_hash
     assert store.marked == [("probe", expected)]
+
 
 class _returning:
     """Awaitable wrapper so `await get_dedup_store()` returns the cached store."""
@@ -586,7 +587,7 @@ async def test_scanner_marks_only_successful_gpt_entries(tmp_path, monkeypatch) 
 
     monkeypatch.setattr("aipocket.services.analyzer.extract_with_gpt", fake_extract)
 
-    await run_scan(max_queries=1)
+    await run_scan(query_budgets=QueryBudgets(1, 1))
 
     targets = canonicalize_hits(hits)
     assert store.marked == [("gpt", targets[0].identity.identity_hash)]

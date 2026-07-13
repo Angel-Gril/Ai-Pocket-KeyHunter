@@ -47,8 +47,8 @@ class Scheduler:
         self._stop.set()
 
 
-async def run_once(max_queries: int | None = None):
+async def run_once(query_budgets=None):
     """Run a single scan into its own run folder. Returns the ScanRunResult."""
     run_dir = new_run_dir()
-    result = await run_scan(max_queries=max_queries, run_dir=run_dir)
+    result = await run_scan(query_budgets=query_budgets, run_dir=run_dir)
     return result
