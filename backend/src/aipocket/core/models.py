@@ -12,6 +12,7 @@ from aipocket.core.validation_state import (
 )
 
 SourceType = Literal["header", "banner", "body", "fingerprint"]
+ScanMode = Literal["full", "incremental"]
 
 # Canonical provider vocabulary shared by validation and provider routing.
 ProviderName = Literal[
@@ -120,6 +121,7 @@ class ScanRunResult(BaseModel):
     final_verified: int = 0
     suspicious: int = 0
     high_value_final: int = 0
+    scan_mode: ScanMode = "incremental"
     total_credentials: int
     total_valid: int
     queries_used: list[str]

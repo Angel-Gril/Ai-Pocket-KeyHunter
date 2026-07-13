@@ -15,7 +15,7 @@ from aipocket.core.metrics import (
     ValidationOutcomeAggregate,
     classify_error,
 )
-from aipocket.core.models import Credential, ScanRunResult, ValidationResult
+from aipocket.core.models import Credential, ScanMode, ScanRunResult, ValidationResult
 from aipocket.core.observations import ExtractionMethod, ObservationRegistry
 from aipocket.core.targets import DiscoveryTarget, canonicalize_hits
 
@@ -79,6 +79,7 @@ async def run_scan(
     query_budgets: QueryBudgets | None = None,
     run_dir: Path | None = None,
     *,
+    mode: ScanMode = "incremental",
     skip_direct: bool = False,
     sources: set[str] | None = None,
 ) -> ScanRunResult:
@@ -101,9 +102,14 @@ async def run_scan(
     # Cross-run dedup store (Redis-backed; degrades to no-op if unavailable).
     dedup = await get_dedup_store()
 
-    budgets = query_budgets or QueryBudgets(
-        fofa=settings.fofa_query_budget,
-        shodan=settings.shodan_query_budget,
+    budgets = (
+        QueryBudgets(fofa=None, shodan=None)
+        if mode == "full"
+        else query_budgets
+        or QueryBudgets(
+            fofa=settings.fofa_query_budget,
+            shodan=settings.shodan_query_budget,
+        )
     )
     from .scan_lock import acquire_scan_lease
 
@@ -116,6 +122,7 @@ async def run_scan(
                 skip_direct=skip_direct,
                 started=started,
                 dedup=dedup,
+                mode=mode,
                 sources=sources,
             )
     finally:
@@ -130,6 +137,7 @@ async def _run_scan_inner(
     skip_direct: bool,
     started: str,
     dedup: DedupStore,
+    mode: ScanMode,
     sources: set[str] | None = None,
 ) -> ScanRunResult:
 
@@ -307,7 +315,8 @@ async def _run_scan_inner(
 
         # Cross-run dedup: skip hosts already probed in a previous run.
         before_probe = len(ordered_targets)
-        ordered_targets = await dedup.filter_unseen_targets("probe", ordered_targets)
+        if mode == "incremental":
+            ordered_targets = await dedup.filter_unseen_targets("probe", ordered_targets)
         if before_probe != len(ordered_targets):
             log.info(
                 "Dedup: host probe %d → %d (skipped %d seen)",
@@ -367,7 +376,11 @@ async def _run_scan_inner(
     from .analyzer import extract_with_gpt
 
     before_gpt = len(_prioritize_targets_for_gpt(targets))
-    sampled_targets = await _select_gpt_targets(targets, dedup)
+    sampled_targets = (
+        await _select_gpt_targets(targets, dedup)
+        if mode == "incremental"
+        else _prioritize_targets_for_gpt(targets)[:5000]
+    )
     sampled = []
     target_by_entry_id: dict[str, DiscoveryTarget] = {}
     for target in sampled_targets:
@@ -422,7 +435,7 @@ async def _run_scan_inner(
             "suspicious": 0,
             "high_value_final": 0,
             "metrics_version": 2,
-            "scan_mode": "incremental",
+            "scan_mode": mode,
             "queries_used": queries_used,
         }
         if run_dir:
@@ -451,6 +464,7 @@ async def _run_scan_inner(
             total_valid=0,
             queries_used=queries_used,
             results=[],
+            scan_mode=mode,
             raw_hits=_trim_hits(all_hits),
         )
 
@@ -460,6 +474,9 @@ async def _run_scan_inner(
     to_validate: list[Credential] = []
     failure_counts = {"rejected": 0, "transient": 0}
     for credential in creds:
+        if mode == "full":
+            to_validate.append(credential)
+            continue
         hit = await dedup.get_cached_valid(credential)
         if hit is not None:
             cached_results.append(hit)
@@ -575,7 +592,7 @@ async def _run_scan_inner(
         # ValidationResult in place and returns the same objects, so the changes
         # are visible in `results` (and therefore `valid`/`suspicious`) directly.
         enrichable = [r for r in results if r.valid and not r.suspicious]
-        await enrich_results(enrichable, dedup=dedup)
+        await enrich_results(enrichable, dedup=dedup, use_cache=mode == "incremental")
         log.info("Balance enrichment done.")
 
     # Cache + persist high-value AFTER balance enrichment so the saved record
@@ -650,6 +667,7 @@ async def _run_scan_inner(
         total_valid=len(valid),
         queries_used=queries_used,
         results=results,
+        scan_mode=mode,
         raw_hits=_trim_hits(all_hits),
     )
 

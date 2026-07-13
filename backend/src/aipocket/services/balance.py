@@ -541,6 +541,8 @@ async def _probe_nexus_usage(client: httpx.AsyncClient, base: str, key: str) -> 
 async def enrich_results(
     results: list[ValidationResult],
     dedup: DedupStore | None = None,
+    *,
+    use_cache: bool = True,
 ) -> list[ValidationResult]:
     sem = asyncio.Semaphore(settings.validate_concurrency)
     timeout = httpx.Timeout(settings.validate_timeout)
@@ -552,7 +554,7 @@ async def enrich_results(
             # Cross-run balance cache: reuse the previous run's balance result
             # instead of re-querying the endpoint. Falls through to a live
             # query on miss / when dedup is disabled.
-            if dedup is not None:
+            if dedup is not None and use_cache:
                 cached = await dedup.get_cached_balance(r.credential)
                 if cached:
                     r.balance = str(cached.get("balance_usd", ""))

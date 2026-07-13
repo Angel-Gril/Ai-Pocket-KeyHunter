@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 ScanSource = Literal["fofa", "shodan", "all"]
+ScanMode = Literal["full", "incremental"]
 ExportFormat = Literal["json", "csv"]
 ExportDataset = Literal["selected", "run", "high-value", "all"]
 
@@ -111,6 +112,7 @@ class ExportRequest(BaseModel):
 # ----------------------------------------------------------------------------
 class ScanStartRequest(BaseModel):
     source: ScanSource = "all"
+    mode: ScanMode = "incremental"
 
 
 class ScanProgress(BaseModel):
@@ -126,6 +128,7 @@ class ScanProgress(BaseModel):
 class ScanStatusResponse(BaseModel):
     state: str  # idle | running | stopping | finished | interrupted
     source: str | None = None
+    mode: ScanMode = "incremental"
     run_id: str | None = None
     started_at: str | None = None
     finished_at: str | None = None

@@ -54,7 +54,9 @@ def test_cli_scan_persists_results(tmp_path, monkeypatch):
     from aipocket.core.models import ScanRunResult
     from aipocket.services.writer import write_scan_metadata, write_valid_results
 
-    async def fake_run_scan(query_budgets=None, run_dir=None, *, skip_direct=False):
+    async def fake_run_scan(
+        query_budgets=None, run_dir=None, *, skip_direct=False, mode="incremental"
+    ):
         # Mimic real run_scan which writes JSONL internally
         if run_dir:
             write_scan_metadata(

@@ -50,6 +50,7 @@ def scan(
     shodan_queries: int = typer.Option(
         0, "--shodan-queries", help="Shodan query budget (0=configured default)"
     ),
+    mode: str = typer.Option("incremental", "--mode", help="Scan mode: incremental or full"),
     fast: bool = typer.Option(
         False, "--fast", help="Fast GPT mode: higher concurrency + bigger batches"
     ),
@@ -63,6 +64,8 @@ def scan(
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Run a single scan across all configured sources (FOFA + Shodan) and write JSONL results."""
+    if mode not in {"full", "incremental"}:
+        raise typer.BadParameter("mode must be 'full' or 'incremental'")
     if fast:
         settings.gpt_fast = True
 
@@ -112,7 +115,14 @@ def scan(
         fofa=fofa_queries or settings.fofa_query_budget,
         shodan=shodan_queries or settings.shodan_query_budget,
     )
-    result = asyncio.run(run_scan(query_budgets=budgets, run_dir=run_dir, skip_direct=skip_direct))
+    result = asyncio.run(
+        run_scan(
+            query_budgets=budgets,
+            run_dir=run_dir,
+            skip_direct=skip_direct,
+            mode=mode,  # type: ignore[arg-type]
+        )
+    )
     _print_summary(result)
     log.info("Run folder: %s", run_dir)
 

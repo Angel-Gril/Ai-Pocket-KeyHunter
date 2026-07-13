@@ -5,6 +5,7 @@ import { clearToken, getToken } from "@/lib/auth-storage"
 /* ------------------------------------------------------------------ */
 
 export type ScanSource = "fofa" | "shodan" | "all"
+export type ScanMode = "full" | "incremental"
 export type ExportFormat = "json" | "csv"
 export type ExportDataset = "selected" | "run" | "high-value" | "all"
 export type ResultKind = "valid" | "suspicious"
@@ -87,6 +88,7 @@ export type ScanState = "idle" | "running" | "stopping" | "finished" | "interrup
 export interface ScanStatusResponse {
   state: ScanState | string
   source: string | null
+  mode: ScanMode
   run_id: string | null
   started_at: string | null
   finished_at: string | null
@@ -227,6 +229,7 @@ export interface RunSummary {
   final_verified: number
   suspicious: number
   sources: string[]
+  scan_mode: ScanMode
   high_value_final: number
 }
 
@@ -438,8 +441,8 @@ export const api = {
   },
 
   // Scan
-  scanStart: (source: ScanSource) =>
-    request<ScanStatusResponse>("/scan/start", { method: "POST", body: { source } }),
+  scanStart: (source: ScanSource, mode: ScanMode) =>
+    request<ScanStatusResponse>("/scan/start", { method: "POST", body: { source, mode } }),
   scanStop: () => request<ScanStatusResponse>("/scan/stop", { method: "POST" }),
   scanStatus: (signal?: AbortSignal) => request<ScanStatusResponse>("/scan/status", { signal }),
   scanLogs: (since = 0) => request<ScanLogsResponse>(`/scan/logs?since=${since}`),

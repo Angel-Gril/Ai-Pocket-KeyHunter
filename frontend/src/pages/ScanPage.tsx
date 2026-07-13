@@ -21,6 +21,7 @@ import {
   ApiError,
   openScanLogStream,
   type ScanLogLine,
+  type ScanMode,
   type ScanSource,
   type ScanStatusResponse,
 } from "@/lib/api"
@@ -101,6 +102,7 @@ function MetricCard({ icon: Icon, label, value, valueClass, iconClass }: Readonl
 export default function ScanPage() {
   const queryClient = useQueryClient()
   const [source, setSource] = useState<ScanSource>("all")
+  const [mode, setMode] = useState<ScanMode>("incremental")
   const [lines, setLines] = useState<ScanLogLine[]>([])
 
   const lastSeqRef = useRef(0)
@@ -198,7 +200,7 @@ export default function ScanPage() {
   }, [lines])
 
   const startMutation = useMutation({
-    mutationFn: () => api.scanStart(source),
+    mutationFn: () => api.scanStart(source, mode),
     onSuccess: applyStatus,
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
@@ -307,6 +309,27 @@ export default function ScanPage() {
               运行中不可修改
             </span>
           ) : null}
+        </div>
+
+        <div className="flex items-center gap-3.5">
+          <span className="font-mono text-xs text-text-muted">扫描模式</span>
+          {(["incremental", "full"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              disabled={running}
+              onClick={() => setMode(value)}
+              className={cn(
+                "rounded-[4px] border px-4 py-[9px] text-[13px] transition-colors",
+                mode === value
+                  ? "border-accent bg-accent-dim font-semibold text-accent"
+                  : "border-border-primary bg-surface-raised text-text-secondary",
+                running && "cursor-not-allowed opacity-50",
+              )}
+            >
+              {value === "incremental" ? "增量扫描" : "全量扫描"}
+            </button>
+          ))}
         </div>
 
         <div className="flex gap-4">

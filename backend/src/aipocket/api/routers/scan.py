@@ -34,6 +34,7 @@ def _to_status(raw: dict) -> ScanStatusResponse:
     return ScanStatusResponse(
         state=raw["state"],
         source=raw.get("source"),
+        mode=raw.get("mode", "incremental"),
         run_id=raw.get("run_id"),
         started_at=raw.get("started_at"),
         finished_at=raw.get("finished_at"),
@@ -47,7 +48,7 @@ def _to_status(raw: dict) -> ScanStatusResponse:
 async def start_scan(body: ScanStartRequest, request: Request) -> ScanStatusResponse:
     mgr = _manager(request)
     try:
-        raw = mgr.start(body.source)
+        raw = mgr.start(body.source, body.mode)
     except RuntimeError as e:
         # A scan is already running → conflict; the frontend greys out the button.
         raise ApiError(str(e), status_code=409, code="conflict") from e

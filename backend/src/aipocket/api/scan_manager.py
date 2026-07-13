@@ -63,6 +63,7 @@ class ScanManager:
         self._lock = threading.Lock()
         self._state = "idle"
         self._source: str | None = None
+        self._mode = "incremental"
         self._run_dir: Path | None = None
         self._started_at: str | None = None
         self._finished_at: str | None = None
@@ -102,6 +103,7 @@ class ScanManager:
             return {
                 "state": self._state,
                 "source": self._source,
+                "mode": self._mode,
                 "run_id": run_id,
                 "started_at": self._started_at,
                 "finished_at": self._finished_at,
@@ -127,22 +129,23 @@ class ScanManager:
             self._buffer.append((self._seq, msg))
 
     # -- lifecycle ---------------------------------------------------------
-    def start(self, source: str) -> dict:
+    def start(self, source: str, mode: str = "incremental") -> dict:
         """Start a background scan. Raises RuntimeError if one is already running."""
         with self._lock:
             if self._state in ("running", "stopping"):
                 raise RuntimeError("a scan is already running")
-            self._reset_for_new_run(source)
+            self._reset_for_new_run(source, mode)
 
         self._loop = asyncio.get_running_loop()
         self._attach_log_handlers()
-        self._task = asyncio.create_task(self._run(source))
+        self._task = asyncio.create_task(self._run(source, mode))
         return self.status()
 
-    def _reset_for_new_run(self, source: str) -> None:
+    def _reset_for_new_run(self, source: str, mode: str) -> None:
         from aipocket.services.writer import new_run_dir
 
         self._source = source
+        self._mode = mode
         self._run_dir = new_run_dir()
         self._started_at = datetime.now(UTC).isoformat()
         self._finished_at = None
@@ -179,7 +182,7 @@ class ScanManager:
                 pass
         self._handlers = []
 
-    async def _run(self, source: str) -> None:
+    async def _run(self, source: str, mode: str = "incremental") -> None:
         from aipocket.services.scanner import run_scan
 
         # Restrict the scan to the chosen source(s) via a parameter — no global
@@ -189,7 +192,7 @@ class ScanManager:
         result: ScanRunResult | None = None
         try:
             log.info("Web scan starting (source=%s, run=%s)", source, self._run_dir)
-            result = await run_scan(run_dir=self._run_dir, sources=sources)
+            result = await run_scan(run_dir=self._run_dir, sources=sources, mode=mode)
             with self._lock:
                 self._state = "finished"
                 self._progress = {

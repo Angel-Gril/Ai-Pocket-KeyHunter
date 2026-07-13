@@ -233,7 +233,7 @@ def _list_runs_pg() -> list[dict[str, Any]]:
             """
             SELECT run_id, started_at, total_hosts, total_credentials, total_valid,
                    raw_hits, unique_targets, candidates, active_requests,
-                   final_verified, suspicious, high_value_final, metrics_version, sources,
+                   final_verified, suspicious, high_value_final, metrics_version, scan_mode, sources,
                    (log IS NOT NULL AND log <> '') AS has_log
             FROM runs ORDER BY run_id DESC
             """
@@ -300,6 +300,7 @@ def _list_runs_pg() -> list[dict[str, Any]]:
             "final_verified": _positive_int(run["final_verified"], run["total_valid"], valid_n),
             "suspicious": _positive_int(run["suspicious"], susp_n),
             "sources": sources,
+            "scan_mode": run.get("scan_mode") or "incremental",
             "high_value_final": (
                 int(run.get("high_value_final") or 0)
                 if int(run.get("metrics_version") or 1) >= 2
@@ -350,6 +351,7 @@ def _list_runs_files() -> list[dict[str, Any]]:
             "final_verified": int(metadata.get("final_verified", 0)),
             "suspicious": int(metadata.get("suspicious", 0)),
             "sources": _sources_of(valid_files),
+            "scan_mode": str(metadata.get("scan_mode", "incremental")),
             "high_value_final": int(
                 metadata.get("high_value_final", hv_counts.get(run_started, 0))
             ),
