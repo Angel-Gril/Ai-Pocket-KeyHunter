@@ -10,6 +10,7 @@ from pathlib import Path
 from aipocket.clients.fofa import FofaClient
 from aipocket.core.config import settings
 from aipocket.core.metrics import (
+    ErrorClass,
     ExtractionMethodAggregate,
     QueryUsage,
     ValidationOutcomeAggregate,
@@ -116,14 +117,16 @@ async def run_scan(
     lease = await acquire_scan_lease()
     try:
         async with lease:
-            return await _run_scan_inner(
-                budgets,
-                run_dir,
-                skip_direct=skip_direct,
-                started=started,
-                dedup=dedup,
-                mode=mode,
-                sources=sources,
+            return await lease.run(
+                _run_scan_inner(
+                    budgets,
+                    run_dir,
+                    skip_direct=skip_direct,
+                    started=started,
+                    dedup=dedup,
+                    mode=mode,
+                    sources=sources,
+                )
             )
     finally:
         await dedup.close()
@@ -543,19 +546,20 @@ async def _run_scan_inner(
     )
     valid = finalized.final_verified
 
-    outcome_groups: dict[tuple[str, str, str, str, str, int | None], int] = {}
+    outcome_groups: dict[tuple[str, str, str, str, ErrorClass, int | None], int] = {}
     for result in fresh_results:
         observation = observations.get(result.credential)
         if observation is None:
             raise ValueError("fresh validation result has no canonical observation")
         source, query = observation.primary_provenance
         provider = result.provider_info.provider
+        error_class = classify_error(result.error, result.validation_state, result.status_code)
         key = (
             source,
             query,
             provider,
             result.validation_state,
-            classify_error(result.error, result.validation_state, result.status_code),
+            error_class,
             result.status_code,
         )
         outcome_groups[key] = outcome_groups.get(key, 0) + 1
@@ -625,7 +629,7 @@ async def _run_scan_inner(
         "suspicious": len(suspicious),
         "high_value_final": commit_report.high_value_final,
         "metrics_version": 2,
-        "scan_mode": "incremental",
+        "scan_mode": mode,
         "total_hosts": len(targets),
         "total_credentials": len(creds),
         "queries_used": queries_used,

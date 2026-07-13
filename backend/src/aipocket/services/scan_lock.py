@@ -54,8 +54,23 @@ class ScanLease:
             if not await self.renew():
                 raise ScanLockedError("scan lease ownership was lost")
 
+    async def run(self, awaitable: Any) -> Any:
+        """Run scan work while the lease heartbeat remains healthy."""
+        heartbeat = asyncio.create_task(self._heartbeat())
+        work = asyncio.ensure_future(awaitable)
+        self._heartbeat_task = heartbeat
+        done, _pending = await asyncio.wait({heartbeat, work}, return_when=asyncio.FIRST_COMPLETED)
+        if heartbeat in done:
+            try:
+                await heartbeat
+            except BaseException:
+                work.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await work
+                raise
+        return await work
+
     async def __aenter__(self) -> ScanLease:
-        self._heartbeat_task = asyncio.create_task(self._heartbeat())
         return self
 
     async def __aexit__(self, *_exc: object) -> None:

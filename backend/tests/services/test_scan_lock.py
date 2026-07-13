@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from aipocket.services.scan_lock import ScanLease
+from aipocket.services.scan_lock import ScanLease, ScanLockedError
 
 
 class FakeScriptRedis:
@@ -40,3 +42,27 @@ async def test_scan_lease_is_exclusive_and_token_safe() -> None:
     assert await first.renew() is True
     assert await first.release() is True
     assert await redis.set("aipocket:scan:lock", second.token, nx=True, px=60_000)
+
+
+@pytest.mark.asyncio
+async def test_lease_loss_cancels_running_work() -> None:
+    redis = FakeScriptRedis()
+    lease = ScanLease(redis, "owner-a", 3)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def work() -> None:
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    assert await redis.set("aipocket:scan:lock", lease.token, nx=True, px=3_000)
+    task = asyncio.create_task(lease.run(work()))
+    await started.wait()
+    redis.value = "owner-b"
+
+    with pytest.raises(ScanLockedError, match="ownership was lost"):
+        await task
+    assert cancelled.is_set()

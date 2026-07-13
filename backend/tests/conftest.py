@@ -10,6 +10,9 @@ import pytest
 
 
 class _TestScanLease:
+    async def run(self, awaitable):
+        return await awaitable
+
     async def __aenter__(self):
         return self
 
