@@ -33,6 +33,27 @@ from aipocket.core.config import settings
 
 log = logging.getLogger(__name__)
 
+# Shodan search pagination uses a server-side cursor. When it expires the API
+# returns HTTP 500 with this message — retrying the same page never helps;
+# the query must be restarted from page 1.
+_CURSOR_TIMEOUT_MARKERS = (
+    "search cursor timed out",
+    "restart the search query from page 1",
+)
+
+
+class SearchCursorTimedOut(Exception):
+    """Raised when Shodan says the search cursor expired (restart from page 1)."""
+
+
+def _is_cursor_timeout(body: str) -> bool:
+    low = body.lower()
+    return any(m in low for m in _CURSOR_TIMEOUT_MARKERS)
+
+
+def _result_dedupe_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (str(row.get("ip") or ""), str(row.get("port") or ""), str(row.get("host") or ""))
+
 
 def _cert_to_str(ssl: dict[str, Any] | None) -> str:
     """Render the parts of an SSL cert the extractor can scan for leaked URLs."""
@@ -239,15 +260,51 @@ class ShodanClient:
         self,
         query: str,
         pages: int | None = None,
+        *,
+        max_cursor_restarts: int = 1,
     ) -> list[dict[str, Any]]:
+        """Paginate a Shodan host search.
+
+        If Shodan reports a search-cursor timeout mid-pagination, restart the
+        query from page 1 (up to ``max_cursor_restarts`` times) and merge
+        results with de-duplication so earlier pages are not lost.
+        """
         pages = pages or settings.shodan_max_pages
         all_results: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        restarts = 0
+        page = 1
 
-        for page in range(1, pages + 1):
-            data = self._request(
-                "/shodan/host/search",
-                {"query": query, "page": page, "minify": "false"},
-            )
+        while page <= pages:
+            try:
+                data = self._request(
+                    "/shodan/host/search",
+                    {"query": query, "page": page, "minify": "false"},
+                )
+            except SearchCursorTimedOut:
+                # Retrying the same page never works — Shodan requires page 1.
+                if page <= 1 or restarts >= max_cursor_restarts:
+                    log.warning(
+                        "  shodan cursor timed out at page %d "
+                        "(restarts=%d/%d); keeping %d partial results",
+                        page,
+                        restarts,
+                        max_cursor_restarts,
+                        len(all_results),
+                    )
+                    break
+                restarts += 1
+                log.warning(
+                    "  shodan cursor timed out at page %d; "
+                    "restarting query from page 1 (restart %d/%d, have %d hits)",
+                    page,
+                    restarts,
+                    max_cursor_restarts,
+                    len(all_results),
+                )
+                page = 1
+                continue
+
             if data is None:
                 break
 
@@ -257,12 +314,26 @@ class ShodanClient:
                 break
 
             mapped = [map_match(m) for m in matches]
-            all_results.extend(mapped)
+            added = 0
+            for row in mapped:
+                key = _result_dedupe_key(row)
+                if key in seen:
+                    continue
+                seen.add(key)
+                all_results.append(row)
+                added += 1
             total = data.get("total", 0)
-            log.info("  shodan page %d: +%d (total est. %s)", page, len(mapped), total)
+            log.info(
+                "  shodan page %d: +%d (unique +%d, total est. %s)",
+                page,
+                len(mapped),
+                added,
+                total,
+            )
 
             if len(matches) < 100:
                 break
+            page += 1
             # Interval between pages is enforced by KeyPool.throttle on the next
             # request; no extra sleep needed here.
 
@@ -301,6 +372,16 @@ class ShodanClient:
 
             body = r.text[:300]
             last_err = f"HTTP {r.status_code}: {body[:200]}"
+
+            # Cursor expiry is not key-specific and never recovers on the same
+            # page — surface immediately so search() can restart from page 1.
+            if _is_cursor_timeout(body):
+                log.warning(
+                    "  shodan key %s… search cursor timed out (page=%s)",
+                    key[:6],
+                    params.get("page", "?"),
+                )
+                raise SearchCursorTimedOut(last_err)
 
             if r.status_code in (401, 403):
                 if _is_credits_exhausted(r.status_code, body):

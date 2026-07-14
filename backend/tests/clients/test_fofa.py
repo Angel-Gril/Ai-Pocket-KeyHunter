@@ -105,6 +105,54 @@ def test_search_retries_429_then_succeeds():
 
 
 @respx.mock
+def test_search_retries_503_system_busy_with_backoff():
+    """HTTP 503 + [-501] must not kill the key; rotate/backoff then succeed."""
+    busy = httpx.Response(
+        503,
+        json={"error": True, "errmsg": "[-501] 系统繁忙，请稍后重试"},
+    )
+    ok = httpx.Response(200, json=_ok_response([["h", "1.1.1.1", "443", "", "", "", ""]]))
+    route = respx.get(f"{BASE}/api/v1/search/all")
+    route.side_effect = [busy, busy, ok]
+
+    cooldowns: list[tuple[str, float]] = []
+
+    with _client(["k1", "k2"]) as c:
+        orig = c._pool.cooldown
+
+        def _track(key: str, seconds: float) -> None:
+            cooldowns.append((key, seconds))
+            orig(key, seconds)
+
+        c._pool.cooldown = _track  # type: ignore[method-assign]
+        results = c.search('body="t"', pages=1)
+
+    assert len(results) == 1
+    assert not c._dead
+    # Exponential: base 1.0 → 1.0, then 2.0 (busy_hits 1, 2); keys rotate.
+    assert [d for _, d in cooldowns] == [1.0, 2.0]
+    assert {k for k, _ in cooldowns} == {"k1", "k2"}
+
+
+@respx.mock
+def test_search_retries_body_501_busy_on_http_200():
+    """Some gateways return 200 + error=true + [-501] instead of HTTP 503."""
+    busy_body = {"error": True, "errmsg": "[-501] 系统繁忙，请稍后重试"}
+    route = respx.get(f"{BASE}/api/v1/search/all")
+    route.side_effect = [
+        httpx.Response(200, json=busy_body),
+        httpx.Response(200, json=_ok_response([["h", "2.2.2.2", "443", "", "", "", ""]])),
+    ]
+
+    with _client(["k1", "k2"]) as c:
+        results = c.search('body="t"', pages=1)
+
+    assert len(results) == 1
+    assert results[0]["ip"] == "2.2.2.2"
+    assert not c._dead
+
+
+@respx.mock
 def test_search_stops_on_quota_exhausted():
     respx.get(f"{BASE}/api/v1/search/all").mock(
         return_value=httpx.Response(200, json={"error": True, "errmsg": "已用完"})

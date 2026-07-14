@@ -141,6 +141,73 @@ def test_search_handles_network_error_then_success():
 
 
 @respx.mock
+def test_search_cursor_timeout_restarts_from_page_1():
+    """Shodan cursor expiry must restart from page 1, not spin on the same page."""
+    cursor_err = httpx.Response(
+        500,
+        json={"error": "Search cursor timed out. Restart the search query from page 1."},
+    )
+    page1 = [_match(f"1.1.1.{i}", 4000) for i in range(100)]
+    page2_first = [_match(f"2.2.2.{i}", 4000) for i in range(100)]
+    # After restart: page1 again (deduped), page2 succeeds, page3 short stop.
+    page2_ok = [_match(f"2.2.2.{i}", 4000) for i in range(100)]
+    page3 = [_match("9.9.9.9", 4000)]
+
+    route = respx.get(f"{BASE}/shodan/host/search")
+    route.side_effect = [
+        httpx.Response(200, json={"total": 201, "matches": page1}),
+        httpx.Response(200, json={"total": 201, "matches": page2_first}),
+        cursor_err,  # page 3 cursor dead
+        # restart from page 1
+        httpx.Response(200, json={"total": 201, "matches": page1}),
+        httpx.Response(200, json={"total": 201, "matches": page2_ok}),
+        httpx.Response(200, json={"total": 201, "matches": page3}),
+    ]
+    with _client() as c:
+        results = c.search("http.title:Open WebUI", pages=5)
+    # 100 + 100 + 1 unique (restart re-fetches page1/2 but dedupes)
+    assert len(results) == 201
+    assert route.call_count == 6
+    # First failure must not burn multi-key retries on the same page.
+    pages_requested = [int(c.request.url.params["page"]) for c in route.calls]
+    assert pages_requested == [1, 2, 3, 1, 2, 3]
+
+
+@respx.mock
+def test_search_cursor_timeout_on_page1_keeps_empty():
+    respx.get(f"{BASE}/shodan/host/search").mock(
+        return_value=httpx.Response(
+            500,
+            json={"error": "Search cursor timed out. Restart the search query from page 1."},
+        )
+    )
+    with _client() as c:
+        assert c.search("http.title:LiteLLM", pages=3) == []
+
+
+@respx.mock
+def test_search_cursor_timeout_exhausted_keeps_partial():
+    """If restart still hits cursor timeout, keep already-collected hits."""
+    cursor_err = httpx.Response(
+        500,
+        json={"error": "Search cursor timed out. Restart the search query from page 1."},
+    )
+    # Full page1 then fail page2, restart, page1 ok, page2 fail again.
+    full_page1 = [_match(f"1.1.1.{i}", 4000) for i in range(100)]
+    route = respx.get(f"{BASE}/shodan/host/search")
+    route.side_effect = [
+        httpx.Response(200, json={"total": 200, "matches": full_page1}),
+        cursor_err,  # page 2
+        httpx.Response(200, json={"total": 200, "matches": full_page1}),  # restart p1
+        cursor_err,  # page 2 again — restarts exhausted
+    ]
+    with _client() as c:
+        results = c.search("http.title:LiteLLM", pages=5, max_cursor_restarts=1)
+    assert len(results) == 100
+    assert all(r["ip"].startswith("1.1.1.") for r in results)
+
+
+@respx.mock
 def test_search_non_json_returns_empty():
     respx.get(f"{BASE}/shodan/host/search").mock(
         return_value=httpx.Response(200, text="<html>nope")

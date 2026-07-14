@@ -30,6 +30,14 @@ _INVALID_KEY_MARKERS = (
     "api key error",
     "invalid key",
 )
+# fofoapi / FOFA upstream overload — transient; never mark key dead.
+_BUSY_MARKERS = (
+    "[-501]",
+    "系统繁忙",
+    "service unavailable",
+    "temporarily unavailable",
+)
+_BUSY_HTTP_STATUS = frozenset({502, 503, 504})
 
 
 def _rows_to_dicts(rows: list[Any], field_names: list[str]) -> list[dict[str, Any]]:
@@ -65,6 +73,14 @@ def _is_quota_error(text: str) -> bool:
 def _is_invalid_key(text: str) -> bool:
     low = text.lower()
     return any(m.lower() in low for m in _INVALID_KEY_MARKERS)
+
+
+def _is_busy_error(status_code: int, text: str) -> bool:
+    """True for fofoapi/FOFA system-busy responses (HTTP 503 + [-501], etc.)."""
+    if status_code in _BUSY_HTTP_STATUS:
+        return True
+    low = text.lower()
+    return any(m.lower() in low for m in _BUSY_MARKERS)
 
 
 class FofaClient:
@@ -193,12 +209,26 @@ class FofaClient:
 
         return all_results
 
+    def _busy_backoff(self, busy_hits: int) -> float:
+        """Exponential backoff for system-busy (base ≥1s, cap 8s).
+
+        Sequence with default base: 1s → 2s → 4s → 8s → 8s …
+        Cap stays short so a single-key pool does not stall a whole page for 30s;
+        multi-key pools already rotate while the failing key cools down.
+        """
+        return rate_limit_backoff(
+            busy_hits,
+            base=max(self._pool.min_interval, 1.0),
+            cap=8.0,
+        )
+
     def _request_page(
         self, qbase64: str, page: int, size: int, fields: str
     ) -> dict[str, Any] | None:
         url = f"{self.base_url}/api/v1/search/all"
         last_err = ""
         rate_limit_hits = 0
+        busy_hits = 0
         max_attempts = self._pool.max_attempts()
 
         for attempt in range(1, max_attempts + 1):
@@ -240,6 +270,21 @@ class FofaClient:
                 self._pool.cooldown(key, delay)
                 continue
 
+            # HTTP 503 + [-501] 系统繁忙 (and 502/504) — longer backoff, rotate key.
+            if _is_busy_error(r.status_code, r.text):
+                busy_hits += 1
+                delay = self._busy_backoff(busy_hits)
+                last_err = f"HTTP {r.status_code}: {r.text[:200]}"
+                log.warning(
+                    "  fofa key %s… system busy, backing off %.1fs (attempt %d/%d)",
+                    key[:6],
+                    delay,
+                    attempt,
+                    max_attempts,
+                )
+                self._pool.cooldown(key, delay)
+                continue
+
             if r.status_code != 200:
                 last_err = f"HTTP {r.status_code}: {r.text[:200]}"
                 log.warning("  fofa key %s… %s", key[:6], last_err)
@@ -266,6 +311,19 @@ class FofaClient:
                 if _is_invalid_key(msg):
                     self._pool.mark_dead(key, f"invalid key: {msg[:120]}")
                     continue
+                if _is_busy_error(200, msg):
+                    busy_hits += 1
+                    delay = self._busy_backoff(busy_hits)
+                    log.warning(
+                        "  fofa key %s… system busy (%s), backing off %.1fs (attempt %d/%d)",
+                        key[:6],
+                        msg[:80],
+                        delay,
+                        attempt,
+                        max_attempts,
+                    )
+                    self._pool.cooldown(key, delay)
+                    continue
                 # Transient / unknown API error — try next live key.
                 log.warning("  fofa key %s… api error: %s", key[:6], msg[:160])
                 self._pool.cooldown(key, 0.5)
@@ -280,6 +338,19 @@ class FofaClient:
             if _is_invalid_key(body_text):
                 last_err = "key not found (wrong key)"
                 self._pool.mark_dead(key, last_err)
+                continue
+            if _is_busy_error(200, body_text):
+                busy_hits += 1
+                delay = self._busy_backoff(busy_hits)
+                last_err = body_text[:200]
+                log.warning(
+                    "  fofa key %s… system busy, backing off %.1fs (attempt %d/%d)",
+                    key[:6],
+                    delay,
+                    attempt,
+                    max_attempts,
+                )
+                self._pool.cooldown(key, delay)
                 continue
 
             return data
