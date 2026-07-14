@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from aipocket.services.scan_lock import ScanLease, ScanLockedError
+from aipocket.services.scan_lock import ScanLease, ScanLockedError, clear_stale_scan_lock
 
 
 class FakeScriptRedis:
@@ -66,3 +66,68 @@ async def test_lease_loss_cancels_running_work() -> None:
     with pytest.raises(ScanLockedError, match="ownership was lost"):
         await task
     assert cancelled.is_set()
+
+
+class _FakeRedisClient:
+    """Minimal redis.asyncio stand-in for clear_stale_scan_lock tests."""
+
+    def __init__(self, *, delete_result: int = 1, fail: bool = False) -> None:
+        self.delete_result = delete_result
+        self.fail = fail
+        self.deleted_keys: list[str] = []
+        self.closed = False
+
+    async def delete(self, key: str) -> int:
+        if self.fail:
+            raise ConnectionError("redis down")
+        self.deleted_keys.append(key)
+        return self.delete_result
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_clear_stale_scan_lock_deletes_key(monkeypatch) -> None:
+    client = _FakeRedisClient(delete_result=1)
+
+    class _Redis:
+        @staticmethod
+        def from_url(*_a, **_k):
+            return client
+
+    monkeypatch.setattr("redis.asyncio.Redis", _Redis)
+
+    assert await clear_stale_scan_lock() is True
+    assert client.deleted_keys == ["aipocket:scan:lock"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_clear_stale_scan_lock_returns_false_when_absent(monkeypatch) -> None:
+    client = _FakeRedisClient(delete_result=0)
+
+    class _Redis:
+        @staticmethod
+        def from_url(*_a, **_k):
+            return client
+
+    monkeypatch.setattr("redis.asyncio.Redis", _Redis)
+
+    assert await clear_stale_scan_lock() is False
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_clear_stale_scan_lock_swallows_redis_errors(monkeypatch) -> None:
+    client = _FakeRedisClient(fail=True)
+
+    class _Redis:
+        @staticmethod
+        def from_url(*_a, **_k):
+            return client
+
+    monkeypatch.setattr("redis.asyncio.Redis", _Redis)
+
+    assert await clear_stale_scan_lock() is False
+    assert client.closed is True

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import secrets
 from dataclasses import dataclass, field
 from typing import Any
 
 from aipocket.core.config import settings
+
+log = logging.getLogger(__name__)
 
 _LOCK_KEY = "aipocket:scan:lock"
 _RENEW_SCRIPT = """
@@ -97,3 +100,30 @@ async def acquire_scan_lease() -> ScanLease:
         await redis.aclose()
         raise ScanLockedError("a scan is already running")
     return ScanLease(redis=redis, token=token, ttl_seconds=ttl_seconds)
+
+
+async def clear_stale_scan_lock() -> bool:
+    """Delete any leftover scan lock (best-effort).
+
+    Call on process startup after a hard restart (Docker kill, OOM, etc.).
+    The previous process could not run ``ScanLease.release()``, so Redis may still
+    hold ``aipocket:scan:lock`` for up to ``scan_lock_ttl`` seconds and block new
+    scans. Safe for single-instance / single-active-scanner deploys: an in-flight
+    scan in *another* process would lose its lease on the next heartbeat.
+    """
+    from redis.asyncio import Redis
+
+    redis = Redis.from_url(settings.dedup_redis_url, decode_responses=True)
+    try:
+        removed = bool(await redis.delete(_LOCK_KEY))
+        if removed:
+            log.warning(
+                "Cleared stale scan lock %s (previous process likely died mid-scan)",
+                _LOCK_KEY,
+            )
+        return removed
+    except Exception as e:  # noqa: BLE001 — startup must not fail if Redis is down
+        log.warning("Could not clear stale scan lock: %s", e)
+        return False
+    finally:
+        await redis.aclose()

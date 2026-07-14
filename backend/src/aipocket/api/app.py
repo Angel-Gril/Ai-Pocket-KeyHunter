@@ -25,6 +25,12 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Docker/SIGKILL restarts leave Redis scan locks behind; clear before accepting
+    # work so UI "start scan" is not blocked by a dead holder (see scan_lock.py).
+    from aipocket.services.scan_lock import clear_stale_scan_lock
+
+    await clear_stale_scan_lock()
+
     scheduler = None
     task = None
     if settings.scheduler_enabled:

@@ -22,6 +22,11 @@ class Scheduler:
             with contextlib.suppress(NotImplementedError):
                 loop.add_signal_handler(sig, self._stop.set)
 
+        # Same orphan-lock problem as the web API after a hard container restart.
+        from aipocket.services.scan_lock import clear_stale_scan_lock
+
+        await clear_stale_scan_lock()
+
         log.info("Scheduler started. interval=%ds", settings.scheduler_interval)
         while not self._stop.is_set():
             try:
