@@ -48,7 +48,6 @@ SPECS = [
         use_auth=False,
         suffix="rce_debug",
     ),
-
 ]
 
 

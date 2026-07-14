@@ -2,6 +2,20 @@
 
 Post-auth reads of *own* resources belong in weak_password; this engine only
 handles list + object ID enumeration against isolation boundaries.
+
+Confirmation semantics (a finding is evidence of a *vulnerability*, not merely
+that we sent some requests):
+
+- Enumerating IDs and getting 401/403/404 back is NOT IDOR — it is the access
+  control *working*. Those runs produce a telemetry-only outcome (``reason``),
+  never a finding.
+- A finding requires a **successful object response** (HTTP 200) plus a
+  **privilege-boundary** signal: the same object is re-read with NO auth, and
+  the unauthenticated context can also read it (200, or the same credential is
+  recovered). That demonstrates a context lacking authorization reaching the
+  resource, which is the actual IDOR condition.
+- "Surface exercised" (candidate IDs + a template but no authorized-vs-unauth
+  gap) is reported via ``reason`` for observability, not as a finding.
 """
 
 from __future__ import annotations
@@ -83,8 +97,10 @@ async def run_idor(
     object_ids = object_ids[:id_enum_max]
     ctx.object_ids = list(dict.fromkeys(ctx.object_ids + object_ids))
 
-    # 3) Object reads
+    # 3) Object reads — track objects that actually returned 200 (a successful
+    #    object response is a precondition for any IDOR claim).
     object_template = entry.get("object") or entry.get("object_path") or ""
+    successful_ids: list[str] = []
     for oid in object_ids:
         if result.requests_used >= spec.max_requests:
             break
@@ -93,10 +109,37 @@ async def run_idor(
         path = format_path(object_template, id=oid)
         resp = await prober._get(prober._url(ctx.hit, path), headers=headers or None)
         result.requests_used = prober.budget_consumed - before
-        found = prober._extract_from_response(resp, ctx.hit, f"{spec.product}_idor_{oid}")
-        result.credentials.extend(found)
+        if resp is not None and resp.status_code == 200:
+            successful_ids.append(oid)
+            found = prober._extract_from_response(resp, ctx.hit, f"{spec.product}_idor_{oid}")
+            result.credentials.extend(found)
 
-    confirmed = bool(result.credentials) or bool(object_ids and object_template)
+    # 4) Privilege-boundary proof: re-read the successful objects with NO auth.
+    #    If an unauthenticated context can also read them, that is genuine broken
+    #    object-level authorization (not "we read our own resource").
+    cross_auth_ids: list[str] = []
+    cross_auth_creds = 0
+    if successful_ids and object_template and headers:
+        for oid in successful_ids:
+            if result.requests_used >= spec.max_requests:
+                break
+            path = format_path(object_template, id=oid)
+            unauth = await prober._get(prober._url(ctx.hit, path), headers=None)
+            result.requests_used = prober.budget_consumed - before
+            if unauth is not None and unauth.status_code == 200:
+                cross_auth_ids.append(oid)
+                found = prober._extract_from_response(
+                    unauth, ctx.hit, f"{spec.product}_idor_unauth_{oid}"
+                )
+                if found:
+                    cross_auth_creds += len(found)
+                    result.credentials.extend(found)
+    elif successful_ids and object_template and not headers:
+        # Already unauthenticated (force_unauth / no session): a 200 here is
+        # itself an unauthorized object read — the objects ARE the boundary proof.
+        cross_auth_ids = list(successful_ids)
+
+    confirmed = bool(cross_auth_ids)
     if confirmed:
         result.findings.append(
             make_finding(
@@ -105,16 +148,28 @@ async def run_idor(
                 target_origin=origin,
                 spec_id=spec.id,
                 cve_ids=spec.cve_ids,
-                confirmed=bool(result.credentials),
+                confirmed=True,
                 summary=(
-                    f"IDOR object reads executed ({len(object_ids)} ids)"
-                    + (f"; {len(result.credentials)} credentials" if result.credentials else "")
+                    f"IDOR: {len(cross_auth_ids)} object(s) readable across an "
+                    f"authorization boundary"
+                    + (f"; {cross_auth_creds} credential(s) exposed" if cross_auth_creds else "")
                 ),
-                severity="high" if result.credentials else "medium",
+                severity="high" if cross_auth_creds else "medium",
                 credentials=result.credentials,
-                evidence={"object_ids": object_ids[:id_enum_max], "list": list_path},
+                evidence={
+                    "cross_auth_object_ids": cross_auth_ids[:id_enum_max],
+                    "authorized_object_ids": successful_ids[:id_enum_max],
+                    "list": list_path,
+                },
             )
         )
+    elif successful_ids:
+        # We read objects with our own session but could not prove a boundary
+        # crossing — own-resource read, not IDOR. Telemetry only.
+        result.reason = (
+            f"authorized object reads only ({len(successful_ids)}); "
+            "no unauthorized cross-boundary access proven"
+        )
     else:
-        result.reason = "no idor surface exercised"
+        result.reason = "no successful object response (access control held)"
     return result

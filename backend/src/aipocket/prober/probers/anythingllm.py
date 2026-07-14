@@ -79,7 +79,6 @@ SPECS = [
         use_auth=True,
         suffix="rce_system",
     ),
-
 ]
 
 

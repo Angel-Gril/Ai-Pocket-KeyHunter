@@ -42,10 +42,18 @@ class RiskPolicy:
 
 
 def _parse_vuln_classes(raw: str) -> frozenset[VulnClass]:
+    """Parse the ``PROBE_VULN_CLASSES`` allowlist, failing CLOSED on bad input.
+
+    A security allowlist must never fail open: an unrecognized / misspelled
+    class name (e.g. ``rcee``) raises ``ValueError`` at startup instead of
+    silently enabling every class. ``*`` / ``all`` / empty explicitly opt into
+    all classes.
+    """
     raw = (raw or "").strip()
     if not raw or raw.lower() in {"*", "all"}:
         return frozenset(_ALL_CLASSES)
     out: set[VulnClass] = set()
+    unknown: list[str] = []
     for part in raw.split(","):
         token = part.strip().lower()
         if not token:
@@ -53,8 +61,15 @@ def _parse_vuln_classes(raw: str) -> frozenset[VulnClass]:
         try:
             out.add(VulnClass(token))
         except ValueError:
-            continue
-    return frozenset(out) if out else frozenset(_ALL_CLASSES)
+            unknown.append(part.strip())
+    if unknown:
+        valid = ", ".join(sorted(c.value for c in _ALL_CLASSES))
+        raise ValueError(
+            f"PROBE_VULN_CLASSES contains unknown vuln class(es): "
+            f"{', '.join(unknown)}. Valid values: {valid} (or * / all)."
+        )
+    # Fail closed: an explicit non-empty list that yields nothing enables nothing.
+    return frozenset(out)
 
 
 def policy_from_settings(

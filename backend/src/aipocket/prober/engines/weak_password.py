@@ -18,35 +18,58 @@ if TYPE_CHECKING:
     from ..capability.types import ProbeContext
 
 
+def _post_reserve(spec: ProbeSpec) -> int:
+    """HTTP requests to keep in reserve for post-auth reads after login."""
+    return max(1, min(5, len(spec.entry.get("post_auth_paths") or ()) or 1))
+
+
+def _spec_login_cap(spec: ProbeSpec) -> int:
+    """Login attempts the Spec's own ``max_requests`` audit budget permits.
+
+    The Spec budget covers the whole node (login attempts + post-auth reads),
+    so reserve room for the reads. Always allow at least one login attempt.
+    """
+    return max(1, int(spec.max_requests) - _post_reserve(spec))
+
+
 def _login_attempt_cap(prober: Prober, spec: ProbeSpec) -> int:
-    """Max login *attempts* (not HTTP budget).
+    """Max login *attempts* (not raw HTTP budget).
 
     Priority:
     1. ``WEAK_PASSWORD_MAX_ATTEMPTS`` when > 0
     2. With a target RequestBudget: effectively unlimited — budget checks stop us
     3. No budget (unit tests): small soft cap so full dict is not sprayed
+
+    In every case the per-Spec ``max_requests`` is a hard upper bound so a
+    product Spec that declares e.g. ``max_requests=12`` cannot balloon into
+    hundreds of login requests off the shared target budget.
     """
     from aipocket.core.config import settings
 
     configured = int(getattr(settings, "weak_password_max_attempts", 0) or 0)
     if configured > 0:
-        return configured
-
-    if prober.budget_remaining is not None:
+        cap = configured
+    elif prober.budget_remaining is not None:
         # Production runner always attaches a budget; let remaining be the stop.
-        return 1_000_000
+        cap = 1_000_000
+    else:
+        # No RequestBudget: do not spray the full dict unbounded in unit tests.
+        cap = min(max(int(spec.max_requests), 8), 32)
 
-    # No RequestBudget: do not spray the full dict unbounded in unit tests.
-    return min(max(int(spec.max_requests), 8), 32)
+    return min(cap, _spec_login_cap(spec))
 
 
 def _attempt_budget(prober: Prober, spec: ProbeSpec, attempted: int) -> bool:
-    """Return True if another login attempt is allowed."""
+    """Return True if another login attempt is allowed.
+
+    Two independent caps must BOTH hold:
+    - the shared target :class:`RequestBudget` (second-layer, cross-Spec), and
+    - this Spec's own ``max_requests`` audit budget (first-layer, per-node).
+    """
     remaining = prober.budget_remaining
     if remaining is not None and remaining <= 0:
         return False
-    post_reserve = max(1, min(5, len(spec.entry.get("post_auth_paths") or ()) or 1))
-    if remaining is not None and remaining <= post_reserve:
+    if remaining is not None and remaining <= _post_reserve(spec):
         return False
     return attempted < _login_attempt_cap(prober, spec)
 

@@ -75,7 +75,6 @@ SPECS = [
         use_auth=False,
         suffix="rce_run",
     ),
-
 ]
 
 

@@ -34,9 +34,7 @@ def test_packaged_dict_exists_and_loads() -> None:
 def test_usernames_expand_passwords(tmp_path: Path) -> None:
     d = tmp_path / "pw.txt"
     d.write_text("alpha\nbeta\n", encoding="utf-8")
-    pairs = get_weak_credentials(
-        dict_path=str(d), usernames="admin,root", max_attempts=0
-    )
+    pairs = get_weak_credentials(dict_path=str(d), usernames="admin,root", max_attempts=0)
     passwords = {(u, p) for u, p in pairs}
     assert ("admin", "alpha") in passwords
     assert ("root", "beta") in passwords

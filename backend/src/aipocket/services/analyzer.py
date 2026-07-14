@@ -114,8 +114,9 @@ async def _chat(
         "temperature": 0,
         "stream": False,
     }
-    if settings.gpt_fast:
-        body["reasoning_effort"] = "low"
+    effort = (settings.gpt_reasoning_effort or "").strip().lower()
+    if effort and effort not in {"none", "off"}:
+        body["reasoning_effort"] = effort
 
     last_status = 0
     last_body = ""

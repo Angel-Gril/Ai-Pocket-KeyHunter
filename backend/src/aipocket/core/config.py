@@ -85,6 +85,10 @@ class Settings(BaseSettings):
     gpt_key: str = ""
     gpt_model: str = "gpt-4o-mini"
     gpt_fast: bool = False
+    # reasoning_effort sent to reasoning models (e.g. grok-4.5). "high" gives the
+    # best extraction quality; grok-4.5 is fast enough that low is unnecessary.
+    # Set "" / "none" to omit the field for models that don't accept it.
+    gpt_reasoning_effort: str = "high"
     gpt_recheck_concurrency: int = 5
     gpt_recheck_batch_size: int = 10
     # Seconds to wait between GPT extract and GPT re-check to avoid rate-limit storms

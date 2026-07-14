@@ -388,6 +388,16 @@ async def _run_scan_inner(
                 by_class or "{}",
                 node_status or "{}",
             )
+            # Persist the full findings + node outcomes so non-credential proofs
+            # (SSRF/SQLi/RCE/IDOR, CVE evidence, skip reasons) survive the scan.
+            if run_dir:
+                from .writer import write_probe_findings
+
+                write_probe_findings(
+                    list(probe_report.findings),
+                    list(probe_report.node_outcomes),
+                    run_dir,
+                )
 
         observe_credentials(ExtractionMethod.PROBER, probed_creds)
         seen = _merge_credentials(creds, probed_creds, seen)

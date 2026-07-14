@@ -283,6 +283,80 @@ def write_valid_results(results: list[ValidationResult], run_dir: Path) -> Path:
     return path
 
 
+def _mask_apikey(apikey: str) -> str:
+    """Mask a credential so findings artifacts never contain plaintext keys."""
+    if not apikey:
+        return ""
+    if len(apikey) <= 10:
+        return apikey[:2] + "…"
+    return f"{apikey[:6]}…{apikey[-4:]}"
+
+
+def _finding_to_dict(finding: Any) -> dict[str, Any]:
+    """Serialize a prober Finding for the run artifact (credentials masked)."""
+    return {
+        "vuln_class": getattr(finding.vuln_class, "value", str(finding.vuln_class)),
+        "product": finding.product,
+        "target_origin": finding.target_origin,
+        "spec_id": finding.spec_id,
+        "cve_ids": list(finding.cve_ids),
+        "confirmed": finding.confirmed,
+        "severity": finding.severity,
+        "summary": finding.summary,
+        "evidence": finding.evidence,
+        # Never persist plaintext keys — mask + count only.
+        "credential_count": len(finding.credentials),
+        "credentials_masked": [_mask_apikey(c.apikey) for c in finding.credentials],
+    }
+
+
+def _node_outcome_to_dict(node: Any) -> dict[str, Any]:
+    return {
+        "spec_id": node.spec_id,
+        "vuln_class": getattr(node.vuln_class, "value", str(node.vuln_class)),
+        "risk_level": int(node.risk_level),
+        "status": getattr(node.status, "value", str(node.status)),
+        "requests_used": node.requests_used,
+        "reason": node.reason,
+        "credentials_found": node.credentials_found,
+    }
+
+
+def write_probe_findings(
+    findings: list[Any],
+    node_outcomes: list[Any],
+    run_dir: Path,
+) -> Path:
+    """Persist prober findings + node outcomes to ``probe_findings_<ts>.json``.
+
+    These are the recoverable, per-target security results (SSRF/SQLi/RCE/IDOR
+    proofs, CVE evidence, and *why* each node did or didn't run) that were
+    previously only aggregated into a log line. Plaintext credentials are masked
+    so the artifact is safe to retain. No-op when JSONL writing is disabled
+    (PG-only mode); the aggregate log line still records the summary.
+    """
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    path = run_dir / f"probe_findings_{ts}.json"
+    if not settings.write_jsonl:
+        return path
+    payload = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "findings_total": len(findings),
+        "findings_confirmed": sum(1 for f in findings if f.confirmed),
+        "findings": [_finding_to_dict(f) for f in findings],
+        "node_outcomes": [_node_outcome_to_dict(n) for n in node_outcomes],
+    }
+    text = _sanitize_json_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    path.write_text(text, encoding="utf-8")
+    log.info(
+        "Probe findings written: %s (findings=%d, nodes=%d)",
+        path,
+        len(findings),
+        len(node_outcomes),
+    )
+    return path
+
+
 def write_suspicious_results(results: list[ValidationResult], run_dir: Path) -> Path:
     """Write suspicious_<ts>.jsonl — quarantined results for manual review.
 
