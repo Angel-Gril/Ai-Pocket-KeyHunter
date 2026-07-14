@@ -106,6 +106,23 @@ SHODAN_PRODUCT_QUERIES: dict[str, list[str]] = {
     "Langflow": [
         'http.title:"Langflow" port:80,443,3000,8080,7860',
     ],
+    # P1 products with dedicated probers
+    "ChatGPT-Next-Web": [
+        'http.title:"NextChat"',
+        'http.html:"chatgpt-next-web"',
+    ],
+    "Portkey AI Gateway": [
+        'http.title:"Portkey"',
+        'http.html:"portkey" http.html:"gateway"',
+    ],
+    "OpenRouter": [
+        'http.title:"OpenRouter"',
+        'http.html:"openrouter" http.html:"sk-or-"',
+    ],
+    "AnythingLLM": [
+        'http.title:"AnythingLLM"',
+        'http.html:"anythingllm"',
+    ],
 }
 
 # Credential-leak queries — plaintext keys leaked in banners (HTTP headers) or

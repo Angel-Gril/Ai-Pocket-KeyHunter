@@ -69,6 +69,11 @@ PRODUCT_QUERIES: dict[str, list[str]] = {
         'body="new-api" && body="sk-"',
         'body="new-api" && body="token"',
     ],
+    "One-API": [
+        'body="one-api" && body="sk-"',
+        'body="one-api" && body="token"',
+        'body="oneapi" && body="sk-"',
+    ],
     "AnythingLLM": [
         'body="anythingllm" && body="sk-"',
         'body="anythingllm" && body="OPENAI_API_KEY"',
@@ -76,6 +81,11 @@ PRODUCT_QUERIES: dict[str, list[str]] = {
     "ChatGPT-Next-Web": [
         'body="nextchat" && body="sk-"',
         'body="chatgpt-next-web" && body="OPENAI_API_KEY"',
+    ],
+    "OpenRouter": [
+        'body="openrouter" && body="sk-or-"',
+        'body="openrouter" && body="sk-"',
+        'body="OpenRouter" && body="api_key"',
     ],
     "vLLM": [
         'body="vllm" && body="sk-"',
@@ -352,12 +362,16 @@ def _normalize_product(product: str) -> str:
         return "GitLab AI Gateway"
     if "new-api" in p or "newapi" in p:
         return "New-API"
+    if "one-api" in p or "oneapi" in p:
+        return "One-API"
     if "fastgpt" in p:
         return "FastGPT"
     if "anythingllm" in p:
         return "AnythingLLM"
     if "next-web" in p or "nextchat" in p:
         return "ChatGPT-Next-Web"
+    if "openrouter" in p or "open router" in p:
+        return "OpenRouter"
     if "vllm" in p:
         return "vLLM"
     if "ollama" in p:

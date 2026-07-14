@@ -372,6 +372,23 @@ async def _run_scan_inner(
             outcome_counts.get("skipped", 0),
             outcome_counts.get("failed", 0),
         )
+        # Vuln-class observability: why IDOR/weak_password didn't run, confirmed POCs, etc.
+        if probe_report.findings or probe_report.node_outcomes:
+            node_status: dict[str, int] = {}
+            for node in probe_report.node_outcomes:
+                node_status[node.status.value] = node_status.get(node.status.value, 0) + 1
+            by_class: dict[str, int] = {}
+            for finding in probe_report.findings:
+                if finding.confirmed:
+                    key = finding.vuln_class.value
+                    by_class[key] = by_class.get(key, 0) + 1
+            log.info(
+                "Prober capability: findings=%d confirmed_by_class=%s node_status=%s",
+                len(probe_report.findings),
+                by_class or "{}",
+                node_status or "{}",
+            )
+
         observe_credentials(ExtractionMethod.PROBER, probed_creds)
         seen = _merge_credentials(creds, probed_creds, seen)
         record_credentials("candidates", probed_creds)

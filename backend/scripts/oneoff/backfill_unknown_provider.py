@@ -270,8 +270,9 @@ def patch_pg(*, apply: bool) -> tuple[int, int]:
         log.info("PG disabled (no DATABASE_URL) — skipping DB patch")
         return 0, 0
 
-    from aipocket.core.db import ensure_schema, get_pool
     from psycopg.types.json import Jsonb
+
+    from aipocket.core.db import ensure_schema, get_pool
 
     ensure_schema()
     pool = get_pool()

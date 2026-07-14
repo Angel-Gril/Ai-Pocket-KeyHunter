@@ -43,11 +43,33 @@ class Settings(BaseSettings):
     # peak task/client memory bounded while concurrency still governs in-flight
     # HTTP. 500 is a safe default for ~4–6GB hosts.
     prober_batch_size: int = 500
-    max_requests_per_target: int = 12
+    # Per-target HTTP budget for product probers. Weak-password dict needs headroom.
+    max_requests_per_target: int = 600
+    # Independent budget for GenericPageProber so it cannot starve product L1 nodes.
+    generic_max_requests_per_target: int = 12
     max_probe_redirects: int = 2
     min_probe_evidence_score: int = 50
     intrusive_checks: bool = False
+    # Optional origin allowlist for L1+. Empty = unrestricted when intrusive_checks
+    # is True (full sweep). Non-empty = exact-origin match only.
+    # L1+ never runs when intrusive_checks is False, regardless of this value.
     authorized_probe_scope: str = ""
+    # Vuln-class probe risk policy (comma-separated VulnClass names, or * / all).
+    # Product Specs cover L0–L3; these gates decide what actually executes.
+    probe_vuln_classes: str = "*"
+    # Max risk 0–3. Code default 1 (L0+L1 when intrusive). Set 3 in .env for L2/L3.
+    probe_max_risk: int = 1
+    # L2/L3 class flags (code default off). Full-sweep .env.example turns them on;
+    # still need intrusive_checks + probe_max_risk >= 2/3.
+    probe_ssrf_enabled: bool = False
+    probe_sqli_enabled: bool = False
+    probe_rce_enabled: bool = False
+    # Weak-password dictionary (password-per-line). Empty = packaged default.
+    weak_password_dict_path: str = ""
+    # Usernames tried with each dict password (admin first = higher ROI).
+    weak_password_usernames: str = "admin,root"
+    # Cap login pairs per target (0 = full dict × usernames, still budget-limited).
+    weak_password_max_attempts: int = 0
 
     validate_concurrency: int = 20
     validate_timeout: float = 15.0

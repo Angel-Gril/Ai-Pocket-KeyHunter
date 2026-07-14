@@ -7,8 +7,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 import respx
-from aipocket.core.targets import canonicalize_hits
 
+from aipocket.core.targets import canonicalize_hits
 from aipocket.prober.base import (
     WEAK_CREDENTIALS,
     extract_keys_from_text,
@@ -251,7 +251,7 @@ class TestNewAPIProbe:
         assert login.call_count == 0
 
     @pytest.mark.asyncio
-    async def test_intrusive_mode_requires_matching_authorized_scope(self):
+    async def test_intrusive_mode_nonempty_scope_blocks_unlisted_origin(self):
         hit = {"host": "https://outside.example.com", "title": "New API", "protocol": "https"}
         import asyncio
 
@@ -269,6 +269,26 @@ class TestNewAPIProbe:
                 ).probe(hit)
 
         assert login.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_intrusive_mode_empty_scope_allows_all_origins(self):
+        hit = {"host": "https://any.example.com", "title": "New API", "protocol": "https"}
+        import asyncio
+
+        with respx.mock(assert_all_called=False) as router:
+            login = router.post("https://any.example.com/api/user/login").mock(
+                return_value=httpx.Response(200, json={"success": True, "data": "token"})
+            )
+            router.route().mock(return_value=httpx.Response(404))
+            async with httpx.AsyncClient(follow_redirects=False) as client:
+                await NewAPIProber(
+                    client,
+                    asyncio.Semaphore(1),
+                    intrusive_checks=True,
+                    authorized_scope=(),
+                ).probe(hit)
+
+        assert login.call_count >= 1
 
 
 class TestStagedProbeDispatch:

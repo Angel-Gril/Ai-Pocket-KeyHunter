@@ -1,26 +1,32 @@
 """Prober module — active credential extraction from exposed AI gateways.
 
 Unlike passive banner extraction, the prober actively sends HTTP requests to
-discovered hosts to read configuration/credential endpoints. Two modes:
+discovered hosts. Capability model (vuln-class nodes):
 
-1. **Unauthenticated reads** — GET public config/key endpoints that some
-   instances expose by misconfiguration (e.g. LobeChat ``/api/config`` that
-   dumps all env vars, Flowise ``/api/v1/loginmethod`` that leaks OAuth
-   secrets, New-API ``/v1/models`` without auth).
+* **L0 unauth_read** — public config/key GETs (always on).
+* **L1 weak_password / idor** — dictionary login + object-level reads.
+* **L2 ssrf / sqli** — audited minimal read proofs (every product ships Specs).
+* **L3 rce** — whitelist-only minimal execution proof (every product ships Specs).
 
-2. **Weak-password login → read** — try a small set of default credentials
-   (admin/admin, admin/123456, …) against the product's login endpoint, then
-   read authenticated config/key endpoints.
+Gates (Settings / env). Library defaults are conservative; full-sweep deploys
+typically enable L1–L3 via ``.env``:
 
-No RCE, SSRF, SQL injection, or destructive operations — strictly read-only.
+* L1+ require ``intrusive_checks``. ``authorized_probe_scope`` empty = all
+  probe-eligible targets; non-empty = exact-origin allowlist.
+* L2 also needs ``probe_max_risk >= 2`` and ``probe_ssrf_enabled`` /
+  ``probe_sqli_enabled``.
+* L3 also needs ``probe_max_risk >= 3`` and ``probe_rce_enabled``.
+
+Only reviewed :class:`~aipocket.prober.capability.ProbeSpec` nodes may issue
+requests. Natural-language CVE text is never compiled into payloads.
 
 Architecture
 ------------
 - :class:`Prober` (base) — shared HTTP client, retry, key-extraction glue.
-- Product adapters (``probers/*.py``) — implement ``identify()`` and
-  ``probe()``, each returning a list of :class:`~aipocket.models.Credential`.
-- :func:`probe_hosts` — entry point: given hits from FOFA/Shodan, route each
-  to its product adapter by fingerprint, run all probes concurrently.
+- ``capability/`` — ProbeSpec, RiskPolicy, planner, executor.
+- ``engines/`` — per-vuln-class execution loops.
+- Product adapters (``probers/*.py``) — ``identify()`` + L0–L3 Spec registration.
+- :func:`probe_hosts` — entry point: route DiscoveryTargets → product plan.
 """
 
 from __future__ import annotations
