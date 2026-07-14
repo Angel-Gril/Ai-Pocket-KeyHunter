@@ -22,6 +22,7 @@ from aipocket.core.targets import DiscoveryTarget
 
 from .base import PROBE_TIMEOUT, Prober
 from .budget import RequestBudget
+from .capability.types import Finding, NodeOutcome
 from .evidence import TargetEvidence, score_target
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class ProbeTargetOutcome:
 class ProbeReport:
     credentials: tuple[Credential, ...]
     outcomes: tuple[ProbeTargetOutcome, ...]
+    findings: tuple[Finding, ...] = ()
+    node_outcomes: tuple[NodeOutcome, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,9 +69,63 @@ def _prober_batch_size() -> int:
     return max(1, int(settings.prober_batch_size))
 
 
+# product_name aliases so query/CVE labels route to the correct prober.
+_PRODUCT_ALIASES: dict[str, str] = {
+    "new-api": "new-api",
+    "newapi": "new-api",
+    "one-api": "one-api",
+    "oneapi": "one-api",
+    "litellm": "litellm",
+    "flowise": "flowise",
+    "flowiseai": "flowise",
+    "librechat": "librechat",
+    "dify": "dify",
+    "openwebui": "openwebui",
+    "open-webui": "openwebui",
+    "open webui": "openwebui",
+    "langflow": "langflow",
+    "fastgpt": "fastgpt",
+    "fast-gpt": "fastgpt",
+    "lobechat": "lobechat",
+    "lobe-chat": "lobechat",
+    "chatgpt-next-web": "chatgpt-next-web",
+    "nextchat": "chatgpt-next-web",
+    "next-chat": "chatgpt-next-web",
+    "next-web": "chatgpt-next-web",
+    "portkey": "portkey",
+    "portkey-ai-gateway": "portkey",
+    "portkey ai gateway": "portkey",
+    "openrouter": "openrouter",
+    "open-router": "openrouter",
+    "anythingllm": "anythingllm",
+    "anything-llm": "anythingllm",
+}
+
+
+def _normalize_hint(value: str) -> str:
+    return value.lower().replace("_", "-").strip()
+
+
+def _hint_to_product(hint: str) -> str | None:
+    """Map a free-form product hint to a prober product_name."""
+    key = _normalize_hint(hint)
+    if key in _PRODUCT_ALIASES:
+        return _PRODUCT_ALIASES[key]
+    # Token containment: "Portkey AI Gateway" → tokens match portkey
+    compact = key.replace(" ", "-")
+    if compact in _PRODUCT_ALIASES:
+        return _PRODUCT_ALIASES[compact]
+    for alias, product in _PRODUCT_ALIASES.items():
+        if alias in key or alias in compact:
+            return product
+    return None
+
+
 def _all_probers() -> list[type[Prober]]:
     """Import and return all prober classes (lazy to avoid circular issues)."""
     from .probers import (
+        AnythingLLMProber,
+        ChatGPTNextWebProber,
         DifyProber,
         FastGPTProber,
         FlowiseProber,
@@ -78,7 +135,9 @@ def _all_probers() -> list[type[Prober]]:
         LobeChatProber,
         NewAPIProber,
         OneAPIProber,
+        OpenRouterProber,
         OpenWebUIProber,
+        PortkeyProber,
     )
 
     return [
@@ -92,17 +151,30 @@ def _all_probers() -> list[type[Prober]]:
         LibreChatProber,
         DifyProber,
         FastGPTProber,
+        ChatGPTNextWebProber,
+        PortkeyProber,
+        OpenRouterProber,
+        AnythingLLMProber,
     ]
 
 
 def _select_prober(hit: dict[str, Any], prober_classes: list[type[Prober]]) -> type[Prober] | None:
-    hints = {
-        str(value).lower().replace("_", "-")
-        for value in (hit.get("_product_hints") or [hit.get("_product", "")])
-        if value
-    }
-    for cls in prober_classes:
-        if cls.product_name.lower() in hints:
+    raw_hints = list(hit.get("_product_hints") or [])
+    if hit.get("_product"):
+        raw_hints.insert(0, hit["_product"])
+    resolved: list[str] = []
+    for value in raw_hints:
+        if not value:
+            continue
+        product = _hint_to_product(str(value))
+        if product:
+            resolved.append(product)
+        else:
+            resolved.append(_normalize_hint(str(value)))
+    by_name = {cls.product_name.lower(): cls for cls in prober_classes}
+    for product in resolved:
+        cls = by_name.get(product)
+        if cls is not None:
             return cls
     for cls in prober_classes:
         try:
@@ -120,6 +192,18 @@ def _eligible_targets(
     return [(target, evidence) for target, evidence in scored if evidence.score >= minimum_score]
 
 
+def _allowed_product_names(allowed_products: frozenset[str]) -> frozenset[str]:
+    """Normalize allowlist entries (CVE labels, aliases) to prober product_name values."""
+    resolved: set[str] = set()
+    for product in allowed_products:
+        mapped = _hint_to_product(str(product))
+        if mapped:
+            resolved.add(mapped)
+        else:
+            resolved.add(_normalize_hint(str(product)))
+    return frozenset(resolved)
+
+
 def _build_assignments(
     targets: list[DiscoveryTarget], allowed_products: frozenset[str]
 ) -> tuple[list[ProbeAssignment], list[ProbeTargetOutcome]]:
@@ -127,7 +211,7 @@ def _build_assignments(
     from .probers import GenericPageProber
 
     prober_classes = _all_probers()
-    normalized_allowed = {product.lower().replace("_", "-") for product in allowed_products}
+    normalized_allowed = _allowed_product_names(allowed_products)
     assignments: list[ProbeAssignment] = []
     rejected: list[ProbeTargetOutcome] = []
     product_count = 0
@@ -177,25 +261,40 @@ def _build_assignments(
     return assignments, rejected
 
 
+def _budget_for_prober(prober_cls: type[Prober]) -> RequestBudget:
+    """Allocate a request budget for one prober on a target.
+
+    Generic and product probers use **independent** budgets so a refetch
+    generic pass cannot starve weak-password / IDOR on the product adapter.
+    """
+    name = (getattr(prober_cls, "product_name", "") or "").lower()
+    if name == "generic":
+        limit = max(1, int(getattr(settings, "generic_max_requests_per_target", 12)))
+    else:
+        limit = max(1, int(settings.max_requests_per_target))
+    return RequestBudget(limit)
+
+
 async def _probe_one(
     client: httpx.AsyncClient,
     sem: asyncio.Semaphore,
     assignment: ProbeAssignment,
-) -> tuple[list[Credential], ProbeTargetOutcome]:
+) -> tuple[list[Credential], ProbeTargetOutcome, list[Finding], list[NodeOutcome]]:
     target = assignment.target
     hit = target.to_hit()
     hit["_evidence_score"] = score_target(target).score
     host_label = target.identity.url[:40]
-    budget = RequestBudget(settings.max_requests_per_target)
     credentials: list[Credential] = []
+    findings: list[Finding] = []
+    node_outcomes: list[NodeOutcome] = []
     prober_names: list[str] = []
+    total_requests = 0
     status = ProbeStatus.SKIPPED
     reason = "no-request-issued"
 
     try:
         for prober_cls in assignment.probers:
-            if budget.remaining <= 0:
-                break
+            budget = _budget_for_prober(prober_cls)
             prober = prober_cls(
                 client,
                 sem,
@@ -206,7 +305,12 @@ async def _probe_one(
             )
             prober_names.append(prober.product_name)
             credentials.extend(await prober.probe(hit))
-        if budget.consumed > 0:
+            total_requests += budget.consumed
+            last = getattr(prober, "last_result", None)
+            if last is not None:
+                findings.extend(last.findings)
+                node_outcomes.extend(last.node_outcomes)
+        if total_requests > 0:
             status = ProbeStatus.ATTEMPTED
             reason = ""
     except Exception as exc:  # noqa: BLE001 - isolate each target
@@ -219,12 +323,17 @@ async def _probe_one(
             reason,
         )
 
-    return credentials, ProbeTargetOutcome(
-        identity_hash=target.identity.identity_hash,
-        status=status,
-        request_count=budget.consumed,
-        prober=",".join(prober_names),
-        reason=reason,
+    return (
+        credentials,
+        ProbeTargetOutcome(
+            identity_hash=target.identity.identity_hash,
+            status=status,
+            request_count=total_requests,
+            prober=",".join(prober_names),
+            reason=reason,
+        ),
+        findings,
+        node_outcomes,
     )
 
 
@@ -237,7 +346,7 @@ async def _run_probe_batch(
     batch_total: int,
     hosts_done_before: int,
     hosts_total: int,
-) -> list[tuple[list[Credential], ProbeTargetOutcome]]:
+) -> list[tuple[list[Credential], ProbeTargetOutcome, list[Finding], list[NodeOutcome]]]:
     """Schedule and await one bounded wave of target probe assignments."""
     batch_len = len(batch)
     start = hosts_done_before + 1
@@ -257,7 +366,9 @@ async def _run_probe_batch(
         max_connections=max(concurrency * 2, settings.max_requests_per_target),
         max_keepalive_connections=concurrency,
     )
-    results: list[tuple[list[Credential], ProbeTargetOutcome]] = []
+    results: list[
+        tuple[list[Credential], ProbeTargetOutcome, list[Finding], list[NodeOutcome]]
+    ] = []
     async with httpx.AsyncClient(
         timeout=PROBE_TIMEOUT,
         limits=limits,
@@ -285,7 +396,7 @@ async def _run_probe_batch(
         "Prober batch %d/%d done: +%d creds this batch (hosts %d/%d)",
         batch_idx,
         batch_total,
-        sum(len(credentials) for credentials, _ in results),
+        sum(len(credentials) for credentials, *_rest in results),
         hosts_done_before + batch_len,
         hosts_total,
     )
@@ -302,6 +413,14 @@ def _dedupe_creds(batches: list[list[Credential]]) -> list[Credential]:
                 seen.add(key)
                 all_creds.append(cred)
     return all_creds
+
+
+def _summarize_node_outcomes(node_outcomes: list[NodeOutcome]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for node in node_outcomes:
+        key = node.status.value
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 async def probe_hosts(
@@ -330,6 +449,8 @@ async def probe_hosts(
     sem = asyncio.Semaphore(concurrency)
     collected: list[list[Credential]] = []
     outcomes = list(rejected)
+    all_findings: list[Finding] = []
+    all_nodes: list[NodeOutcome] = []
     hosts_done = 0
 
     for batch_idx in range(1, batch_total + 1):
@@ -344,16 +465,29 @@ async def probe_hosts(
             hosts_done_before=hosts_done,
             hosts_total=total,
         )
-        for credentials, outcome in batch_results:
+        for credentials, outcome, findings, nodes in batch_results:
             collected.append(credentials)
             outcomes.append(outcome)
+            all_findings.extend(findings)
+            all_nodes.extend(nodes)
         hosts_done += len(batch)
 
     all_creds = _dedupe_creds(collected)
+    node_summary = _summarize_node_outcomes(all_nodes)
+    confirmed = sum(1 for f in all_findings if f.confirmed)
     log.info(
-        "Prober extracted %d credentials from %d attempted assignments (%d batches)",
+        "Prober extracted %d credentials from %d attempted assignments (%d batches); "
+        "findings=%d (confirmed=%d); nodes=%s",
         len(all_creds),
         total,
         batch_total,
+        len(all_findings),
+        confirmed,
+        node_summary or "{}",
     )
-    return ProbeReport(credentials=tuple(all_creds), outcomes=tuple(outcomes))
+    return ProbeReport(
+        credentials=tuple(all_creds),
+        outcomes=tuple(outcomes),
+        findings=tuple(all_findings),
+        node_outcomes=tuple(all_nodes),
+    )

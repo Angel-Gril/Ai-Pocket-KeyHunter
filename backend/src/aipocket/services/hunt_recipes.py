@@ -42,6 +42,15 @@ KNOWN_PRODUCT_FINGERPRINTS: Final[frozenset[str]] = frozenset(
         "lobe-chat",
         "lobechat",
         "mlflow",
+        "chatgpt-next-web",
+        "nextchat",
+        "next-chat",
+        "portkey",
+        "portkey-ai-gateway",
+        "openrouter",
+        "open-router",
+        "anythingllm",
+        "anything-llm",
     }
 )
 

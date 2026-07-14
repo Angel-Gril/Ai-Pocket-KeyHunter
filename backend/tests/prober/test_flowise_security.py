@@ -14,6 +14,7 @@ from aipocket.prober.probers import FlowiseProber
 async def test_flowise_success_log_excludes_password_and_token(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """Weak-password path must not log cleartext password or session token."""
     password = "plain-weak-password"
     token = "returned-secret-token"
     hit = {"host": "https://flowise.example", "protocol": "https"}
@@ -23,15 +24,21 @@ async def test_flowise_success_log_excludes_password_and_token(
         respx.mock(assert_all_called=False) as router,
     ):
         monkeypatch.setattr(
-            "aipocket.prober.probers.flowise.WEAK_CREDENTIALS", [("admin", password)]
+            "aipocket.prober.engines.weak_password.get_weak_credentials",
+            lambda **_kwargs: (("admin", password),),
         )
         router.post("https://flowise.example/api/v1/auth/login").mock(
             return_value=httpx.Response(200, json={"token": token})
         )
+        router.route().mock(return_value=httpx.Response(404))
         async with httpx.AsyncClient(follow_redirects=False) as client:
             with caplog.at_level(logging.DEBUG):
-                result = await FlowiseProber(client, asyncio.Semaphore(1))._try_login(hit)
+                await FlowiseProber(
+                    client,
+                    asyncio.Semaphore(1),
+                    intrusive_checks=True,
+                    authorized_scope=("https://flowise.example",),
+                ).probe(hit)
 
-    assert result == token
     assert password not in caplog.text
     assert token not in caplog.text

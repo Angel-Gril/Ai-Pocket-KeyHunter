@@ -127,13 +127,16 @@ class GenericPageProber(Prober):
         body = resp.text
         if not body or len(body) < 10:
             return [], False
-        if len(body) > 50_000:
-            body = body[:50_000]
 
         is_real_file = not is_html
 
+        # Enforce 50 KB parse cap (previously truncated a local copy but not the
+        # body passed into extraction).
         found = self._extract_from_response(
-            resp, hit, f"generic_{path.strip('/').replace('/', '_') or 'index'}"
+            resp,
+            hit,
+            f"generic_{path.strip('/').replace('/', '_') or 'index'}",
+            max_body_chars=50_000,
         )
         new_creds: list[Credential] = []
         for c in found:

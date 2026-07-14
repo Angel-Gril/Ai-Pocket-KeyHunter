@@ -55,7 +55,6 @@ async def test_suspicious_429_remains_rate_limited_unconfirmed(monkeypatch):
     save.assert_not_awaited()
 
 
-
 async def test_transient_error_uses_transient_cache_outcome() -> None:
     result = _result(host="timeout.example")
     result.valid = False
@@ -68,6 +67,7 @@ async def test_transient_error_uses_transient_cache_outcome() -> None:
 
     assert finalized.rejected == [result]
     dedup.mark_failure.assert_awaited_once_with(result.credential, "transient")
+
 
 async def test_empty_run_does_not_inherit_previous_verdicts():
     finalized = await finalize_results(

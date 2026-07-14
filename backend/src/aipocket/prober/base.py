@@ -17,9 +17,13 @@ from aipocket.core.models import Credential
 from aipocket.services.config_extractor import extract_config_bundles
 
 from .budget import BudgetExhausted, RequestBudget
-from .security import normalized_origin, scope_authorizes_origin
+from .credentials_dict import BUILTIN_WEAK_CREDENTIALS
+from .security import normalized_origin
 
 log = logging.getLogger(__name__)
+
+# Builtin seed only; full dict is loaded by get_weak_credentials() in the engine.
+WEAK_CREDENTIALS: list[tuple[str, str]] = list(BUILTIN_WEAK_CREDENTIALS)
 
 
 def _is_tls_verify_error(exc: BaseException) -> bool:
@@ -39,21 +43,6 @@ def _is_tls_verify_error(exc: BaseException) -> bool:
         "verify" in low or "mismatch" in low or "self-signed" in low or "expired" in low
     )
 
-
-# ---------------------------------------------------------------------------
-# Default weak credentials to try on products that ship with defaults.
-# Kept intentionally small — this is a config-read prober, not a brute-forcer.
-# ---------------------------------------------------------------------------
-WEAK_CREDENTIALS: list[tuple[str, str]] = [
-    ("admin", "admin"),
-    ("admin", "123456"),
-    ("admin", "password"),
-    ("admin", "admin123"),
-    ("root", "root"),
-    ("root", "123456"),
-    ("admin", "admin@123"),
-    ("admin", "Admin123!"),
-]
 
 # Default timeout for a single probe request (seconds).
 PROBE_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
@@ -164,10 +153,23 @@ class Prober(ABC):
         self._max_redirects = max_redirects
         self._intrusive_checks = intrusive_checks
         self._authorized_scope = frozenset(authorized_scope)
+        # Filled by :meth:`run_specs` so the runner can collect findings/node_outcomes.
+        self.last_result: Any = None
 
     def _consume_request(self) -> None:
         if self._budget is not None:
             self._budget.consume()
+
+    @property
+    def budget_consumed(self) -> int:
+        return 0 if self._budget is None else self._budget.consumed
+
+    @property
+    def budget_remaining(self) -> int | None:
+        """Remaining requests, or None when no budget is attached."""
+        if self._budget is None:
+            return None
+        return self._budget.remaining
 
     @classmethod
     @abstractmethod
@@ -180,6 +182,14 @@ class Prober(ABC):
 
         Return a list of extracted credentials (may be empty).
         """
+
+    async def run_specs(self, hit: dict[str, Any], specs: list[Any]) -> list[Credential]:
+        """Execute audited ProbeSpecs and stash the full ProbeResult on ``last_result``."""
+        from .capability import run_product_plan
+
+        result = await run_product_plan(self, hit, specs)
+        self.last_result = result
+        return result.credentials
 
     # -- helpers for subclasses --------------------------------------------
 
@@ -275,32 +285,64 @@ class Prober(ABC):
         return None if current.is_redirect else current
 
     def _intrusive_authorized(self, hit: dict[str, Any]) -> bool:
-        target_origin = normalized_origin(self._url(hit))
-        if not self._intrusive_checks or target_origin is None:
+        """Legacy L1 gate (weak password / IDOR). Prefer security.allows() for Specs.
+
+        Empty ``authorized_scope`` means unrestricted when intrusive_checks is on.
+        """
+        from .security import scope_permits
+
+        if not self._intrusive_checks:
             return False
-        return any(
-            scope_authorizes_origin(scope, target_origin) for scope in self._authorized_scope
-        )
+        target_origin = normalized_origin(self._url(hit))
+        if target_origin is None:
+            return False
+        return scope_permits(target_origin, self._authorized_scope)
 
     def _extract_from_response(
         self,
         resp: httpx.Response | None,
         hit: dict[str, Any],
         tag: str,
+        *,
+        max_body_chars: int | None = None,
     ) -> list[Credential]:
+        """Extract credentials from a probe response.
+
+        Preserves endpoints already recovered by structured config extraction
+        (``bundle.endpoint_candidates``). Only fills empty ``apiurl`` with the
+        probed site origin so we do not overwrite a correct upstream endpoint.
+        """
         if resp is None or resp.status_code != 200:
             return []
         text = resp.text
         if not text or len(text) < 20:
             return []
+        if max_body_chars is not None and max_body_chars > 0:
+            text = text[:max_body_chars]
         host = hit.get("host", "")
+        leak_origin = self._url(hit)
         creds = extract_keys_from_text(text, host=host, source_label=f"prober:{tag}")
         for c in creds:
-            base = self._url(hit)
-            c.apiurl = base
+            # Keep structured endpoint when the extractor already paired one.
+            if not (c.apiurl and c.apiurl.strip()):
+                if c.bundle is not None and c.bundle.endpoint_candidates:
+                    # Prefer single unambiguous candidate; else leave empty for
+                    # validator to resolve rather than force leak origin.
+                    if len(c.bundle.endpoint_candidates) == 1:
+                        c.apiurl = c.bundle.endpoint_candidates[0]
+                    # else leave empty
+                else:
+                    c.apiurl = leak_origin
             c.backend = hit.get("_source", "")
             c.ip = hit.get("ip", "")
             c.port = hit.get("port", "")
+            # Record leak host separately via source tag when apiurl is upstream
+            if (
+                c.apiurl
+                and c.apiurl.rstrip("/") != leak_origin.rstrip("/")
+                and "leak_host=" not in c.source
+            ):
+                c.source = f"{c.source}|leak_host={host}" if c.source else f"leak_host={host}"
         return creds
 
     def _match_any(self, text: str, keywords: tuple[str, ...]) -> bool:

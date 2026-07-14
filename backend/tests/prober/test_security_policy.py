@@ -107,16 +107,19 @@ async def test_redirect_loop_stops_at_exact_max_redirect_boundary() -> None:
 @pytest.mark.parametrize(
     ("intrusive_checks", "scope", "expected_intrusive"),
     [
-        (True, (), 0),
+        # Empty scope + intrusive = unrestricted (all targets)
+        (True, (), 1),
         (False, ("https://target.example",), 0),
+        # Non-empty scope: only exact origin match; malformed entries never match
         (True, ("https://target.example/path",), 0),
         (True, ("https://target.example?query=1",), 0),
         (True, ("https://user@target.example",), 0),
+        (True, ("https://other.example",), 0),
         (True, ("https://target.example:443",), 1),
     ],
 )
 @pytest.mark.asyncio
-async def test_intrusive_requests_require_flag_and_exact_normalized_origin(
+async def test_intrusive_requests_require_flag_and_optional_scope(
     prober_factory: ProberFactory,
     intrusive_paths: tuple[str, ...],
     intrusive_checks: bool,

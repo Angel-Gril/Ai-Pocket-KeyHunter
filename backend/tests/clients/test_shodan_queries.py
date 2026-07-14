@@ -70,6 +70,10 @@ def test_product_queries_cover_all_prober_products():
         "FastGPT",
         "Flowise",
         "Langflow",
+        "ChatGPT-Next-Web",
+        "Portkey AI Gateway",
+        "OpenRouter",
+        "AnythingLLM",
     }
     # Every prober-supported product must have at least one query (non-empty list).
     missing = {p for p in prober_products if not SHODAN_PRODUCT_QUERIES.get(p)}
