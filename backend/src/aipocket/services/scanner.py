@@ -263,8 +263,16 @@ async def _run_scan_inner(
                 or target_by_alias.get(credential.apiurl)
                 or target_by_alias.get(credential.leak_host)
             )
-            if target is not None and target.provenance_pairs:
-                observations.observe(credential, method, target.provenance_pairs)
+            # Always register an observation so post-validation metrics can look
+            # the credential up. Missing discovery linkage is attributed to a
+            # synthetic provenance bucket rather than silently dropping the row
+            # (which later broke the active_requests == outcomes invariant).
+            provenance = (
+                target.provenance_pairs
+                if target is not None and target.provenance_pairs
+                else (("unknown", "unattributed"),)
+            )
+            observations.observe(credential, method, provenance)
 
     def record_credentials(metric: str, credentials: list[Credential]) -> None:
         for credential in credentials:
@@ -574,11 +582,17 @@ async def _run_scan_inner(
     valid = finalized.final_verified
 
     outcome_groups: dict[tuple[str, str, str, str, ErrorClass, int | None], int] = {}
+    missing_observations = 0
     for result in fresh_results:
         observation = observations.get(result.credential)
         if observation is None:
-            raise ValueError("fresh validation result has no canonical observation")
-        source, query = observation.primary_provenance
+            # Metrics-only fallback. Must still count every fresh result so
+            # persist_run_pg's active_requests == sum(outcomes) invariant holds.
+            # Common after official-endpoint routing when leak_host is empty.
+            missing_observations += 1
+            source, query = "unknown", "missing-observation"
+        else:
+            source, query = observation.primary_provenance
         provider = result.provider_info.provider
         error_class = classify_error(result.error, result.validation_state, result.status_code)
         key = (
@@ -590,6 +604,12 @@ async def _run_scan_inner(
             result.status_code,
         )
         outcome_groups[key] = outcome_groups.get(key, 0) + 1
+    if missing_observations:
+        log.warning(
+            "%d fresh validation result(s) had no canonical observation; "
+            "attributed to unknown/missing-observation (scan continues)",
+            missing_observations,
+        )
     validation_outcomes = [
         ValidationOutcomeAggregate(*key, count=count)
         for key, count in sorted(outcome_groups.items(), key=lambda item: repr(item[0]))

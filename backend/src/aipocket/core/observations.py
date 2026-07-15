@@ -60,7 +60,22 @@ class ObservationRegistry:
         return observation
 
     def get(self, credential: Credential) -> CanonicalCredentialObservation | None:
-        return self._observations.get(credential_identity(credential))
+        identity = credential_identity(credential)
+        hit = self._observations.get(identity)
+        if hit is not None:
+            return hit
+        # Official-endpoint routing mutates apiurl/host while preserving the
+        # original discovery endpoint in leak_host. Re-resolve against that
+        # origin so post-validation metrics still attach to the observation.
+        leak = (credential.leak_host or "").strip()
+        if not leak:
+            return None
+        leak_endpoint = leak.rstrip("/").lower()
+        if leak_endpoint == identity.endpoint:
+            return None
+        return self._observations.get(
+            CredentialIdentity(identity.secret_fingerprint, leak_endpoint)
+        )
 
 
 def credential_identity(credential: Credential) -> CredentialIdentity:
