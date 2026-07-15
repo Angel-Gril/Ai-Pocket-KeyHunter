@@ -124,7 +124,21 @@ async def _chat(
         r = await client.post(base, json=body)
         if r.is_success:
             data = r.json()
-            return data["choices"][0]["message"]["content"]
+            # Some OpenAI-compatible gateways / reasoning models return
+            # message.content = null (or omit it) even on HTTP 200.
+            message = data["choices"][0]["message"]
+            content = message.get("content")
+            if content is None:
+                finish = data["choices"][0].get("finish_reason")
+                log.warning(
+                    "GPT _chat null content (finish_reason=%s model=%s); treating as empty",
+                    finish,
+                    settings.gpt_model,
+                )
+                return ""
+            if not isinstance(content, str):
+                raise ValueError(f"GPT message.content is {type(content).__name__}, expected str")
+            return content
         last_status = r.status_code
         last_body = r.text[:500]
         if r.status_code in RETRY_STATUS and attempt < MAX_RETRIES:
@@ -153,7 +167,9 @@ async def _chat(
     )
 
 
-def _parse_json_array(text: str) -> list[dict[str, Any]] | None:
+def _parse_json_array(text: str | None) -> list[dict[str, Any]] | None:
+    if not text or not isinstance(text, str):
+        return None
     text = text.strip().strip("`")
     if text.startswith("json"):
         text = text[4:].strip()
@@ -170,11 +186,13 @@ def _parse_json_array(text: str) -> list[dict[str, Any]] | None:
     return parsed
 
 
-def _extract_json_array(text: str) -> list[dict[str, Any]]:
+def _extract_json_array(text: str | None) -> list[dict[str, Any]]:
     return _parse_json_array(text) or []
 
 
-def _extract_json_object(text: str) -> dict[str, Any]:
+def _extract_json_object(text: str | None) -> dict[str, Any]:
+    if not text or not isinstance(text, str):
+        return {}
     text = text.strip().strip("`")
     if text.startswith("json"):
         text = text[4:].strip()
@@ -234,8 +252,11 @@ def _blob_to_credential(
     target = targets_by_id.get(str(item.get("entry_id", "")))
     if target is None:
         return None
-    apikey = item.get("apikey", "").strip()
-    apiurl = item.get("apiurl", "").strip()
+    # LLM JSON may set apikey/apiurl to null or non-strings; never call .strip() on those.
+    raw_key = item.get("apikey")
+    raw_url = item.get("apiurl")
+    apikey = raw_key.strip() if isinstance(raw_key, str) else ""
+    apiurl = raw_url.strip() if isinstance(raw_url, str) else ""
     if not apikey or len(apikey) < 12:
         return None
     low = apikey.lower()
