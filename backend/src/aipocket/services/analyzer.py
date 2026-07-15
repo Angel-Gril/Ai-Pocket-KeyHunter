@@ -94,6 +94,45 @@ def _make_client(max_connections: int | None = None) -> httpx.AsyncClient:
     )
 
 
+def _content_from_chat_response(data: Any) -> str:
+    """Pull assistant text from an OpenAI-compatible chat completion body.
+
+    Gateways / reasoning models often return HTTP 200 with empty choices,
+    ``message: null``, or ``content: null``. Never IndexError/AttributeError here —
+    those used to kill the whole scan via bare ``asyncio.gather``.
+    """
+    if not isinstance(data, dict):
+        raise ValueError(f"GPT response body is {type(data).__name__}, expected dict")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("GPT response missing non-empty choices")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise ValueError(f"GPT choices[0] is {type(first).__name__}, expected dict")
+    finish = first.get("finish_reason")
+    message = first.get("message")
+    if message is None:
+        log.warning(
+            "GPT _chat null message (finish_reason=%s model=%s); treating as empty",
+            finish,
+            settings.gpt_model,
+        )
+        return ""
+    if not isinstance(message, dict):
+        raise ValueError(f"GPT message is {type(message).__name__}, expected dict")
+    content = message.get("content")
+    if content is None:
+        log.warning(
+            "GPT _chat null content (finish_reason=%s model=%s); treating as empty",
+            finish,
+            settings.gpt_model,
+        )
+        return ""
+    if not isinstance(content, str):
+        raise ValueError(f"GPT message.content is {type(content).__name__}, expected str")
+    return content
+
+
 async def _chat(
     client: httpx.AsyncClient, system: str, user_content: str, max_tokens: int = 1000
 ) -> str:
@@ -123,22 +162,11 @@ async def _chat(
     for attempt in range(MAX_RETRIES + 1):
         r = await client.post(base, json=body)
         if r.is_success:
-            data = r.json()
-            # Some OpenAI-compatible gateways / reasoning models return
-            # message.content = null (or omit it) even on HTTP 200.
-            message = data["choices"][0]["message"]
-            content = message.get("content")
-            if content is None:
-                finish = data["choices"][0].get("finish_reason")
-                log.warning(
-                    "GPT _chat null content (finish_reason=%s model=%s); treating as empty",
-                    finish,
-                    settings.gpt_model,
-                )
-                return ""
-            if not isinstance(content, str):
-                raise ValueError(f"GPT message.content is {type(content).__name__}, expected str")
-            return content
+            try:
+                data = r.json()
+            except ValueError as e:
+                raise ValueError(f"GPT response is not valid JSON: {e}") from e
+            return _content_from_chat_response(data)
         last_status = r.status_code
         last_body = r.text[:500]
         if r.status_code in RETRY_STATUS and attempt < MAX_RETRIES:
@@ -322,6 +350,28 @@ async def _extract_batch(
     total_batches: int,
 ) -> GPTBatchReport:
     entry_ids = frozenset(str(hit.get("_entry_id", "")) for hit in batch if hit.get("_entry_id"))
+    try:
+        return await _extract_batch_inner(client, sem, batch, batch_idx, total_batches, entry_ids)
+    except Exception as e:  # noqa: BLE001 — never let one batch kill extract gather
+        log.warning(
+            "GPT extract batch %d/%d unexpected error (%s): %s",
+            batch_idx,
+            total_batches,
+            type(e).__name__,
+            e,
+        )
+        _dump_failed_batch(batch, batch_idx)
+        return GPTBatchReport((), frozenset(), entry_ids)
+
+
+async def _extract_batch_inner(
+    client: httpx.AsyncClient,
+    sem: asyncio.Semaphore,
+    batch: list[dict[str, Any]],
+    batch_idx: int,
+    total_batches: int,
+    entry_ids: frozenset[str],
+) -> GPTBatchReport:
     payload_parts = []
     for hit in batch:
         blob = _hit_to_blob(hit)
@@ -367,7 +417,7 @@ async def _extract_batch(
             )
             _dump_failed_batch(batch, batch_idx)
             return GPTBatchReport((), frozenset(), entry_ids)
-        except (KeyError, ValueError) as e:
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
             log.warning(
                 "GPT extract batch %d/%d malformed response (%s): %s",
                 batch_idx,
@@ -425,9 +475,25 @@ async def extract_with_gpt(raw_hits: list[dict[str, Any]]) -> GPTExtractionRepor
         tasks = [
             _extract_batch(client, sem, batch, idx + 1, total) for idx, batch in enumerate(batches)
         ]
-        reports = await asyncio.gather(*tasks)
+        # return_exceptions: one unexpected throw must not abort sibling batches.
+        reports = await asyncio.gather(*tasks, return_exceptions=True)
 
-    for report in reports:
+    for idx, report in enumerate(reports):
+        if isinstance(report, BaseException):
+            batch = batches[idx]
+            entry_ids = frozenset(
+                str(hit.get("_entry_id", "")) for hit in batch if hit.get("_entry_id")
+            )
+            log.warning(
+                "GPT extract batch %d/%d crashed in gather (%s): %s",
+                idx + 1,
+                total,
+                type(report).__name__,
+                report,
+            )
+            _dump_failed_batch(batch, idx + 1)
+            failed.update(entry_ids)
+            continue
         successful.update(report.successful_entry_ids)
         failed.update(report.failed_entry_ids)
         for cred in report.credentials:
@@ -507,7 +573,7 @@ async def _recheck_batch(
                 e,
             )
             return batch, False
-        except (KeyError, ValueError) as e:
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
             log.warning(
                 "GPT recheck batch %d/%d malformed (%s): %s",
                 batch_idx,
@@ -517,37 +583,53 @@ async def _recheck_batch(
             )
             return batch, False
 
-    verdicts = _extract_json_array(resp)
-    # Build index map from GPT response
-    verdict_map: dict[int, dict[str, Any]] = {}
-    for v in verdicts:
-        idx = v.get("idx")
-        if idx is not None:
-            verdict_map[int(idx)] = v
+    try:
+        verdicts = _extract_json_array(resp)
+        # Build index map from GPT response
+        verdict_map: dict[int, dict[str, Any]] = {}
+        for v in verdicts:
+            if not isinstance(v, dict):
+                continue
+            idx = v.get("idx")
+            if idx is None:
+                continue
+            try:
+                verdict_map[int(idx)] = v
+            except (TypeError, ValueError):
+                continue
 
-    # Apply verdicts
-    rejected = 0
-    for i, result in enumerate(batch):
-        verdict = verdict_map.get(i)
-        if not verdict:
-            continue
-        if verdict.get("valid") is False:
-            result.valid = False
-            result.error = f"gpt-rejected: {verdict.get('reason', 'unknown')}"
-            rejected += 1
-        gateway = verdict.get("gateway", "")
-        if gateway and gateway != "unknown":
-            result.gateway = gateway
+        # Apply verdicts
+        rejected = 0
+        for i, result in enumerate(batch):
+            verdict = verdict_map.get(i)
+            if not verdict:
+                continue
+            if verdict.get("valid") is False:
+                result.valid = False
+                result.error = f"gpt-rejected: {verdict.get('reason', 'unknown')}"
+                rejected += 1
+            gateway = verdict.get("gateway", "")
+            if isinstance(gateway, str) and gateway and gateway != "unknown":
+                result.gateway = gateway
 
-    if rejected:
-        log.info(
-            "GPT recheck batch %d/%d: rejected %d/%d",
+        if rejected:
+            log.info(
+                "GPT recheck batch %d/%d: rejected %d/%d",
+                batch_idx,
+                total_batches,
+                rejected,
+                len(batch),
+            )
+        return batch, True
+    except Exception as e:  # noqa: BLE001 — recheck must not kill the scan
+        log.warning(
+            "GPT recheck batch %d/%d apply failed (%s): %s",
             batch_idx,
             total_batches,
-            rejected,
-            len(batch),
+            type(e).__name__,
+            e,
         )
-    return batch, True
+        return batch, False
 
 
 async def _run_recheck_wave(
@@ -560,9 +642,20 @@ async def _run_recheck_wave(
     total = len(batches)
     sem = asyncio.Semaphore(concurrency)
     tasks = [_recheck_batch(client, sem, b, idx + 1, total) for idx, b in enumerate(batches)]
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     failed = []
-    for batch, success in results:
+    for idx, item in enumerate(results):
+        if isinstance(item, BaseException):
+            log.warning(
+                "GPT recheck batch %d/%d crashed in gather (%s): %s",
+                idx + 1,
+                total,
+                type(item).__name__,
+                item,
+            )
+            failed.append(batches[idx])
+            continue
+        batch, success = item
         if not success:
             failed.append(batch)
     if failed:

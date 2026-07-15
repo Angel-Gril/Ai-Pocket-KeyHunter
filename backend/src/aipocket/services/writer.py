@@ -89,11 +89,18 @@ def persist_run_pg(
     from aipocket.core.db import get_pool
 
     active_requests = int(metadata.get("active_requests", 0))
-    if (
-        validation_outcomes is not None
-        and sum(row.count for row in validation_outcomes) != active_requests
-    ):
-        raise ValueError("validation outcome count must equal active_requests")
+    if validation_outcomes is not None:
+        outcome_sum = sum(row.count for row in validation_outcomes)
+        if outcome_sum != active_requests:
+            # Soft-fail: a metrics mismatch must not discard an otherwise complete
+            # scan that already finished validate/honeypot/balance work.
+            log.warning(
+                "validation outcome count (%d) != active_requests (%d) for run %s; "
+                "persisting anyway",
+                outcome_sum,
+                active_requests,
+                run_id,
+            )
 
     pool = get_pool()
     with pool.connection() as conn, conn.transaction():

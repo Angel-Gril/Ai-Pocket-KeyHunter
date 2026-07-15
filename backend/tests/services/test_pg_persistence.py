@@ -286,28 +286,37 @@ class TestPersistRunPg:
         assert secret not in repr(outcome_rows)
         assert secret not in repr(method_rows)
 
-    def test_rejects_outcome_count_invariant_break(self, fake_pg):
-        fake_pg()
+    def test_outcome_count_mismatch_persists_with_warning(self, fake_pg, caplog):
+        """Metrics invariant break must soft-fail — not discard a finished scan."""
+        import logging
+
+        pool = fake_pg()
         from aipocket.services.writer import persist_run_pg
 
-        with pytest.raises(ValueError, match="active_requests"):
+        outcomes = [
+            ValidationOutcomeAggregate(
+                source="fofa",
+                query="q1",
+                provider="unknown",
+                validation_state="transient_error",
+                error_class="timeout",
+                status_code=None,
+                count=1,
+            )
+        ]
+        with caplog.at_level(logging.WARNING, logger="aipocket.services.writer"):
             persist_run_pg(
                 "run_bad_outcomes",
                 {"started_at": "2026-01-01T00:00:00Z", "active_requests": 2},
                 [],
                 [],
-                validation_outcomes=[
-                    ValidationOutcomeAggregate(
-                        source="fofa",
-                        query="q1",
-                        provider="unknown",
-                        validation_state="transient_error",
-                        error_class="timeout",
-                        status_code=None,
-                        count=1,
-                    )
-                ],
+                validation_outcomes=outcomes,
             )
+
+        assert any("active_requests" in r.message for r in caplog.records)
+        # Run + outcome rows still written despite mismatch.
+        assert pool.sql_containing("INSERT INTO runs")
+        assert pool.sql_containing("INSERT INTO validation_outcome_aggregates")
 
 
 # ---------------------------------------------------------------------------

@@ -47,6 +47,7 @@ async def test_scan_lease_is_exclusive_and_token_safe() -> None:
 @pytest.mark.asyncio
 async def test_lease_loss_cancels_running_work() -> None:
     redis = FakeScriptRedis()
+    # Short TTL so heartbeat fires quickly; renew retries add a few hundred ms.
     lease = ScanLease(redis, "owner-a", 3)
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -64,8 +65,77 @@ async def test_lease_loss_cancels_running_work() -> None:
     redis.value = "owner-b"
 
     with pytest.raises(ScanLockedError, match="ownership was lost"):
-        await task
+        await asyncio.wait_for(task, timeout=10)
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_lease_renew_retries_transient_errors(monkeypatch) -> None:
+    """A single Redis blip should not drop the lease."""
+    redis = FakeScriptRedis()
+    lease = ScanLease(redis, "owner-a", 60)
+    assert await redis.set("aipocket:scan:lock", lease.token, nx=True, px=60_000)
+
+    calls = {"n": 0}
+    real_renew = ScanLease.renew
+
+    async def flaky_renew(self) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("redis blip")
+        return await real_renew(self)
+
+    monkeypatch.setattr(ScanLease, "renew", flaky_renew)
+    assert await lease._renew_with_retries() is True
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_lease_renew_false_then_true_recovers(monkeypatch) -> None:
+    """Temporary false renew (e.g. race) that succeeds on retry keeps the lease."""
+    redis = FakeScriptRedis()
+    lease = ScanLease(redis, "owner-a", 60)
+    assert await redis.set("aipocket:scan:lock", lease.token, nx=True, px=60_000)
+
+    calls = {"n": 0}
+    real_renew = ScanLease.renew
+
+    async def flaky_renew(self) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return False
+        return await real_renew(self)
+
+    monkeypatch.setattr(ScanLease, "renew", flaky_renew)
+    assert await lease._renew_with_retries() is True
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_lease_renew_exhausted_returns_false(monkeypatch) -> None:
+    """Persistent renew failure after retries reports ownership lost."""
+    redis = FakeScriptRedis()
+    lease = ScanLease(redis, "owner-a", 60)
+    assert await redis.set("aipocket:scan:lock", lease.token, nx=True, px=60_000)
+
+    async def always_false(self) -> bool:
+        return False
+
+    monkeypatch.setattr(ScanLease, "renew", always_false)
+    assert await lease._renew_with_retries() is False
+
+
+@pytest.mark.asyncio
+async def test_lease_renew_exhausted_on_persistent_errors(monkeypatch) -> None:
+    redis = FakeScriptRedis()
+    lease = ScanLease(redis, "owner-a", 60)
+    assert await redis.set("aipocket:scan:lock", lease.token, nx=True, px=60_000)
+
+    async def always_error(self) -> bool:
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(ScanLease, "renew", always_error)
+    assert await lease._renew_with_retries() is False
 
 
 class _FakeRedisClient:

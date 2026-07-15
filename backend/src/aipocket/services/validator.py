@@ -350,11 +350,22 @@ async def verify_no_auth(
 
         Thin wrapper over :func:`_forged_key_probe` that carries the per-host
         ``log.warning`` calls (those need ``host``/``api_url`` for triage).
+        Never raises — a single host must not abort the whole no-auth wave.
         """
-        async with sem, httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            verdict = await _forged_key_probe(
-                client, api_url, model, provider=provider, timeout=timeout
+        try:
+            async with sem, httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                verdict = await _forged_key_probe(
+                    client, api_url, model, provider=provider, timeout=timeout
+                )
+        except Exception as e:  # noqa: BLE001 — isolate per-host probe failures
+            log.warning(
+                "verify_no_auth probe failed for %s (%s): %s: %s",
+                host,
+                api_url,
+                type(e).__name__,
+                e,
             )
+            return "error"
         if verdict == "suspicious_429":
             log.warning(
                 "suspicious host (forged-key 429): %s (%s) — host "
@@ -378,7 +389,21 @@ async def verify_no_auth(
         return verdict
 
     tasks = [_probe_forged(h, u, m, p) for h, (u, m, p) in seen_hosts.items()]
-    verdicts = await asyncio.gather(*tasks)
+    verdicts = await asyncio.gather(*tasks, return_exceptions=True)
+    # Normalize any residual exceptions (should not happen after _probe_forged).
+    clean: list[str] = []
+    for host, v in zip(seen_hosts, verdicts, strict=True):
+        if isinstance(v, BaseException):
+            log.warning(
+                "verify_no_auth gather error for %s (%s): %s",
+                host,
+                type(v).__name__,
+                v,
+            )
+            clean.append("error")
+        else:
+            clean.append(v)
+    verdicts = clean
     no_auth = {h for h, v in zip(seen_hosts, verdicts, strict=True) if v == "noauth"}
     suspicious = {
         h for h, v in zip(seen_hosts, verdicts, strict=True) if v.startswith("suspicious")
@@ -1011,8 +1036,8 @@ async def _probe_chat_completions(
     return result
 
 
-def _normalize_apiurl(url: str) -> str:
-    url = url.strip()
+def _normalize_apiurl(url: str | None) -> str:
+    url = (url or "").strip()
     if not url:
         return ""
     if not url.startswith("http"):

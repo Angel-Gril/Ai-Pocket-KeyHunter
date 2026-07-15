@@ -12,6 +12,9 @@ from aipocket.core.config import settings
 log = logging.getLogger(__name__)
 
 _LOCK_KEY = "aipocket:scan:lock"
+# Transient Redis blips should not instantly cancel multi-hour scans.
+_HEARTBEAT_RENEW_ATTEMPTS = 3
+_HEARTBEAT_RETRY_BASE_S = 0.5
 _RENEW_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
   return redis.call('pexpire', KEYS[1], ARGV[2])
@@ -51,10 +54,45 @@ class ScanLease:
         result = await self.redis.eval(_RELEASE_SCRIPT, 1, _LOCK_KEY, self.token)
         return bool(result)
 
+    async def _renew_with_retries(self) -> bool:
+        """Try to renew the lease, retrying brief Redis/network failures.
+
+        Returns False only after all attempts fail (lost ownership or Redis down).
+        """
+        last_error: BaseException | None = None
+        for attempt in range(1, _HEARTBEAT_RENEW_ATTEMPTS + 1):
+            try:
+                if await self.renew():
+                    return True
+                last_error = None
+            except Exception as e:  # noqa: BLE001 — retry then surface as lease loss
+                last_error = e
+                log.warning(
+                    "scan lease renew error (attempt %d/%d): %s",
+                    attempt,
+                    _HEARTBEAT_RENEW_ATTEMPTS,
+                    e,
+                )
+            else:
+                log.warning(
+                    "scan lease renew returned false (attempt %d/%d)",
+                    attempt,
+                    _HEARTBEAT_RENEW_ATTEMPTS,
+                )
+            if attempt < _HEARTBEAT_RENEW_ATTEMPTS:
+                await asyncio.sleep(_HEARTBEAT_RETRY_BASE_S * attempt)
+        if last_error is not None:
+            log.error(
+                "scan lease renew failed after %d attempts: %s",
+                _HEARTBEAT_RENEW_ATTEMPTS,
+                last_error,
+            )
+        return False
+
     async def _heartbeat(self) -> None:
         while True:
             await asyncio.sleep(max(1.0, self.ttl_seconds / 3))
-            if not await self.renew():
+            if not await self._renew_with_retries():
                 raise ScanLockedError("scan lease ownership was lost")
 
     async def run(self, awaitable: Any) -> Any:

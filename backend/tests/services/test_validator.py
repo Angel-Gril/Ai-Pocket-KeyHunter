@@ -213,6 +213,10 @@ def test_normalize_apiurl_empty():
     assert _normalize_apiurl("") == ""
 
 
+def test_normalize_apiurl_none():
+    assert _normalize_apiurl(None) == ""
+
+
 def test_infer_tier_does_not_invent_usage_tier_from_rpm():
     headers = {"x-ratelimit-limit-requests": "10000"}
     assert _infer_tier({"x-ratelimit-limit-requests": "10000"}, headers) == "rpm:10000"
@@ -575,6 +579,73 @@ async def test_verify_no_auth_one_host_probed_once():
 async def test_verify_no_auth_empty_results():
     """No valid results → no probes, empty sets."""
     assert await verify_no_auth([]) == (set(), set())
+
+
+@respx.mock
+async def test_verify_no_auth_probe_exception_is_isolated(monkeypatch):
+    """A single host probe explosion must not abort the no-auth wave."""
+    from aipocket.services import validator as v
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(v, "_forged_key_probe", boom)
+    results = [
+        ValidationResult(
+            credential=Credential(
+                apikey="sk-a" + "x" * 20, apiurl="https://a.example", host="a.example"
+            ),
+            valid=True,
+            model_available="gpt-4o-mini",
+        ),
+        ValidationResult(
+            credential=Credential(
+                apikey="sk-b" + "y" * 20, apiurl="https://b.example", host="b.example"
+            ),
+            valid=True,
+            model_available="gpt-4o-mini",
+        ),
+    ]
+    no_auth, suspicious = await verify_no_auth(results)
+    assert no_auth == set()
+    assert suspicious == set()
+
+
+@respx.mock
+async def test_verify_no_auth_partial_failure_still_classifies_others(monkeypatch):
+    """One host boom + one noauth host → only the healthy host is classified."""
+    from aipocket.services import validator as v
+
+    async def selective_probe(client, api_url, model, *, provider="", timeout=None):
+        if "bad.example" in api_url:
+            raise RuntimeError("boom")
+        return "noauth"
+
+    monkeypatch.setattr(v, "_forged_key_probe", selective_probe)
+    results = [
+        ValidationResult(
+            credential=Credential(
+                apikey="sk-bad" + "x" * 20,
+                apiurl="https://bad.example",
+                host="bad.example",
+            ),
+            valid=True,
+            model_available="gpt-4o-mini",
+        ),
+        ValidationResult(
+            credential=Credential(
+                apikey="sk-good" + "y" * 20,
+                apiurl="https://good.example",
+                host="good.example",
+            ),
+            valid=True,
+            model_available="gpt-4o-mini",
+        ),
+    ]
+    no_auth, suspicious = await verify_no_auth(results)
+    assert no_auth == {"good.example"}
+    assert "bad.example" not in no_auth
+    assert suspicious == set()
 
 
 # ---------------------------------------------------------------------------
