@@ -198,6 +198,20 @@ class TestRejectNoAuthHosts:
         assert rejected == 0
         assert r.valid is True
 
+    def test_matches_apiurl_when_host_empty(self):
+        """verify_no_auth keys by host or apiurl; reject must use the same key."""
+        r = ValidationResult(
+            credential=Credential(
+                apikey="sk-test123456789",
+                apiurl="http://64.23.132.174:8443",
+                host="",  # empty host → fall back to apiurl
+            ),
+            valid=True,
+        )
+        rejected = _reject_no_auth_hosts([r], {"http://64.23.132.174:8443"})
+        assert rejected == 1
+        assert r.valid is False
+
     def test_empty_no_auth_set_noop(self):
         r = _make_result("hi", host="any.example.com")
         assert _reject_no_auth_hosts([r], set()) == 0

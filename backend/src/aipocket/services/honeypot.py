@@ -224,11 +224,20 @@ def _dedup_cross_host(results: list[ValidationResult]) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _host_key(result: ValidationResult) -> str:
+    """Stable host key matching :func:`validator.verify_no_auth`.
+
+    Prefer ``credential.host``; fall back to ``apiurl`` when host is empty
+    (common for raw IP:port leaks where host was never normalized).
+    """
+    return (result.credential.host or result.credential.apiurl or "").strip()
+
+
 def _reject_no_auth_hosts(results: list[ValidationResult], no_auth_hosts: set[str]) -> int:
     """Reject all valid results on hosts confirmed to accept forged keys.
 
-    ``no_auth_hosts`` holds HOST values (matched against ``credential.host``),
-    as returned by :func:`validator.verify_no_auth`.
+    ``no_auth_hosts`` holds host keys from :func:`validator.verify_no_auth`
+    (``credential.host or credential.apiurl``) — must use the same key here.
     """
     if not no_auth_hosts:
         return 0
@@ -236,7 +245,7 @@ def _reject_no_auth_hosts(results: list[ValidationResult], no_auth_hosts: set[st
     for r in results:
         if not r.valid:
             continue
-        if r.credential.host in no_auth_hosts:
+        if _host_key(r) in no_auth_hosts:
             r.valid = False
             r.error = (
                 "honeypot:no-auth-host (forged key also validated — endpoint "
@@ -270,7 +279,7 @@ def _quarantine_suspicious_hosts(
     for r in results:
         if not r.valid:
             continue
-        if r.credential.host in suspicious_hosts:
+        if _host_key(r) in suspicious_hosts:
             r.suspicious = True
             r.suspicious_reason = (
                 "honeypot:suspicious-host (forged key got 429 or non-completion "

@@ -74,6 +74,8 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
         # Anthropic next: official keys have no remaining-balance endpoint.
         # Probe marks gateway + N/A (API) or admin org spend (Admin keys).
         ("anthropic", _probe_anthropic, base),
+        # DashScope / 阿里云百炼 (not ModelScope) — before generic gateway probes.
+        ("dashscope", _probe_dashscope, base),
         ("litellm", _probe_litellm, base),
         ("oneapi", _probe_oneapi, base),
         ("newapi", _probe_newapi, base),
@@ -272,15 +274,30 @@ async def _probe_anthropic(client: httpx.AsyncClient, base: str, key: str) -> di
                 if isinstance(item, dict) and isinstance(item.get("id"), str)
             ]
 
+    # Ordinary Console API keys have no remaining balance and no Pro/Max
+    # subscription surface — those products are claude.ai (session), not API.
+    # Usage & Cost API requires sk-ant-admin… Admin keys only (see docs).
+    # Infer a coarse usage tier label from model count / known frontier access.
+    tier_label = "api:payg"
+    if any("opus" in m.lower() for m in models):
+        tier_label = "api:usage_tier_frontier"
+    elif any("sonnet" in m.lower() for m in models):
+        tier_label = "api:usage_tier_standard"
+
     return {
         "balance_usd": _ANTHROPIC_BALANCE_NA,
         "source": "api_key_no_balance",
         "credential_kind": "api",
         "alive": True,
+        "tier": tier_label,
         "model_count": len(models),
         "models": models[:20],
         "status_code": 200,
-        "note": "Anthropic Console API keys have no remaining-balance endpoint; check Console billing.",
+        "note": (
+            "Anthropic Console API keys have no remaining-balance endpoint. "
+            "Usage & Cost Admin API requires sk-ant-admin… keys. "
+            "claude.ai Pro/Max subscriptions are not exposed on API keys."
+        ),
     }
 
 
@@ -521,20 +538,124 @@ async def _probe_nexus_usage(client: httpx.AsyncClient, base: str, key: str) -> 
 
     Handles two known response formats:
     - Nexus AI: {"object": "list", "daily_costs": [...], "total_usage": <float>}
+      **total_usage is cumulative spend, NOT remaining balance.** We never map it
+      to balance_usd (honeypots advertise ~$100 usage as fake "balance").
     - xyxhqy-style: {"balance": <float>, "remaining": <float>, "unit": "USD", ...}
     """
     data = await _safe_get(client, f"{base}/v1/usage", key)
     if data is None:
         return {}
-    # Nexus AI format
-    if data.get("object") == "list":
-        total = data.get("total_usage")
-        if total is not None:
-            return {"balance_usd": round(float(total), 4), "raw": data}
-    # xyxhqy / wallet-style format
+    # Wallet-style only — real remaining/balance fields.
     if "balance" in data or "remaining" in data:
         bal = float(data.get("balance") or data.get("remaining") or 0)
         return {"balance_usd": round(bal, 4), "raw": data}
+    # Nexus list format: usage only. Mark gateway so we don't re-probe forever,
+    # but leave balance empty (do NOT treat total_usage as balance).
+    if data.get("object") == "list" and data.get("total_usage") is not None:
+        return {
+            "balance_usd": "",
+            "usage_usd": round(float(data["total_usage"]), 4),
+            "source": "usage_not_balance",
+            "note": "total_usage is spend, not remaining balance",
+            "raw": data,
+        }
+    return {}
+
+
+async def _probe_dashscope(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
+    """Probe Alibaba Cloud DashScope / 百炼 (compatible-mode) keys.
+
+    Official sk- keys do not expose remaining prepaid balance via the public
+    compatible-mode API. We:
+
+    1. Confirm liveness via GET /compatible-mode/v1/models (or /models).
+    2. Best-effort try a few account/quota endpoints that some tenants expose.
+    3. Otherwise return balance=N/A with source=api_key_no_balance.
+
+    Always targets the official dashscope host for domain-matched / known keys
+    so proxy leak hosts still resolve the real account when possible.
+    """
+    host = base.lower()
+    # DashScope / 百炼 (incl. intl + coding-plan hosts). Not modelscope.cn.
+    is_ds = "dashscope.aliyuncs.com" in host or "dashscope-intl.aliyuncs.com" in host
+    is_ds = is_ds or "coding.dashscope" in host or "coding-intl.dashscope" in host
+    if not is_ds:
+        return {}
+
+    # Prefer CN endpoint; intl keys live on dashscope-intl.
+    if "dashscope-intl" in host:
+        official = "https://dashscope-intl.aliyuncs.com"
+    elif "coding-intl.dashscope" in host:
+        official = "https://coding-intl.dashscope.aliyuncs.com"
+    elif "coding.dashscope" in host:
+        official = "https://coding.dashscope.aliyuncs.com"
+    else:
+        official = "https://dashscope.aliyuncs.com"
+
+    headers = {"Authorization": f"Bearer {key}"}
+
+    # --- best-effort quota endpoints (may 404 for most keys) ---
+    for path in (
+        "/api/v1/account/balance",
+        "/api/v1/fe-taurus/users/quota",
+        "/api/v1/services/aigc/workspace/balance",
+    ):
+        data = await _safe_get(client, f"{official}{path}", key, headers=headers)
+        if not data:
+            continue
+        # Common shapes: {data:{totalAvailable / balance / available}} or top-level
+        d = data.get("data") if isinstance(data.get("data"), dict) else data
+        for field in (
+            "totalAvailable",
+            "total_available",
+            "available_balance",
+            "available",
+            "balance",
+            "quota",
+        ):
+            if field in d and d[field] is not None:
+                try:
+                    bal = float(d[field])
+                except (TypeError, ValueError):
+                    continue
+                return {
+                    "balance_usd": round(bal / 7.2, 4) if bal > 50 else round(bal, 4),
+                    "balance_cny": round(bal, 4) if bal > 50 else None,
+                    "source": f"dashscope:{path}:{field}",
+                    "raw": data,
+                }
+
+    # Liveness via models list (compatible-mode).
+    models_urls = [
+        f"{official}/compatible-mode/v1/models",
+        f"{official}/api/v1/models",
+        f"{base.rstrip('/')}/models" if base else "",
+    ]
+    for murl in models_urls:
+        if not murl:
+            continue
+        try:
+            resp = await client.get(murl, headers=headers)
+        except httpx.HTTPError:
+            continue
+        if resp.status_code in (401, 403):
+            return {
+                "balance_usd": "N/A",
+                "source": "unauthorized",
+                "alive": False,
+                "status_code": resp.status_code,
+            }
+        if resp.status_code == 200:
+            return {
+                "balance_usd": "N/A",
+                "source": "api_key_no_balance",
+                "alive": True,
+                "status_code": 200,
+                "note": (
+                    "DashScope/百炼 sk- keys have no public remaining-balance "
+                    "endpoint; check 百炼 console billing. (Not ModelScope.)"
+                ),
+            }
     return {}
 
 

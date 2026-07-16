@@ -62,6 +62,7 @@ _RESOLVED_NO_NUMERIC = frozenset(
         "admin_unauthorized",
         "unauthorized",
         "oauth_org_alive",
+        "usage_not_balance",  # nexus total_usage is spend, not remaining balance
     }
 )
 

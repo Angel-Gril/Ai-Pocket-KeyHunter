@@ -323,3 +323,53 @@ async def test_non_anthropic_key_skips_anthropic_probe() -> None:
 
     assert result["gateway"] == "unsupported"
     assert not ant_route.called
+
+
+@respx.mock
+async def test_nexus_total_usage_is_not_mapped_to_balance() -> None:
+    """Honeypots advertise total_usage ~$100 — must not become balance_usd."""
+    respx.get("http://64.23.132.174:8443/v1/usage").mock(
+        return_value=httpx.Response(
+            200,
+            json={"object": "list", "daily_costs": [], "total_usage": 106.9},
+        )
+    )
+    # Other probes miss
+    respx.route(method="GET").mock(return_value=httpx.Response(404))
+
+    cred = Credential(apikey="sk-" + "n" * 40, apiurl="http://64.23.132.174:8443/v1")
+    async with httpx.AsyncClient() as client:
+        result = await query_balance(client, cred)
+
+    assert result["gateway"] == "nexus"
+    assert result["balance_usd"] == ""
+    assert result["source"] == "usage_not_balance"
+    assert result["usage_usd"] == 106.9
+
+
+@respx.mock
+async def test_dashscope_alive_returns_na_balance() -> None:
+    respx.get("https://dashscope.aliyuncs.com/api/v1/account/balance").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get("https://dashscope.aliyuncs.com/api/v1/fe-taurus/users/quota").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get("https://dashscope.aliyuncs.com/api/v1/services/aigc/workspace/balance").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get("https://dashscope.aliyuncs.com/compatible-mode/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "qwen-turbo"}, {"id": "qwen-max"}]})
+    )
+
+    cred = Credential(
+        apikey="sk-" + "d" * 32,
+        apiurl="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    async with httpx.AsyncClient() as client:
+        result = await query_balance(client, cred)
+
+    assert result["gateway"] == "dashscope"
+    assert result["balance_usd"] == "N/A"
+    assert result["source"] == "api_key_no_balance"
+    assert result["alive"] is True

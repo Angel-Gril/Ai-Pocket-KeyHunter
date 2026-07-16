@@ -32,12 +32,23 @@ def _client() -> httpx.AsyncClient:
 
 
 async def list_models(apikey: str, apiurl: str) -> list[str]:
-    """Fetch the model list for a key via GET /v1/models (best-effort, cheap)."""
+    """Fetch the model list for a key via GET /v1/models (best-effort, cheap).
+
+    Gemini/Google keys use the official generativelanguage models endpoint with
+    query-param auth — OpenAI-style /v1/models normalization produces a 404 path
+    like /v1beta/v1/models and must not be used.
+    """
     cred = Credential(apikey=apikey, apiurl=apiurl)
-    chat_url = _v._normalize_apiurl(apiurl)
-    if not chat_url:
-        return []
+    resolution = resolve_provider(apiurl=apiurl, apikey=apikey)
     async with _client() as client:
+        if resolution.provider in {"google", "gemini"} or resolution.protocol_family == "gemini":
+            from aipocket.services.providers.gemini import validate_gemini
+
+            validation = await validate_gemini(client, cred)
+            return list(validation.models) if validation.valid else []
+        chat_url = _v._normalize_apiurl(apiurl)
+        if not chat_url:
+            return []
         return await _v._fetch_models_list(client, cred, chat_url)
 
 

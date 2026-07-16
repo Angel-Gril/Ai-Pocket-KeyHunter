@@ -42,6 +42,14 @@ def _promote_to_final(result: ValidationResult) -> ValidationResult:
     return result
 
 
+def _is_honeypot_rejected(result: ValidationResult) -> bool:
+    """Honeypot filter sets valid=False + error, but may leave auth states intact."""
+    if result.valid:
+        return False
+    err = (result.error or "").lower()
+    return err.startswith("honeypot:") or err.startswith("blocked-key-format:")
+
+
 async def finalize_results(
     results: list[ValidationResult],
     *,
@@ -62,6 +70,23 @@ async def finalize_results(
 
     for result in filtered:
         state = result.validation_state
+
+        # Honeypot / format rejections MUST win over residual AUTHENTICATED states.
+        # filter_honeypots historically only flipped valid=False + error without
+        # transitioning validation_state; without this gate those rows were
+        # re-promoted to final_verified (prod: 2439 rejected → 2469 saved).
+        if _is_honeypot_rejected(result) or (
+            not result.valid and state not in FAILURE_STATES and state != "rate_limited_unconfirmed"
+        ):
+            if state not in FAILURE_STATES:
+                try:
+                    apply_state(result, "no_auth_endpoint")
+                except ValueError:
+                    result.validation_state = "no_auth_endpoint"
+                    result.valid = False
+            rejected.append(result)
+            continue
+
         if state == "rate_limited_unconfirmed" or is_quarantined(result):
             if state != "rate_limited_unconfirmed":
                 try:
@@ -73,12 +98,12 @@ async def finalize_results(
             rate_limited_unconfirmed.append(result)
             continue
 
-        if state in AUTHENTICATED_STATES or (result.valid and not result.suspicious):
-            final_verified.append(_promote_to_final(result))
+        if not result.valid or state in FAILURE_STATES:
+            rejected.append(result)
             continue
 
-        if state in FAILURE_STATES or not result.valid:
-            rejected.append(result)
+        if state in AUTHENTICATED_STATES or (result.valid and not result.suspicious):
+            final_verified.append(_promote_to_final(result))
             continue
 
         rejected.append(result)
