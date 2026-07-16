@@ -78,7 +78,23 @@ def _pg_load_kind(run_id: str, kind: str) -> list[dict[str, Any]]:
             "SELECT record FROM results WHERE run_id = %s AND kind = %s ORDER BY seq",
             (run_id, kind),
         ).fetchall()
-    return [r["record"] for r in rows]
+    return [r["record"] for r in rows if isinstance(r.get("record"), dict)]
+
+
+def _pg_load_by_seq(run_id: str, kind: str, seq: int) -> dict[str, Any] | None:
+    """Load one raw record by its stable ``seq`` column (may be sparse)."""
+    from aipocket.core.db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        row = conn.execute(
+            "SELECT record FROM results WHERE run_id = %s AND kind = %s AND seq = %s",
+            (run_id, kind, seq),
+        ).fetchone()
+    if row is None:
+        return None
+    rec = row.get("record")
+    return rec if isinstance(rec, dict) else None
 
 
 def _day_from_run_id(run_id: str) -> str:
@@ -399,7 +415,8 @@ def _load_kind(run_id: str, kind: str) -> list[dict[str, Any]]:
 
     Reads PG (ordered by seq) when the run exists there; otherwise falls back to
     the ``valid_*.jsonl`` / ``suspicious_*.jsonl`` files. Both preserve the same
-    ordering, so the ``index``/``indices`` (== seq) reveal/export contract holds.
+    ordering, so the ``index``/``indices`` reveal/export contract is the 0-based
+    position in this ordered list (not necessarily the raw ``seq`` column).
     """
     _validate_run_id(run_id)
     if _pg_has_run(run_id):
@@ -479,14 +496,19 @@ def _dedup_by_apikey(rows: list[tuple[str, int, dict[str, Any]]]) -> list[dict[s
 
 
 def _load_all_kind_pg(kind: str) -> list[dict[str, Any]]:
-    """Cross-run plain records from PG, newest run first, deduped by apikey."""
+    """Cross-run plain records from PG, newest run first, deduped by apikey.
+
+    ``source_index`` is the 0-based position within that run's ``ORDER BY seq``
+    list — the same index ``reveal_apikey`` / run-detail endpoints use — not the
+    raw ``seq`` column (which can be sparse after deletes or partial rewrites).
+    """
     from aipocket.core.db import get_pool
 
     pool = get_pool()
     with pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT run_id, seq, record
+            SELECT run_id, record
             FROM results
             WHERE kind = %s
             ORDER BY run_id DESC, seq ASC
@@ -494,11 +516,16 @@ def _load_all_kind_pg(kind: str) -> list[dict[str, Any]]:
             (kind,),
         ).fetchall()
     ordered: list[tuple[str, int, dict[str, Any]]] = []
+    # Per-run dense index matching _pg_load_kind / _load_kind array order.
+    run_pos: dict[str, int] = {}
     for r in rows:
         rec = r["record"]
         if not isinstance(rec, dict):
             continue
-        ordered.append((r["run_id"], int(r["seq"]), rec))
+        run_id = str(r["run_id"])
+        idx = run_pos.get(run_id, 0)
+        run_pos[run_id] = idx + 1
+        ordered.append((run_id, idx, rec))
     return _dedup_by_apikey(ordered)
 
 
@@ -562,6 +589,11 @@ def read_run_log(run_id: str) -> str:
         raise ApiError(f"failed reading log: {e}", status_code=500, code="internal_error") from e
 
 
+def _cred_pair(rec: dict[str, Any]) -> dict[str, str]:
+    cred = rec.get("credential") if isinstance(rec.get("credential"), dict) else {}
+    return {"apikey": str(cred.get("apikey", "")), "apiurl": str(cred.get("apiurl", ""))}
+
+
 def reveal_apikey(
     run_id: str,
     kind: str = "valid",
@@ -570,28 +602,40 @@ def reveal_apikey(
     apiurl: str | None = None,
     index: int | None = None,
 ) -> dict[str, str]:
-    """Re-read the run file to recover ONE plaintext apikey.
+    """Re-read the run store to recover ONE plaintext apikey.
 
     Matching precedence:
-    1. ``index`` (0-based line index into the file), if provided;
-    2. else ``masked`` (+ optional ``apiurl`` to disambiguate) matched against the
-       server-side re-masking of each key.
+    1. ``index`` as 0-based position in the run's ordered result list
+       (``ORDER BY seq`` / JSONL line order) — the contract used by run detail
+       pages and the fixed cross-run ``source_index``;
+    2. else ``index`` as the raw PG ``seq`` value (legacy cross-run lists that
+       stamped sparse seq before the dense-index fix);
+    3. else ``masked`` (+ optional ``apiurl`` to disambiguate) matched against
+       the server-side re-masking of each key.
 
     Returns ``{"apikey": <plaintext>, "apiurl": ...}``.
     """
+    _validate_kind(kind)
     records = _load_kind(run_id, kind)
 
     if index is not None:
-        if index < 0 or index >= len(records):
+        if 0 <= index < len(records):
+            return _cred_pair(records[index])
+        # Legacy All-Keys responses stamped source_index = results.seq, which can
+        # be sparse (e.g. after row deletes). Fall back to a direct seq lookup.
+        if _pg_has_run(run_id):
+            by_seq = _pg_load_by_seq(run_id, kind, index)
+            if by_seq is not None:
+                return _cred_pair(by_seq)
+        # Last resort: client also sent masked (All-Keys does). Fall through.
+        if not masked:
             raise ApiError("index out of range", status_code=404, code="not_found")
-        cred = records[index].get("credential") or {}
-        return {"apikey": str(cred.get("apikey", "")), "apiurl": str(cred.get("apiurl", ""))}
 
     if not masked:
         raise ApiError("provide index or masked", status_code=400, code="bad_request")
 
     for rec in records:
-        cred = rec.get("credential") or {}
+        cred = rec.get("credential") if isinstance(rec.get("credential"), dict) else {}
         apikey = str(cred.get("apikey", ""))
         if not apikey:
             continue
@@ -601,4 +645,8 @@ def reveal_apikey(
             continue
         return {"apikey": apikey, "apiurl": str(cred.get("apiurl", ""))}
 
-    raise ApiError("key not found in run", status_code=404, code="not_found")
+    raise ApiError(
+        "index out of range" if index is not None else "key not found in run",
+        status_code=404,
+        code="not_found",
+    )

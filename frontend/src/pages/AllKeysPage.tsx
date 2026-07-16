@@ -70,11 +70,21 @@ export default function AllKeysPage() {
   stateRef.current = { records, kind, revealed, models, rows }
 
   const { mutateAsync: revealAsync } = useMutation({
-    mutationFn: (vars: { kind: ResultKind; index: number; runId: string; sourceIndex: number }) =>
+    mutationFn: (vars: {
+      kind: ResultKind
+      index: number
+      runId: string
+      sourceIndex: number
+      masked?: string
+      apiurl?: string
+    }) =>
       api.keyReveal({
         run_id: vars.runId,
         kind: vars.kind,
         index: vars.sourceIndex,
+        // Also send masked so the server can recover if source_index is a stale seq.
+        masked: vars.masked,
+        apiurl: vars.apiurl,
       }),
   })
   const { mutateAsync: modelsAsync } = useMutation({ mutationFn: api.keyModels })
@@ -102,6 +112,8 @@ export default function AllKeysPage() {
         index,
         runId,
         sourceIndex,
+        masked: fields.maskedKey !== "—" ? fields.maskedKey : undefined,
+        apiurl: fields.apiurl,
       })
       const value: Revealed = { apikey: res.apikey, apiurl: res.apiurl || fields.apiurl || "" }
       setRevealed((prev) => ({ ...prev, [key]: value }))

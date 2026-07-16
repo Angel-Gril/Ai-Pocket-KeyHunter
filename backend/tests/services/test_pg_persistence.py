@@ -563,6 +563,59 @@ class TestResultsReaderPg:
         recs = results_reader.load_run_records_plain("run_2026_07_06_10-00-00", "valid")
         assert recs[0]["credential"]["apikey"] == "sk-proj-pgrec"
 
+    def test_load_all_stamps_dense_source_index_not_raw_seq(self, fake_pg):
+        """source_index must be 0..n-1 within each run, even when seq is sparse."""
+        fake_pg(
+            {
+                "FROM results": [
+                    {
+                        "run_id": "run_2026_07_15_14-44-29",
+                        "record": {"credential": {"apikey": "sk-proj-aaaa1111aaaa"}},
+                    },
+                    {
+                        "run_id": "run_2026_07_15_14-44-29",
+                        "record": {"credential": {"apikey": "sk-proj-bbbb2222bbbb"}},
+                    },
+                    {
+                        "run_id": "run_2026_07_15_14-44-29",
+                        "record": {"credential": {"apikey": "sk-proj-cccc3333cccc"}},
+                    },
+                ],
+            }
+        )
+        from aipocket.api import results_reader
+
+        plain = results_reader.load_all_records_plain("valid")
+        assert [r["source_index"] for r in plain] == [0, 1, 2]
+        assert all(r["source_run_id"] == "run_2026_07_15_14-44-29" for r in plain)
+
+    def test_reveal_falls_back_to_sparse_seq(self, fake_pg):
+        """Legacy All-Keys clients may still send source_index == raw seq."""
+        target = {
+            "credential": {
+                "apikey": "sk-proj-legacyseqkey99",
+                "apiurl": "https://api.openai.com/v1",
+            }
+        }
+        fake_pg(
+            {
+                "SELECT 1 FROM runs WHERE run_id": [{"?column?": 1}],
+                # Dense list for array-index path (only 1 row → index 1001 OOB)
+                "ORDER BY seq": [
+                    {"record": {"credential": {"apikey": "sk-proj-otherkey0000"}}},
+                ],
+                # Direct seq lookup for legacy index=1001
+                "AND seq =": [{"record": target}],
+            }
+        )
+        from aipocket.api import results_reader
+
+        found = results_reader.reveal_apikey(
+            "run_2026_07_15_14-44-29", "valid", index=1001
+        )
+        assert found["apikey"] == "sk-proj-legacyseqkey99"
+        assert found["apiurl"] == "https://api.openai.com/v1"
+
     def test_read_run_log_from_pg(self, fake_pg):
         fake_pg(
             {
