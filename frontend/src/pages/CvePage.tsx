@@ -1,11 +1,25 @@
-import { useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Link2, Loader2, RefreshCw, Search, ShieldAlert, TriangleAlert } from "lucide-react"
+import { Braces, Link2, Loader2, RefreshCw, Search, ShieldAlert, TriangleAlert } from "lucide-react"
 import { toast } from "sonner"
 
 import { api, ApiError, type CveRecord } from "@/lib/api"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+
+function downloadJson(data: unknown, filename: string): void {
+  const blob = new Blob([`${JSON.stringify(data, null, 2)}\n`], {
+    type: "application/json;charset=utf-8",
+  })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
 
 interface NormalCve {
   id: string
@@ -101,16 +115,21 @@ export default function CvePage() {
     queryFn: api.getCve,
   })
 
-  const cves = useMemo(
-    () => (cveQuery.data?.cves ?? []).map(normalize),
-    [cveQuery.data],
-  )
+  const rawCves = useMemo(() => cveQuery.data?.cves ?? [], [cveQuery.data])
+
+  const cves = useMemo(() => rawCves.map(normalize), [rawCves])
 
   const needle = query.trim().toLowerCase()
   const filtered = useMemo(
     () => (needle ? cves.filter((cve) => matchesCve(cve, needle)) : cves),
     [cves, needle],
   )
+
+  // Keep raw records aligned with the filtered view so export matches what's shown.
+  const filteredRaw = useMemo(() => {
+    if (!needle) return rawCves
+    return rawCves.filter((record) => matchesCve(normalize(record), needle))
+  }, [rawCves, needle])
 
   const syncMutation = useMutation({
     mutationFn: api.cveSync,
@@ -122,6 +141,24 @@ export default function CvePage() {
       toast.error(err instanceof ApiError ? err.message : "同步 CVE 失败")
     },
   })
+
+  const handleExportJson = useCallback(() => {
+    if (filteredRaw.length === 0) {
+      toast.error("没有可导出的 CVE 记录")
+      return
+    }
+    const stamp = new Date().toISOString().slice(0, 10)
+    const filename =
+      needle.length > 0
+        ? `aipocket-cve-filtered-${stamp}.json`
+        : `aipocket-cve-${stamp}.json`
+    try {
+      downloadJson(filteredRaw, filename)
+      toast.success(`已导出 ${filteredRaw.length} 条 CVE · JSON`)
+    } catch {
+      toast.error("导出失败")
+    }
+  }, [filteredRaw, needle])
 
   const countLabel =
     needle.length > 0
@@ -148,6 +185,16 @@ export default function CvePage() {
             aria-label="搜索 CVE"
           />
         </div>
+
+        <button
+          type="button"
+          onClick={handleExportJson}
+          disabled={filteredRaw.length === 0 || cveQuery.isPending}
+          className="inline-flex items-center gap-2 rounded-[4px] border border-border-primary bg-surface-raised px-4 py-[9px] text-[13px] font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
+        >
+          <Braces className="size-[15px]" />
+          导出 JSON
+        </button>
 
         <button
           type="button"
