@@ -57,7 +57,13 @@ export default function RunResultsPage() {
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
   /** Local flag so the button stays busy between POST and first poll. */
   const [retryStarting, setRetryStarting] = useState(false)
-  const retryFinishedToastRef = useRef<string | null>(null)
+  /**
+   * Only toast when a retry finishes during *this page session*.
+   * Backend keeps the last job as state=finished forever, so toasting on any
+   * finished snapshot would re-fire every time the user re-enters the page.
+   * Armed when the user starts a retry, or when we observe state=running.
+   */
+  const toastOnRetryFinishRef = useRef(false)
 
   const { table, columnSizeVars } = useKeyTableSizing()
 
@@ -296,19 +302,27 @@ export default function RunResultsPage() {
   const failedFiles = gptFailed?.failed_files ?? 0
   const showRetry = failedHits > 0 || retryRunning || retryState === "finished" || retryState === "error"
 
-  // When background retry finishes, toast once and refresh result lists.
+  // When a retry we are watching finishes, toast once and refresh lists.
+  // Never toast for a stale finished/error snapshot from a previous visit.
   useEffect(() => {
     if (!runId || !gptFailed) return
     const job = gptFailed.retry
-    if (job.state !== "finished" && job.state !== "error") return
     if (job.run_id && job.run_id !== runId) return
-    const toastKey = `${job.state}:${job.finished_at ?? ""}:${job.report?.message ?? job.error ?? ""}`
-    if (retryFinishedToastRef.current === toastKey) return
-    retryFinishedToastRef.current = toastKey
+
+    if (job.state === "running") {
+      toastOnRetryFinishRef.current = true
+      return
+    }
+
+    if (!toastOnRetryFinishRef.current) return
+    if (job.state !== "finished" && job.state !== "error") return
+
+    toastOnRetryFinishRef.current = false
     setRetryStarting(false)
 
     if (job.state === "error") {
       toast.error("重试 AI 失败批次出错", { description: job.error || "未知错误" })
+      void queryClient.invalidateQueries({ queryKey: ["run", runId, "gpt-failed"] })
       return
     }
     const report = job.report
@@ -328,10 +342,16 @@ export default function RunResultsPage() {
     void queryClient.invalidateQueries({ queryKey: ["run", runId, "gpt-failed"] })
   }, [gptFailed, runId, queryClient])
 
+  // Switching runs must not inherit the previous run's "watch for toast" arm.
+  useEffect(() => {
+    toastOnRetryFinishRef.current = false
+    setRetryStarting(false)
+  }, [runId])
+
   const handleRetryGptFailed = useCallback(async () => {
     if (!runId || retryRunning) return
     setRetryStarting(true)
-    retryFinishedToastRef.current = null
+    toastOnRetryFinishRef.current = true
     try {
       await api.retryGptFailed(runId)
       toast.message("已开始重试 AI 失败批次", {
@@ -340,6 +360,7 @@ export default function RunResultsPage() {
       await queryClient.invalidateQueries({ queryKey: ["run", runId, "gpt-failed"] })
     } catch (err) {
       setRetryStarting(false)
+      toastOnRetryFinishRef.current = false
       toast.error("无法启动重试", { description: errorMessage(err, "请稍后重试") })
     }
   }, [runId, retryRunning, failedHits, queryClient])
