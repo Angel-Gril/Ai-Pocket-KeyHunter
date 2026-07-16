@@ -205,6 +205,10 @@ async def test_anthropic_api_key_returns_na_when_models_ok() -> None:
         return_value=httpx.Response(
             200,
             json={"data": [{"id": "claude-sonnet-4-6"}, {"id": "claude-opus-4-6"}]},
+            headers={
+                "anthropic-ratelimit-requests-limit": "1000",
+                "anthropic-ratelimit-input-tokens-limit": "2000000",
+            },
         )
     )
 
@@ -217,6 +221,7 @@ async def test_anthropic_api_key_returns_na_when_models_ok() -> None:
     assert result["alive"] is True
     assert result["model_count"] == 2
     assert "claude-sonnet-4-6" in result["models"]
+    assert result["tier"].startswith("usage_tier:start")
 
 
 @respx.mock
@@ -297,6 +302,25 @@ async def test_anthropic_admin_org_and_cost_report() -> None:
             },
         )
     )
+    respx.get("https://api.anthropic.com/v1/organizations/rate_limits").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "type": "rate_limit",
+                        "group_type": "model_group",
+                        "models": ["claude-opus-4-8"],
+                        "limits": [
+                            {"type": "requests_per_minute", "value": 5000},
+                            {"type": "input_tokens_per_minute", "value": 5_000_000},
+                        ],
+                    }
+                ],
+                "next_page": None,
+            },
+        )
+    )
 
     async with httpx.AsyncClient() as client:
         result = await query_balance(client, _ant_cred(apikey=ANT_ADMIN))
@@ -304,7 +328,8 @@ async def test_anthropic_admin_org_and_cost_report() -> None:
     assert result["gateway"] == "anthropic"
     assert result["balance_usd"] == "N/A"
     assert result["source"] == "admin_cost_report"
-    assert result["tier"] == "org:admin"
+    assert result["tier"] == "usage_tier:build"
+    assert result["usage_tier"] == "usage_tier:build"
     assert result["organization_id"] == "org_123"
     assert result["spend_usd_30d"] == 13.005  # (1250 + 50.5) / 100
     assert result["alive"] is True

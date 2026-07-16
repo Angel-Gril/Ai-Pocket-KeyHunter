@@ -6,7 +6,7 @@ import { api, type ChatResponse, type ExportFormat, type KeyRecord } from "@/lib
 import { ChatTestDialog } from "@/components/chat-test-dialog"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
-import { deriveKeyStatus, extractKeyFields, providerOf } from "@/components/key-record"
+import { deriveKeyStatus, extractKeyFields, formatBalance, providerOf } from "@/components/key-record"
 import { providerBrand, providerBrandColor } from "@/components/provider-badge"
 import { copyToClipboard } from "@/lib/utils"
 
@@ -130,11 +130,14 @@ export default function HighValuePage() {
       try {
         const { apikey, apiurl } = await ensureRevealed(index)
         const res = await balanceAsync({ apikey, apiurl })
+        const balanceLabel = formatBalance(res.balance_usd)
+        const tierLabel = res.tier?.trim() || undefined
         setBalances((prev) => ({
           ...prev,
-          [key]: { balance: res.balance_usd ? `$${res.balance_usd}` : undefined, tier: res.tier || undefined },
+          [key]: { balance: balanceLabel, tier: tierLabel },
         }))
-        toast.success("余额已更新", { description: `${res.gateway || "gateway"} · ${res.balance_usd || "?"}` })
+        const detailParts = [res.gateway || "gateway", balanceLabel || "N/A", tierLabel].filter(Boolean)
+        toast.success("余额已更新", { description: detailParts.join(" · ") })
       } catch (err) {
         toast.error("查询余额失败", { description: errorMessage(err, "无法获取余额") })
       } finally {

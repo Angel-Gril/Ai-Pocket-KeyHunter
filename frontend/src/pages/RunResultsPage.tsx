@@ -13,7 +13,7 @@ import {
 import { ChatTestDialog } from "@/components/chat-test-dialog"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
-import { deriveKeyStatus, extractKeyFields } from "@/components/key-record"
+import { deriveKeyStatus, extractKeyFields, formatBalance } from "@/components/key-record"
 import { cn, copyToClipboard } from "@/lib/utils"
 
 type Revealed = { apikey: string; apiurl: string }
@@ -173,11 +173,14 @@ export default function RunResultsPage() {
       try {
         const { apikey, apiurl } = await ensureRevealed(index)
         const res = await balanceAsync({ apikey, apiurl })
+        const balanceLabel = formatBalance(res.balance_usd)
+        const tierLabel = res.tier?.trim() || undefined
         setBalances((prev) => ({
           ...prev,
-          [key]: { balance: res.balance_usd ? `$${res.balance_usd}` : undefined, tier: res.tier || undefined },
+          [key]: { balance: balanceLabel, tier: tierLabel },
         }))
-        toast.success("余额已更新", { description: `${res.gateway || "gateway"} · ${res.balance_usd || "?"}` })
+        const detailParts = [res.gateway || "gateway", balanceLabel || "N/A", tierLabel].filter(Boolean)
+        toast.success("余额已更新", { description: detailParts.join(" · ") })
       } catch (err) {
         toast.error("查询余额失败", { description: errorMessage(err, "无法获取余额") })
       } finally {

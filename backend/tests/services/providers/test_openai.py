@@ -179,12 +179,26 @@ async def test_validator_dispatches_structured_openai_bundle_to_read_only_adapte
 
 
 @respx.mock
-async def test_balance_dispatch_returns_limit_profile_without_legacy_billing_probe() -> None:
-    respx.get(f"{BASE}/models").mock(
+async def test_balance_dispatch_returns_credit_grants_when_available() -> None:
+    respx.get("https://api.openai.com/dashboard/billing/credit_grants").mock(
         return_value=httpx.Response(
             200,
-            json={"data": [{"id": "gpt-5"}]},
-            headers={"x-ratelimit-limit-requests": "10000"},
+            json={
+                "object": "credit_summary",
+                "total_granted": 18.0,
+                "total_used": 3.5,
+                "total_available": 14.5,
+                "grants": {
+                    "object": "list",
+                    "data": [
+                        {
+                            "object": "credit_grant",
+                            "grant_amount": 18.0,
+                            "used_amount": 3.5,
+                        }
+                    ],
+                },
+            },
         )
     )
 
@@ -192,6 +206,67 @@ async def test_balance_dispatch_returns_limit_profile_without_legacy_billing_pro
         result = await query_balance(client, _credential("sk-proj-" + "a" * 40))
 
     assert result["gateway"] == "openai"
-    assert result["balance_usd"] == ""
-    assert result["tier"] == TierEvidence.TIER5_CANDIDATE.value
-    assert [call.request.method for call in respx.calls] == ["GET"]
+    assert result["balance_usd"] == 14.5
+    assert result["source"] == "credit_grants"
+    assert result["alive"] is True
+
+
+@respx.mock
+async def test_balance_dispatch_returns_na_and_tier_when_billing_gated() -> None:
+    """Dashboard billing often rejects API keys; still resolve alive key + tier."""
+    respx.get("https://api.openai.com/dashboard/billing/credit_grants").mock(
+        return_value=httpx.Response(401, json={"error": {"message": "Unauthorized"}})
+    )
+    respx.get("https://api.openai.com/v1/dashboard/billing/credit_grants").mock(
+        return_value=httpx.Response(401, json={"error": {"message": "Unauthorized"}})
+    )
+    respx.get("https://api.openai.com/dashboard/billing/subscription").mock(
+        return_value=httpx.Response(401, json={"error": {"message": "Unauthorized"}})
+    )
+    respx.get("https://api.openai.com/v1/dashboard/billing/subscription").mock(
+        return_value=httpx.Response(401, json={"error": {"message": "Unauthorized"}})
+    )
+    respx.get(f"{BASE}/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "gpt-5"}, {"id": "gpt-4o-mini"}]},
+            headers={
+                "x-ratelimit-limit-requests": "10000",
+                "x-ratelimit-limit-tokens": "30000000",
+            },
+        )
+    )
+
+    async with httpx.AsyncClient() as client:
+        result = await query_balance(client, _credential("sk-proj-" + "a" * 40))
+
+    assert result["gateway"] == "openai"
+    assert result["balance_usd"] == "N/A"
+    assert result["source"] == "api_key_no_balance"
+    assert result["alive"] is True
+    assert result["tier"] == "tier5_candidate"
+    assert result["model_count"] == 2
+
+
+@respx.mock
+async def test_balance_openai_prefix_forces_official_host() -> None:
+    grants = respx.get("https://api.openai.com/dashboard/billing/credit_grants").mock(
+        return_value=httpx.Response(
+            200,
+            json={"object": "credit_summary", "total_available": 2.25},
+        )
+    )
+    respx.get("https://evil-proxy.example/dashboard/billing/credit_grants").mock(
+        return_value=httpx.Response(200, json={"total_available": 999})
+    )
+
+    cred = Credential(
+        apikey="sk-proj-" + "b" * 40,
+        apiurl="https://evil-proxy.example/v1",
+    )
+    async with httpx.AsyncClient() as client:
+        result = await query_balance(client, cred)
+
+    assert result["gateway"] == "openai"
+    assert result["balance_usd"] == 2.25
+    assert grants.called

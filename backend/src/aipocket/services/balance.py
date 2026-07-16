@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -11,7 +12,6 @@ from rich.table import Table
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ValidationResult
 from aipocket.services.providers import uses_openai_adapter
-from aipocket.services.providers.openai import InferencePolicy, validate_openai
 
 if TYPE_CHECKING:
     from .dedup import DedupStore
@@ -23,6 +23,11 @@ _ANTHROPIC_VERSION = "2023-06-01"
 # Anthropic does not expose remaining prepaid balance via API key.
 # We surface a stable sentinel so UI/reprobe treat the row as resolved.
 _ANTHROPIC_BALANCE_NA = "N/A"
+
+_OPENAI_API_HOST = "https://api.openai.com"
+# OpenAI has no fully-public remaining-balance API for all key types; when
+# dashboard endpoints reject API keys we still mark the row resolved.
+_OPENAI_BALANCE_NA = "N/A"
 
 
 async def _safe_get(
@@ -49,22 +54,32 @@ async def _safe_get(
     return data if isinstance(data, dict) else None
 
 
-async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str, Any]:
-    if cred.bundle is not None and uses_openai_adapter(apiurl=cred.apiurl, apikey=cred.apikey):
-        validation = await validate_openai(client, cred, InferencePolicy.READ_ONLY)
-        return {
-            "gateway": "openai",
-            "balance_usd": "",
-            "tier": validation.limit_profile.tier.value,
-            "limit_profile": validation.limit_profile.model_dump(mode="json"),
-        }
-    base = cred.apiurl.rstrip("/")
+def _strip_api_base(apiurl: str) -> str:
+    base = (apiurl or "").rstrip("/")
     if base.endswith("/v1/chat/completions"):
         base = base[: -len("/v1/chat/completions")]
     elif base.endswith("/v1"):
         base = base[: -len("/v1")]
-    if not base.startswith("http"):
+    if base and not base.startswith("http"):
         base = "https://" + base
+    return base
+
+
+async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str, Any]:
+    # Official OpenAI keys: force platform host (billing lives on the account,
+    # not a reverse-proxy leak host). Runs before generic gateway probes.
+    if uses_openai_adapter(apiurl=cred.apiurl, apikey=cred.apikey) or _is_openai_official_key(
+        cred.apikey
+    ):
+        try:
+            oai = await _probe_openai(client, cred)
+        except (httpx.HTTPError, ValueError):
+            oai = {}
+        if oai:
+            oai["gateway"] = "openai"
+            return oai
+
+    base = _strip_api_base(cred.apiurl)
 
     probes = [
         # OpenRouter first: sk-or-v1 keys always hit the official host, and
@@ -85,7 +100,9 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
         ("moonshot", _probe_moonshot, base),
         ("glm", _probe_glm, base),
         ("siliconflow", _probe_siliconflow, base),
-        ("openai", _probe_openai_billing, base),
+        # Last-chance: OpenAI-compatible billing proxy on the credential host
+        # (new-api / one-api forks). Official OpenAI keys already handled above.
+        ("openai", _probe_openai_billing_on_host, base),
     ]
 
     for gateway, fn, url in probes:
@@ -223,22 +240,47 @@ async def _probe_anthropic(client: httpx.AsyncClient, base: str, key: str) -> di
         except httpx.HTTPError:
             pass
 
+        # Rate Limits API (Admin): infer Start / Build / Scale usage tier.
+        usage_tier = ""
+        rate_limits_raw: dict[str, Any] | None = None
+        try:
+            rl_resp = await client.get(
+                f"{_ANTHROPIC_API_BASE}/organizations/rate_limits",
+                headers=headers,
+            )
+            if rl_resp.status_code == 200:
+                try:
+                    rl_body = rl_resp.json()
+                except ValueError:
+                    rl_body = None
+                if isinstance(rl_body, dict):
+                    rate_limits_raw = rl_body
+                    usage_tier = _anthropic_usage_tier_from_rate_limits(rl_body)
+        except httpx.HTTPError:
+            pass
+
+        tier_label = usage_tier or "org:admin"
         result: dict[str, Any] = {
             "balance_usd": _ANTHROPIC_BALANCE_NA,
             "source": "admin_cost_report" if spend_usd is not None else "admin_org_alive",
             "credential_kind": kind,
             "alive": True,
-            "tier": "org:admin",
+            "tier": tier_label,
             "organization_id": org_id,
             "organization_name": org_name,
             "status_code": 200,
         }
         if spend_usd is not None:
+            # 30d spend is not remaining balance — surface separately.
             result["spend_usd_30d"] = spend_usd
+        if usage_tier:
+            result["usage_tier"] = usage_tier
+        raw_out: dict[str, Any] = {"organization": org_body}
         if cost_raw is not None:
-            result["raw"] = {"organization": org_body, "cost_report": cost_raw}
-        else:
-            result["raw"] = {"organization": org_body}
+            raw_out["cost_report"] = cost_raw
+        if rate_limits_raw is not None:
+            raw_out["rate_limits"] = rate_limits_raw
+        result["raw"] = raw_out
         return result
 
     # Ordinary Console API key — models list proves liveness; no balance API.
@@ -274,15 +316,17 @@ async def _probe_anthropic(client: httpx.AsyncClient, base: str, key: str) -> di
                 if isinstance(item, dict) and isinstance(item.get("id"), str)
             ]
 
-    # Ordinary Console API keys have no remaining balance and no Pro/Max
-    # subscription surface — those products are claude.ai (session), not API.
-    # Usage & Cost API requires sk-ant-admin… Admin keys only (see docs).
-    # Infer a coarse usage tier label from model count / known frontier access.
-    tier_label = "api:payg"
-    if any("opus" in m.lower() for m in models):
-        tier_label = "api:usage_tier_frontier"
-    elif any("sonnet" in m.lower() for m in models):
-        tier_label = "api:usage_tier_standard"
+    # Rate-limit headers on /models (when present) beat model-name heuristics.
+    tier_label = _tier_from_anthropic_headers(models_resp.headers)
+    if not tier_label:
+        # Ordinary Console API keys have no remaining balance and no Pro/Max
+        # subscription surface — those products are claude.ai (session), not API.
+        # Usage & Cost / Rate Limits Admin APIs require sk-ant-admin… keys.
+        tier_label = "api:payg"
+        if any("opus" in m.lower() for m in models):
+            tier_label = "api:usage_tier_frontier"
+        elif any("sonnet" in m.lower() for m in models):
+            tier_label = "api:usage_tier_standard"
 
     return {
         "balance_usd": _ANTHROPIC_BALANCE_NA,
@@ -299,6 +343,82 @@ async def _probe_anthropic(client: httpx.AsyncClient, base: str, key: str) -> di
             "claude.ai Pro/Max subscriptions are not exposed on API keys."
         ),
     }
+
+
+def _tier_from_anthropic_headers(headers: httpx.Headers) -> str:
+    """Build a compact rate-limit label from Anthropic response headers."""
+    rpm = headers.get("anthropic-ratelimit-requests-limit")
+    itpm = headers.get("anthropic-ratelimit-input-tokens-limit")
+    otpm = headers.get("anthropic-ratelimit-output-tokens-limit")
+    tokens = headers.get("anthropic-ratelimit-tokens-limit")
+    parts: list[str] = []
+    if rpm:
+        parts.append(f"rpm:{rpm}")
+    if itpm:
+        parts.append(f"itpm:{itpm}")
+    if otpm:
+        parts.append(f"otpm:{otpm}")
+    if not parts and tokens:
+        parts.append(f"tpm:{tokens}")
+    if not parts:
+        return ""
+    # Best-effort Start/Build/Scale from published RPM/ITPM tables.
+    try:
+        rpm_n = int(float(rpm)) if rpm else 0
+    except (TypeError, ValueError):
+        rpm_n = 0
+    try:
+        itpm_n = int(float(itpm or tokens or 0))
+    except (TypeError, ValueError):
+        itpm_n = 0
+    usage = _anthropic_usage_tier_from_numbers(rpm_n, itpm_n)
+    if usage:
+        return f"{usage} ({', '.join(parts)})"
+    return ", ".join(parts)
+
+
+def _anthropic_usage_tier_from_numbers(rpm: int, itpm: int) -> str:
+    """Map RPM/ITPM to Start / Build / Scale (published Anthropic tables)."""
+    # Scale: Opus RPM 10k / ITPM 10M; Build: 5k / 5M; Start: 1k / 2M (model-dependent).
+    if rpm >= 10000 or itpm >= 10_000_000:
+        return "usage_tier:scale"
+    if rpm >= 5000 or itpm >= 5_000_000:
+        return "usage_tier:build"
+    if rpm >= 1000 or itpm >= 500_000:
+        return "usage_tier:start"
+    return ""
+
+
+def _anthropic_usage_tier_from_rate_limits(payload: dict[str, Any]) -> str:
+    """Infer usage tier from Admin Rate Limits API payload."""
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return ""
+    max_rpm = 0
+    max_itpm = 0
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        # Prefer model_group entries (Messages API tiers); skip batch/files/etc.
+        gt = entry.get("group_type")
+        if gt is not None and gt != "model_group":
+            continue
+        limits = entry.get("limits")
+        if not isinstance(limits, list):
+            continue
+        for lim in limits:
+            if not isinstance(lim, dict):
+                continue
+            kind = str(lim.get("type") or "")
+            try:
+                value = int(float(lim.get("value") or 0))
+            except (TypeError, ValueError):
+                continue
+            if kind == "requests_per_minute":
+                max_rpm = max(max_rpm, value)
+            elif kind in ("input_tokens_per_minute", "tokens_per_minute"):
+                max_itpm = max(max_itpm, value)
+    return _anthropic_usage_tier_from_numbers(max_rpm, max_itpm)
 
 
 async def _probe_openrouter(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
@@ -465,17 +585,413 @@ async def _probe_litellm(client: httpx.AsyncClient, base: str, key: str) -> dict
     }
 
 
-async def _probe_openai_billing(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
-    data = await _safe_get(client, f"{base}/v1/dashboard/billing/credit_grants", key)
-    if data is None:
+def _is_openai_official_key(key: str) -> bool:
+    """True for key shapes that always belong to platform.openai.com."""
+    return key.startswith(("sk-proj-", "sk-svcacct-", "sk-admin-", "sess-"))
+
+
+def _openai_auth_headers(cred: Credential) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {cred.apikey}"}
+    context = cred.bundle.context if cred.bundle is not None else None
+    if context is not None:
+        if context.project:
+            headers["OpenAI-Project"] = context.project
+        if context.organization:
+            headers["OpenAI-Organization"] = context.organization
+    return headers
+
+
+def _parse_openai_credit_grants(data: dict[str, Any]) -> float | None:
+    """Extract remaining prepaid credits from credit_grants payload.
+
+    Known shapes:
+    * ``credit_summary``: top-level total_available / total_granted / total_used
+    * Nested ``grants.data[]`` with grant_amount + used_amount
+    * Flat ``data[]`` list of credit_grant objects
+    """
+    if data.get("total_available") is not None:
+        try:
+            return round(float(data["total_available"]), 4)
+        except (TypeError, ValueError):
+            pass
+
+    grants_block = data.get("grants")
+    grant_rows: list[Any] = []
+    if isinstance(grants_block, dict) and isinstance(grants_block.get("data"), list):
+        grant_rows = grants_block["data"]
+    elif isinstance(data.get("data"), list):
+        grant_rows = data["data"]
+
+    total = 0.0
+    found = False
+    for g in grant_rows:
+        if not isinstance(g, dict):
+            continue
+        grant_amount = g.get("grant_amount")
+        used = g.get("used_amount", g.get("used"))
+        if grant_amount is None and used is None:
+            continue
+        try:
+            total += float(grant_amount or 0) - float(used or 0)
+            found = True
+        except (TypeError, ValueError):
+            continue
+    if found:
+        return round(max(total, 0.0), 4)
+    return None
+
+
+def _openai_tier_from_headers(headers: httpx.Headers) -> str:
+    """Compact rate-limit profile from OpenAI response headers (not authoritative tier)."""
+    rpm = headers.get("x-ratelimit-limit-requests")
+    tpm = headers.get("x-ratelimit-limit-tokens")
+    parts: list[str] = []
+    if rpm:
+        parts.append(f"rpm:{rpm}")
+    if tpm:
+        parts.append(f"tpm:{tpm}")
+    return " ".join(parts)
+
+
+def _openai_usage_tier_label(
+    explicit: str = "", *, rpm: int | None = None, tpm: int | None = None
+) -> str:
+    """Prefer explicit account_tier; otherwise leave a candidate label from limits."""
+    cleaned = (explicit or "").strip().lower().replace(" ", "_")
+    if cleaned:
+        # Normalize tier_5 / Tier5 / tier5 → tier5
+        cleaned = cleaned.replace("tier_", "tier")
+        if cleaned.startswith("tier") or cleaned in {"free", "payg", "enterprise"}:
+            return cleaned
+        return explicit.strip()
+    # Soft candidate only — OpenAI tiers are org-level and model-specific.
+    if rpm is not None and rpm >= 10000:
+        return "tier5_candidate"
+    if rpm is not None and rpm >= 5000:
+        return "tier4_candidate"
+    if rpm is not None and rpm >= 500:
+        return "tier1+_candidate"
+    if tpm is not None and tpm >= 2_000_000:
+        return "tier5_candidate"
+    if tpm is not None and tpm >= 450_000:
+        return "tier3+_candidate"
+    return ""
+
+
+async def _probe_openai(client: httpx.AsyncClient, cred: Credential) -> dict[str, Any]:
+    """Probe official OpenAI account balance + usage tier.
+
+    Strategy (always hits ``api.openai.com`` for known key prefixes):
+
+    1. ``GET /dashboard/billing/credit_grants`` (and ``/v1/...`` alias) —
+       prepaid remaining credit when the key/session still has access.
+    2. ``GET /dashboard/billing/subscription`` + ``/usage`` —
+       hard spend limit minus period usage (PAYG budget remaining).
+    3. Liveness via ``GET /v1/models``; capture rate-limit headers for a
+       coarse tier profile.
+    4. Admin keys (``sk-admin-``): organization project rate_limits for
+       authoritative ``account_tier``.
+
+    When billing endpoints reject API keys (common since ~2023 — session
+    tokens preferred), still return ``balance_usd=N/A`` with tier so the
+    high-value UI can show usage level instead of an empty unsupported row.
+    """
+    key = cred.apikey
+    apiurl = (cred.apiurl or "").lower()
+    is_prefix = _is_openai_official_key(key)
+    is_host = "openai.com" in apiurl
+    # Bare sk- only when the credential already points at OpenAI (or registry
+    # already classified it via uses_openai_adapter in the caller).
+    is_ordinary = key.startswith("sk-") and not key.startswith(
+        ("sk-or-", "sk-ant-", "sk-proj-", "sk-svcacct-", "sk-admin-")
+    )
+    if not is_prefix and not is_host and not is_ordinary:
         return {}
-    grants = data.get("data", [])
-    total = sum(g.get("grant_amount", 0) - g.get("used", 0) for g in grants)
+
+    headers = _openai_auth_headers(cred)
+    host = _OPENAI_API_HOST
+    kind = "ordinary"
+    if key.startswith("sk-proj-"):
+        kind = "project"
+    elif key.startswith("sk-svcacct-"):
+        kind = "service_account"
+    elif key.startswith("sk-admin-"):
+        kind = "admin"
+    elif key.startswith("sess-"):
+        kind = "session"
+
+    # --- 1) Credit grants (prepaid remaining) ---
+    for path in (
+        "/dashboard/billing/credit_grants",
+        "/v1/dashboard/billing/credit_grants",
+    ):
+        data = await _safe_get(client, f"{host}{path}", key, headers=headers)
+        if not data:
+            continue
+        remaining = _parse_openai_credit_grants(data)
+        if remaining is None:
+            continue
+        return {
+            "balance_usd": remaining,
+            "source": "credit_grants",
+            "credential_kind": kind,
+            "alive": True,
+            "raw": data,
+        }
+
+    # --- 2) Subscription hard limit − usage (PAYG budget) ---
+    sub: dict[str, Any] | None = None
+    for path in (
+        "/dashboard/billing/subscription",
+        "/v1/dashboard/billing/subscription",
+    ):
+        sub = await _safe_get(client, f"{host}{path}", key, headers=headers)
+        if sub:
+            break
+    if sub and (
+        sub.get("object") == "billing_subscription"
+        or sub.get("hard_limit_usd") is not None
+        or sub.get("system_hard_limit_usd") is not None
+    ):
+        hard_limit = float(sub.get("hard_limit_usd") or sub.get("system_hard_limit_usd") or 0)
+        today = datetime.now(UTC).date()
+        # Wide window captures cumulative usage for hard-limit accounting.
+        params = {
+            "start_date": (today.replace(day=1) - timedelta(days=90)).isoformat(),
+            "end_date": (today + timedelta(days=1)).isoformat(),
+        }
+        usage: dict[str, Any] | None = None
+        for path in (
+            "/dashboard/billing/usage",
+            "/v1/dashboard/billing/usage",
+            "/v1/usage",
+        ):
+            usage = await _safe_get(client, f"{host}{path}", key, headers=headers, params=params)
+            if usage:
+                break
+        used_usd = 0.0
+        if usage:
+            # OpenAI dashboard usage: total_usage is cents.
+            if usage.get("total_usage") is not None:
+                try:
+                    used_usd = float(usage["total_usage"]) / 100.0
+                except (TypeError, ValueError):
+                    used_usd = 0.0
+            elif usage.get("total_usage_usd") is not None:
+                try:
+                    used_usd = float(usage["total_usage_usd"])
+                except (TypeError, ValueError):
+                    used_usd = 0.0
+        remaining: float | str
+        if hard_limit:
+            remaining = round(max(hard_limit - used_usd, 0.0), 4)
+            source = "subscription_budget"
+        else:
+            remaining = _OPENAI_BALANCE_NA
+            source = "subscription"
+        plan = ""
+        plan_obj = sub.get("plan")
+        if isinstance(plan_obj, dict):
+            plan = str(plan_obj.get("id") or plan_obj.get("title") or "")
+        result: dict[str, Any] = {
+            "balance_usd": remaining,
+            "source": source,
+            "credential_kind": kind,
+            "alive": True,
+            "hard_limit_usd": hard_limit,
+            "used_usd": round(used_usd, 4),
+            "plan": plan,
+            "raw": {"subscription": sub, "usage": usage},
+        }
+        # Soft signal: hard limit size correlates with usage-tier spend caps.
+        if hard_limit >= 200_000:
+            result["tier"] = "tier5_candidate"
+        elif hard_limit >= 5000:
+            result["tier"] = "tier4_candidate"
+        elif hard_limit >= 1000:
+            result["tier"] = "tier3_candidate"
+        elif hard_limit >= 100:
+            result["tier"] = "tier1+_candidate"
+        return result
+
+    # --- 3) Admin: authoritative account_tier from project rate_limits ---
+    if kind == "admin":
+        try:
+            projects_resp = await client.get(
+                f"{host}/v1/organization/projects",
+                headers=headers,
+            )
+        except httpx.HTTPError:
+            projects_resp = None
+        if projects_resp is not None and projects_resp.status_code == 200:
+            try:
+                projects_body = projects_resp.json()
+            except ValueError:
+                projects_body = None
+            projects = projects_body.get("data", []) if isinstance(projects_body, dict) else []
+            explicit_tier = ""
+            limits_summary: list[dict[str, Any]] = []
+            for item in projects if isinstance(projects, list) else []:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                pid = str(item["id"])
+                try:
+                    rl = await client.get(
+                        f"{host}/v1/organization/projects/{pid}/rate_limits",
+                        headers=headers,
+                    )
+                except httpx.HTTPError:
+                    continue
+                if rl.status_code != 200:
+                    continue
+                try:
+                    body = rl.json()
+                except ValueError:
+                    continue
+                if not isinstance(body, dict):
+                    continue
+                if body.get("account_tier"):
+                    explicit_tier = str(body["account_tier"])
+                limits_summary.append(
+                    {
+                        "project_id": pid,
+                        "account_tier": body.get("account_tier"),
+                        "count": len(body.get("data") or [])
+                        if isinstance(body.get("data"), list)
+                        else 0,
+                    }
+                )
+                if explicit_tier:
+                    break
+            tier = _openai_usage_tier_label(explicit_tier) or "admin"
+            return {
+                "balance_usd": _OPENAI_BALANCE_NA,
+                "source": "admin_rate_limits",
+                "credential_kind": kind,
+                "alive": True,
+                "tier": tier,
+                "account_tier": explicit_tier,
+                "raw": {"projects": limits_summary},
+                "note": (
+                    "OpenAI Admin keys expose account_tier via project rate_limits; "
+                    "remaining prepaid balance needs dashboard/session access."
+                ),
+            }
+        if projects_resp is not None and projects_resp.status_code in (401, 403):
+            return {
+                "balance_usd": _OPENAI_BALANCE_NA,
+                "source": "unauthorized",
+                "credential_kind": kind,
+                "alive": False,
+                "status_code": projects_resp.status_code,
+            }
+
+    # --- 4) Liveness via models + rate-limit header profile ---
+    try:
+        models_resp = await client.get(f"{host}/v1/models", headers=headers)
+    except httpx.HTTPError:
+        return {}
+    if models_resp.status_code in (401, 403):
+        # Dead key on official host. For non-official hosts, allow gateway probes.
+        if not is_host and not is_prefix:
+            return {}
+        # Prefix keys are always OpenAI — report unauthorized rather than
+        # wasting requests on one-api/litellm paths that will also fail.
+        if is_prefix or is_host:
+            return {
+                "balance_usd": _OPENAI_BALANCE_NA,
+                "source": "unauthorized",
+                "credential_kind": kind,
+                "alive": False,
+                "status_code": models_resp.status_code,
+            }
+        return {}
+    if models_resp.status_code != 200:
+        # Transient / unexpected — only claim openai if host matched.
+        if is_prefix or is_host:
+            return {
+                "balance_usd": _OPENAI_BALANCE_NA,
+                "source": "models_error",
+                "credential_kind": kind,
+                "alive": False,
+                "status_code": models_resp.status_code,
+            }
+        return {}
+
+    models: list[str] = []
+    try:
+        body = models_resp.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        data = body.get("data", [])
+        if isinstance(data, list):
+            models = [
+                str(item["id"])
+                for item in data
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            ]
+
+    rpm_raw = models_resp.headers.get("x-ratelimit-limit-requests")
+    tpm_raw = models_resp.headers.get("x-ratelimit-limit-tokens")
+    rpm_n: int | None = None
+    tpm_n: int | None = None
+    if rpm_raw is not None:
+        with contextlib.suppress(ValueError):
+            rpm_n = int(rpm_raw)
+    if tpm_raw is not None:
+        with contextlib.suppress(ValueError):
+            tpm_n = int(tpm_raw)
+
+    header_profile = _openai_tier_from_headers(models_resp.headers)
+    tier = _openai_usage_tier_label("", rpm=rpm_n, tpm=tpm_n) or header_profile or "api:payg"
+
     return {
-        "balance_usd": round(total, 2),
-        "grants": grants,
-        "raw": data,
+        "balance_usd": _OPENAI_BALANCE_NA,
+        "source": "api_key_no_balance",
+        "credential_kind": kind,
+        "alive": True,
+        "tier": tier,
+        "model_count": len(models),
+        "models": models[:20],
+        "status_code": 200,
+        "rate_limit_profile": header_profile,
+        "note": (
+            "OpenAI remaining balance requires dashboard credit_grants/subscription "
+            "(often session-token gated). Key is alive; tier is from rate-limit "
+            "headers or model access, not an official usage-tier API."
+        ),
     }
+
+
+async def _probe_openai_billing_on_host(
+    client: httpx.AsyncClient, base: str, key: str
+) -> dict[str, Any]:
+    """Best-effort billing probe against the credential host (gateway proxies).
+
+    Official OpenAI keys are handled by :func:`_probe_openai` first. This path
+    covers third-party OpenAI-compatible gateways that expose the legacy
+    ``/dashboard/billing/*`` surface.
+    """
+    if not base or "openai.com" in base.lower():
+        # Official host already covered; avoid double-probing.
+        return {}
+    for path in (
+        "/dashboard/billing/credit_grants",
+        "/v1/dashboard/billing/credit_grants",
+    ):
+        data = await _safe_get(client, f"{base}{path}", key)
+        if not data:
+            continue
+        remaining = _parse_openai_credit_grants(data)
+        if remaining is None:
+            continue
+        return {
+            "balance_usd": remaining,
+            "source": "credit_grants",
+            "raw": data,
+        }
+    return {}
 
 
 async def _probe_deepseek(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
