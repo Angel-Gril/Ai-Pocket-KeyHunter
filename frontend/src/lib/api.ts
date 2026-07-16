@@ -247,6 +247,42 @@ export interface RunResultsResponse {
   results: KeyRecord[]
 }
 
+export interface GptFailedFileInfo {
+  name: string
+  hits: number
+  batch_idx: number | null
+}
+
+export interface RetryGptFailedReport {
+  run_id: string
+  failed_files: number
+  failed_hits: number
+  credentials_found: number
+  valid_appended: number
+  suspicious_appended: number
+  high_value_final: number
+  archived_files: string[]
+  jsonl_paths: string[]
+  message: string
+}
+
+export interface RetryGptFailedJobStatus {
+  state: "idle" | "running" | "finished" | "error" | string
+  run_id: string | null
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+  report: RetryGptFailedReport | null
+}
+
+export interface GptFailedStatusResponse {
+  run_id: string
+  failed_files: number
+  failed_hits: number
+  files: GptFailedFileInfo[]
+  retry: RetryGptFailedJobStatus
+}
+
 export interface HighValueResponse {
   results: KeyRecord[]
 }
@@ -407,6 +443,10 @@ export const api = {
   getRunResults: (runId: string, kind: ResultKind) =>
     request<RunResultsResponse>(`/runs/${runId}/${kind}`),
   getRunLog: (runId: string) => request<string>(`/runs/${runId}/log`),
+  getGptFailed: (runId: string) =>
+    request<GptFailedStatusResponse>(`/runs/${runId}/gpt-failed`),
+  retryGptFailed: (runId: string) =>
+    request<RetryGptFailedJobStatus>(`/runs/${runId}/retry-gpt-failed`, { method: "POST" }),
 
   // High-value
   getHighValue: () => request<HighValueResponse>("/high-value"),

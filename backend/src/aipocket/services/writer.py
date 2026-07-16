@@ -385,6 +385,113 @@ def write_suspicious_results(results: list[ValidationResult], run_dir: Path) -> 
     return path
 
 
+def append_results_pg(
+    run_id: str,
+    valid: list[ValidationResult],
+    suspicious: list[ValidationResult],
+) -> None:
+    """**Primary path**: append new rows into PostgreSQL for an existing run.
+
+    Source of truth when ``DATABASE_URL`` is set (same as the main scan path).
+
+    Append semantics (never replace):
+    - ``INSERT`` into ``results`` with ``seq = MAX(seq)+1`` per kind
+    - Does **not** ``DELETE`` existing rows (unlike :func:`persist_run_pg`)
+    - Recounts ``runs.total_valid`` / ``final_verified`` / ``suspicious``
+
+    Raises ``LookupError`` if ``run_id`` is missing from ``runs``.
+    No-op when PG is disabled or both lists are empty.
+    """
+    if not settings.pg_enabled:
+        return
+    if not valid and not suspicious:
+        return
+
+    from aipocket.core.db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn, conn.transaction():
+        exists = conn.execute("SELECT 1 FROM runs WHERE run_id = %s", (run_id,)).fetchone()
+        if exists is None:
+            raise LookupError(f"run not in PG: {run_id}")
+
+        for kind, items in (("valid", valid), ("suspicious", suspicious)):
+            if not items:
+                continue
+            row = conn.execute(
+                "SELECT COALESCE(MAX(seq), -1) AS m FROM results WHERE run_id = %s AND kind = %s",
+                (run_id, kind),
+            ).fetchone()
+            start = int(row["m"]) + 1 if row else 0
+            insert_rows = [(run_id, *_result_row(r, kind, start + i)) for i, r in enumerate(items)]
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO results (run_id, kind, seq, apikey, apiurl, host, valid, record)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    insert_rows,
+                )
+
+        conn.execute(
+            """
+            UPDATE runs SET
+                total_valid = (
+                    SELECT COUNT(*) FROM results WHERE run_id = %s AND kind = 'valid'
+                ),
+                final_verified = (
+                    SELECT COUNT(*) FROM results WHERE run_id = %s AND kind = 'valid'
+                ),
+                suspicious = (
+                    SELECT COUNT(*) FROM results WHERE run_id = %s AND kind = 'suspicious'
+                ),
+                total_credentials = COALESCE(total_credentials, 0) + %s
+            WHERE run_id = %s
+            """,
+            (
+                run_id,
+                run_id,
+                run_id,
+                len(valid) + len(suspicious),
+                run_id,
+            ),
+        )
+    log.info(
+        "PG append for %s: +%d valid, +%d suspicious (existing rows preserved)",
+        run_id,
+        len(valid),
+        len(suspicious),
+    )
+
+
+def append_results_jsonl(
+    results: list[ValidationResult],
+    run_dir: Path,
+    kind: str,
+) -> Path | None:
+    """Optional dual-write: new ``{kind}_retry_<ts>.jsonl`` (never rewrites old files).
+
+    Only used when ``settings.write_jsonl`` is True. Production with PG-only
+    (``pg_dual_write=false``) skips this entirely — results live in the DB.
+    """
+    if not results or not settings.write_jsonl:
+        return None
+    if kind not in ("valid", "suspicious"):
+        raise ValueError(f"invalid kind for append: {kind}")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    path = run_dir / f"{kind}_retry_{ts}.jsonl"
+    with path.open("w", encoding="utf-8") as f:
+        for r in results:
+            f.write(_jsonl_line(r.model_dump()))
+    log.info(
+        "Dual-write JSONL: +%d %s → %s",
+        len(results),
+        kind,
+        path.name,
+    )
+    return path
+
+
 def write_raw_hits(hits: list[dict[str, Any]], run_dir: Path | None = None) -> Path:
     """Write raw_hits_<ts>.jsonl — each line is one hit."""
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")

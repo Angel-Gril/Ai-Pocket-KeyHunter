@@ -1,7 +1,7 @@
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useParams } from "react-router-dom"
-import { useMutation, useQuery } from "@tanstack/react-query"
-import { ArrowLeft, Loader2 } from "lucide-react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { ArrowLeft, Loader2, RotateCcw } from "lucide-react"
 import { toast } from "sonner"
 import {
   api,
@@ -15,6 +15,7 @@ import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
 import { extractKeyFields, formatBalance } from "@/components/key-record"
+import { Button } from "@/components/ui/button"
 import { cn, copyToClipboard } from "@/lib/utils"
 
 type Revealed = { apikey: string; apiurl: string }
@@ -43,6 +44,7 @@ function isoToLabel(iso: string): string {
 
 export default function RunResultsPage() {
   const { runId } = useParams<{ runId: string }>()
+  const queryClient = useQueryClient()
   const [kind, setKind] = useState<ResultKind>("valid")
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [revealed, setRevealed] = useState<Record<string, Revealed>>({})
@@ -53,6 +55,9 @@ export default function RunResultsPage() {
   const [exporting, setExporting] = useState(false)
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
+  /** Local flag so the button stays busy between POST and first poll. */
+  const [retryStarting, setRetryStarting] = useState(false)
+  const retryFinishedToastRef = useRef<string | null>(null)
 
   const { table, columnSizeVars } = useKeyTableSizing()
 
@@ -67,6 +72,15 @@ export default function RunResultsPage() {
     enabled: Boolean(runId),
   })
   const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.getRuns })
+  const gptFailedQuery = useQuery({
+    queryKey: ["run", runId, "gpt-failed"],
+    queryFn: () => api.getGptFailed(runId!),
+    enabled: Boolean(runId),
+    refetchInterval: (q) => {
+      const state = q.state.data?.retry?.state
+      return state === "running" ? 2000 : false
+    },
+  })
 
   const activeQuery = kind === "valid" ? validQuery : suspiciousQuery
   const records = useMemo<KeyRecord[]>(() => activeQuery.data?.results ?? [], [activeQuery.data])
@@ -275,6 +289,61 @@ export default function RunResultsPage() {
     setSelected(new Set())
   }, [])
 
+  const gptFailed = gptFailedQuery.data
+  const retryState = gptFailed?.retry?.state
+  const retryRunning = retryState === "running" || retryStarting
+  const failedHits = gptFailed?.failed_hits ?? 0
+  const failedFiles = gptFailed?.failed_files ?? 0
+  const showRetry = failedHits > 0 || retryRunning || retryState === "finished" || retryState === "error"
+
+  // When background retry finishes, toast once and refresh result lists.
+  useEffect(() => {
+    if (!runId || !gptFailed) return
+    const job = gptFailed.retry
+    if (job.state !== "finished" && job.state !== "error") return
+    if (job.run_id && job.run_id !== runId) return
+    const toastKey = `${job.state}:${job.finished_at ?? ""}:${job.report?.message ?? job.error ?? ""}`
+    if (retryFinishedToastRef.current === toastKey) return
+    retryFinishedToastRef.current = toastKey
+    setRetryStarting(false)
+
+    if (job.state === "error") {
+      toast.error("重试 AI 失败批次出错", { description: job.error || "未知错误" })
+      return
+    }
+    const report = job.report
+    if (!report) return
+    const appended = report.valid_appended + report.suspicious_appended
+    if (appended > 0) {
+      toast.success("重试完成，结果已追加到数据库", {
+        description:
+          report.message ||
+          `新增可用 ${report.valid_appended} · 疑似 ${report.suspicious_appended}`,
+      })
+      void queryClient.invalidateQueries({ queryKey: ["run", runId] })
+      void queryClient.invalidateQueries({ queryKey: ["runs"] })
+    } else {
+      toast.message("重试完成", { description: report.message || "未新增可用密钥" })
+    }
+    void queryClient.invalidateQueries({ queryKey: ["run", runId, "gpt-failed"] })
+  }, [gptFailed, runId, queryClient])
+
+  const handleRetryGptFailed = useCallback(async () => {
+    if (!runId || retryRunning) return
+    setRetryStarting(true)
+    retryFinishedToastRef.current = null
+    try {
+      await api.retryGptFailed(runId)
+      toast.message("已开始重试 AI 失败批次", {
+        description: `将处理 ${failedHits} 条失败命中，恢复结果追加写入数据库`,
+      })
+      await queryClient.invalidateQueries({ queryKey: ["run", runId, "gpt-failed"] })
+    } catch (err) {
+      setRetryStarting(false)
+      toast.error("无法启动重试", { description: errorMessage(err, "请稍后重试") })
+    }
+  }, [runId, retryRunning, failedHits, queryClient])
+
   const runExport = useCallback(
     async (format: ExportFormat) => {
       if (!runId) return
@@ -380,7 +449,7 @@ export default function RunResultsPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {KINDS.map((tabKind) => {
             const isActive = kind === tabKind
             const count = tabKind === "valid" ? validCount : suspiciousCount
@@ -410,6 +479,33 @@ export default function RunResultsPage() {
               </button>
             )
           })}
+
+          {showRetry ? (
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              {failedHits > 0 || retryRunning ? (
+                <span className="font-mono text-[11px] text-warning">
+                  AI 失败 {failedHits} 条
+                  {failedFiles > 0 ? ` · ${failedFiles} 文件` : ""}
+                  {retryRunning ? " · 重试中…" : ""}
+                </span>
+              ) : null}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={retryRunning || failedHits === 0}
+                onClick={() => void handleRetryGptFailed()}
+                title="重试本 run 中 GPT 分析失败的批次；恢复结果追加写入数据库"
+              >
+                {retryRunning ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="size-3.5" />
+                )}
+                {retryRunning ? "重试中…" : "重试 AI 失败"}
+              </Button>
+            </div>
+          ) : null}
         </div>
       </div>
 

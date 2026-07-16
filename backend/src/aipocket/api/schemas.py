@@ -148,6 +148,47 @@ class ScanLogsResponse(BaseModel):
 
 
 # ----------------------------------------------------------------------------
+# GPT-failed batch retry (per-run append)
+# ----------------------------------------------------------------------------
+class GptFailedFileInfo(BaseModel):
+    name: str
+    hits: int
+    batch_idx: int | None = None
+
+
+class RetryGptFailedReportView(BaseModel):
+    run_id: str
+    failed_files: int = 0
+    failed_hits: int = 0
+    credentials_found: int = 0
+    valid_appended: int = 0
+    suspicious_appended: int = 0
+    high_value_final: int = 0
+    archived_files: list[str] = Field(default_factory=list)
+    jsonl_paths: list[str] = Field(default_factory=list)
+    message: str = ""
+
+
+class RetryGptFailedJobStatus(BaseModel):
+    """Background retry job snapshot (poll while state == running)."""
+
+    state: str  # idle | running | finished | error
+    run_id: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    error: str | None = None
+    report: RetryGptFailedReportView | None = None
+
+
+class GptFailedStatusResponse(BaseModel):
+    run_id: str
+    failed_files: int
+    failed_hits: int
+    files: list[GptFailedFileInfo] = Field(default_factory=list)
+    retry: RetryGptFailedJobStatus
+
+
+# ----------------------------------------------------------------------------
 # CVE
 # ----------------------------------------------------------------------------
 class CveSyncResponse(BaseModel):

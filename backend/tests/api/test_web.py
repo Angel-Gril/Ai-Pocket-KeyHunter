@@ -492,6 +492,75 @@ def test_scan_status_idle(client):
     assert r.json()["state"] == "idle"
 
 
+def test_gpt_failed_status_and_retry_start(client, results_root, monkeypatch):
+    """GET pending failed batches; POST starts background job (mocked worker)."""
+    import asyncio
+    import json
+
+    run_id = "run_2026_07_15_14-44-29"
+    run = results_root / run_id
+    run.mkdir(parents=True)
+    failed = run / "gpt_failed_batch_20260715T222504Z_78.jsonl"
+    failed.write_text(
+        json.dumps({"batch_idx": 78, "total_hits": 1, "dumped_at": "t"})
+        + "\n"
+        + json.dumps({"host": "x.com", "body": "sk-test"})
+        + "\n",
+        encoding="utf-8",
+    )
+    (run / "run.log").write_text("log\n", encoding="utf-8")
+
+    headers = _login(client)
+    status = client.get(f"/api/runs/{run_id}/gpt-failed", headers=headers)
+    assert status.status_code == 200
+    body = status.json()
+    assert body["failed_hits"] == 1
+    assert body["failed_files"] == 1
+    assert body["retry"]["state"] == "idle"
+
+    # Hold the worker open so a concurrent POST hits 409 while running.
+    # threading.Event is safe across TestClient's background event loop.
+    import threading
+
+    release = threading.Event()
+
+    async def _blocked_ok(run_id_arg: str):
+        from aipocket.services.retry_gpt_failed import RetryGptFailedReport
+
+        while not release.is_set():
+            await asyncio.sleep(0.05)
+        return RetryGptFailedReport(
+            run_id=run_id_arg,
+            failed_files=1,
+            failed_hits=1,
+            credentials_found=0,
+            message="mocked ok",
+        )
+
+    monkeypatch.setattr("aipocket.api.retry_manager.retry_gpt_failed", _blocked_ok)
+
+    started = client.post(f"/api/runs/{run_id}/retry-gpt-failed", headers=headers)
+    assert started.status_code == 200, started.text
+    assert started.json()["state"] == "running"
+    assert started.json()["run_id"] == run_id
+
+    conflict = client.post(f"/api/runs/{run_id}/retry-gpt-failed", headers=headers)
+    assert conflict.status_code == 409
+
+    # Release the background task so the TestClient lifespan can shut down cleanly.
+    release.set()
+
+
+def test_gpt_failed_retry_no_files_404(client, results_root):
+    run_id = "run_2026_07_15_10-00-00"
+    run = results_root / run_id
+    run.mkdir(parents=True)
+    (run / "run.log").write_text("log\n", encoding="utf-8")
+    headers = _login(client)
+    r = client.post(f"/api/runs/{run_id}/retry-gpt-failed", headers=headers)
+    assert r.status_code == 404
+
+
 def test_settings_masks_keys(client, monkeypatch):
     monkeypatch.setattr("aipocket.core.config.settings.fofa_keys", "abcdefghijklmnop")
     headers = _login(client)

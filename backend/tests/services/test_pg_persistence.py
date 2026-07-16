@@ -320,6 +320,47 @@ class TestPersistRunPg:
 
 
 # ---------------------------------------------------------------------------
+# writer.append_results_pg — GPT-failed retry path (append, never replace)
+# ---------------------------------------------------------------------------
+class TestAppendResultsPg:
+    def test_inserts_with_next_seq_never_deletes(self, fake_pg):
+        pool = fake_pg(
+            {
+                "SELECT 1 FROM runs": [{"?column?": 1}],
+                "SELECT COALESCE(MAX(seq)": [{"m": 4}],
+            }
+        )
+        from aipocket.services.writer import append_results_pg
+
+        valid = [_vr("sk-new-aaa")]
+        suspicious = [_vr("sk-new-bbb", status=429)]
+        append_results_pg("run_2026_07_15_14-44-29", valid, suspicious)
+
+        # Must NOT wipe existing result rows (unlike persist_run_pg).
+        assert pool.sql_containing("DELETE FROM results") == []
+
+        assert len(pool.executemany_rows) == 2
+        kinds_and_seqs = []
+        for _sql, rows in pool.executemany_rows:
+            for row in rows:
+                kinds_and_seqs.append((row[1], row[2]))  # kind, seq
+        assert ("valid", 5) in kinds_and_seqs  # MAX was 4 → next 5
+        assert ("suspicious", 5) in kinds_and_seqs
+
+        updates = pool.sql_containing("UPDATE runs SET")
+        assert len(updates) == 1
+        assert "total_valid" in updates[0][0]
+
+    def test_missing_run_raises(self, fake_pg):
+        pool = fake_pg({"SELECT 1 FROM runs": []})
+        from aipocket.services.writer import append_results_pg
+
+        with pytest.raises(LookupError, match="not in PG"):
+            append_results_pg("run_2026_07_15_14-44-29", [_vr("sk-x")], [])
+        assert pool.executemany_rows == []
+
+
+# ---------------------------------------------------------------------------
 # high_value_writer PG paths
 # ---------------------------------------------------------------------------
 class TestHighValuePg:

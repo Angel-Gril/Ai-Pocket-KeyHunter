@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from aipocket.core.config import settings
 
 from .errors import register_error_handlers
+from .retry_manager import RetryManager
 from .scan_manager import ScanManager
 
 log = logging.getLogger(__name__)
@@ -88,8 +89,9 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    # Singleton scan manager shared across all requests.
+    # Singleton managers shared across all requests.
     app.state.scan_manager = ScanManager()
+    app.state.retry_manager = RetryManager()
 
     register_error_handlers(app)
 

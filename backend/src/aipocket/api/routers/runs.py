@@ -1,17 +1,27 @@
-"""Scan-result read endpoints: runs timeline + per-run valid/suspicious/log."""
+"""Scan-result read endpoints: runs timeline + per-run valid/suspicious/log.
+
+Also exposes GPT-failed-batch inspection + retry (append-only recovery).
+"""
 
 from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import PlainTextResponse
 
 from ..deps import get_current_user
+from ..errors import ApiError
 from ..results_reader import (
     list_runs,
     load_run_records,
     read_run_log,
+)
+from ..schemas import (
+    GptFailedFileInfo,
+    GptFailedStatusResponse,
+    RetryGptFailedJobStatus,
+    RetryGptFailedReportView,
 )
 
 router = APIRouter(prefix="/api/runs", tags=["runs"], dependencies=[Depends(get_current_user)])
@@ -42,3 +52,87 @@ async def get_run_suspicious(run_id: str) -> dict:
 async def get_run_log(run_id: str) -> str:
     """Full on-disk run.log for a finished run."""
     return await asyncio.to_thread(read_run_log, run_id)
+
+
+def _job_status(raw: dict) -> RetryGptFailedJobStatus:
+    report_raw = raw.get("report")
+    report = RetryGptFailedReportView(**report_raw) if report_raw else None
+    return RetryGptFailedJobStatus(
+        state=raw.get("state", "idle"),
+        run_id=raw.get("run_id"),
+        started_at=raw.get("started_at"),
+        finished_at=raw.get("finished_at"),
+        error=raw.get("error"),
+        report=report,
+    )
+
+
+@router.get("/{run_id}/gpt-failed", response_model=GptFailedStatusResponse)
+async def get_gpt_failed_status(run_id: str, request: Request) -> GptFailedStatusResponse:
+    """Pending GPT failed-batch files for a run + latest retry job snapshot."""
+    from aipocket.services.retry_gpt_failed import inspect_gpt_failed
+
+    try:
+        summary = await asyncio.to_thread(inspect_gpt_failed, run_id)
+    except ValueError as e:
+        raise ApiError(str(e), status_code=400, code="bad_request") from e
+    except FileNotFoundError as e:
+        raise ApiError(str(e), status_code=404, code="not_found") from e
+
+    retry_mgr = request.app.state.retry_manager
+    job = _job_status(retry_mgr.status())
+    # Only expose job detail when it matches this run (or is idle).
+    if job.run_id and job.run_id != run_id and job.state != "idle":
+        job = RetryGptFailedJobStatus(state="idle")
+
+    return GptFailedStatusResponse(
+        run_id=run_id,
+        failed_files=len(summary.failed_files),
+        failed_hits=summary.failed_hits,
+        files=[
+            GptFailedFileInfo(name=f.name, hits=f.hits, batch_idx=f.batch_idx)
+            for f in summary.failed_files
+        ],
+        retry=job if (job.run_id == run_id or job.state == "idle") else RetryGptFailedJobStatus(state="idle"),
+    )
+
+
+@router.post("/{run_id}/retry-gpt-failed", response_model=RetryGptFailedJobStatus)
+async def start_retry_gpt_failed(run_id: str, request: Request) -> RetryGptFailedJobStatus:
+    """Start a background retry of GPT-failed batches; recovered keys are **appended**.
+
+    Rejects with 409 when:
+    - another retry is already running
+    - a full scan is currently running
+    - there are no pending failed-batch files
+    """
+    from aipocket.services.retry_gpt_failed import inspect_gpt_failed
+
+    scan_mgr = request.app.state.scan_manager
+    if scan_mgr.status().get("state") in ("running", "stopping"):
+        raise ApiError(
+            "cannot retry while a scan is running",
+            status_code=409,
+            code="conflict",
+        )
+
+    try:
+        summary = await asyncio.to_thread(inspect_gpt_failed, run_id)
+    except ValueError as e:
+        raise ApiError(str(e), status_code=400, code="bad_request") from e
+    except FileNotFoundError as e:
+        raise ApiError(str(e), status_code=404, code="not_found") from e
+
+    if not summary.has_failures:
+        raise ApiError(
+            "no gpt_failed_batch_*.jsonl files to retry",
+            status_code=404,
+            code="not_found",
+        )
+
+    retry_mgr = request.app.state.retry_manager
+    try:
+        raw = retry_mgr.start(run_id)
+    except RuntimeError as e:
+        raise ApiError(str(e), status_code=409, code="conflict") from e
+    return _job_status(raw)
