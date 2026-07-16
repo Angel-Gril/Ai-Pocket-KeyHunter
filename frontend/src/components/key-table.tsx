@@ -1,6 +1,7 @@
 import { memo, useCallback } from "react"
 import { Braces, Loader2, Table as TableIcon } from "lucide-react"
 import type { Header, Table } from "@tanstack/react-table"
+import { BalanceHelpButton } from "@/components/balance-help"
 import { KeyRow, type KeyRowProps } from "@/components/key-row"
 import { colWidthStyle, type KeyColumnId } from "@/components/key-table-columns"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -19,8 +20,9 @@ function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) 
   const id = header.column.id as KeyColumnId
   const canResize = header.column.getCanResize()
   return (
-    <span className="relative flex shrink-0 items-center" style={colWidthStyle(id)}>
+    <span className="relative flex shrink-0 items-center gap-1" style={colWidthStyle(id)}>
       <span className="truncate">{COLUMN_LABELS[id] ?? id}</span>
+      {id === "balance" ? <BalanceHelpButton /> : null}
       {canResize ? (
         <span
           role="separator"

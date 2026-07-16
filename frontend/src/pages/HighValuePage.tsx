@@ -266,7 +266,8 @@ export default function HighValuePage() {
               credentialKind={fields.credentialKind}
               validationState={fields.validationState}
               scope={fields.scope}
-              tierEvidence={fields.tierEvidence}
+              // After a live balance probe, drop stale scan-time evidence (e.g. "unknown").
+              tierEvidence={balanceInfo ? undefined : fields.tierEvidence}
               status={status}
               models={models[key]}
               modelsLoading={busy[key]?.models}

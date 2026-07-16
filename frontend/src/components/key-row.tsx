@@ -263,9 +263,10 @@ export function KeyRow({
           ) : (
             <span className="font-mono text-sm text-text-muted">N/A</span>
           )}
-          {tierEvidence || tier || scope ? (
-            <span className="truncate font-mono text-[11px] text-text-muted">
-              {[scope, tierEvidence || tier].filter(Boolean).join(" · ")}
+          {tier || tierEvidence || scope ? (
+            <span className="truncate font-mono text-[11px] text-text-muted" title={[scope, tier, tierEvidence].filter(Boolean).join(" · ")}>
+              {/* Prefer live balance tier over scan-time tierEvidence (often "unknown"). */}
+              {[scope, tier || tierEvidence].filter(Boolean).join(" · ")}
             </span>
           ) : null}
         </div>

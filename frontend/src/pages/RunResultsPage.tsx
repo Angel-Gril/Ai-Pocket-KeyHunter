@@ -324,7 +324,7 @@ export default function RunResultsPage() {
               credentialKind={fields.credentialKind}
               validationState={fields.validationState}
               scope={fields.scope}
-              tierEvidence={fields.tierEvidence}
+              tierEvidence={balanceInfo ? undefined : fields.tierEvidence}
               status={status}
               models={models[key]}
               modelsLoading={busy[key]?.models}
