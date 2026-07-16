@@ -268,11 +268,16 @@ def _list_runs_pg() -> list[dict[str, Any]]:
 
     valid_by: dict[str, int] = {}
     susp_by: dict[str, int] = {}
+    # Any results row (valid/suspicious/rejected/…) means live counts exist.
+    # After post-scan cleaning, funnel columns on ``runs`` can lag — prefer live.
+    runs_with_results: set[str] = set()
     for r in kind_counts:
+        rid = r["run_id"]
+        runs_with_results.add(rid)
         if r["kind"] == "valid":
-            valid_by[r["run_id"]] = r["n"]
+            valid_by[rid] = r["n"]
         elif r["kind"] == "suspicious":
-            susp_by[r["run_id"]] = r["n"]
+            susp_by[rid] = r["n"]
     src_by: dict[str, set[str]] = {}
     for r in src_rows:
         src_by.setdefault(r["run_id"], set()).add(r["backend"])
@@ -285,27 +290,35 @@ def _list_runs_pg() -> list[dict[str, Any]]:
         valid_n = valid_by.get(rid, 0)
         susp_n = susp_by.get(rid, 0)
         sources = sorted(src_by.get(rid, set())) or _sources_from_jsonb(run.get("sources"))
+        # Live results are source of truth when present; funnel columns are only
+        # a fallback for metadata-only historical imports (no results rows).
+        if rid in runs_with_results:
+            final_verified = valid_n
+            suspicious = susp_n
+            high_value_final = hv_by.get(rid, int(run.get("high_value_final") or 0))
+        else:
+            final_verified = _positive_int(run["final_verified"], run["total_valid"])
+            suspicious = _positive_int(run["suspicious"])
+            high_value_final = (
+                int(run.get("high_value_final") or 0)
+                if int(run.get("metrics_version") or 1) >= 2
+                else _positive_int(run.get("high_value_final"), hv_by.get(rid, 0))
+            )
         entry = {
             "run_id": rid,
             "started_at": started.isoformat() if started else _run_id_to_iso(rid),
             "valid_count": valid_n,
             "suspicious_count": susp_n,
             "has_log": bool(run["has_log"]),
-            # Prefer honest funnel columns; fall back so pre-migration rows
-            # still show something useful on History.
             "raw_hits": _positive_int(run["raw_hits"], run["total_hosts"]),
             "unique_targets": _positive_int(run["unique_targets"], run["total_hosts"]),
             "candidates": _positive_int(run["candidates"], run["total_credentials"]),
             "active_requests": _positive_int(run["active_requests"]),
-            "final_verified": _positive_int(run["final_verified"], run["total_valid"], valid_n),
-            "suspicious": _positive_int(run["suspicious"], susp_n),
+            "final_verified": final_verified,
+            "suspicious": suspicious,
             "sources": sources,
             "scan_mode": run.get("scan_mode") or "incremental",
-            "high_value_final": (
-                int(run.get("high_value_final") or 0)
-                if int(run.get("metrics_version") or 1) >= 2
-                else _positive_int(run.get("high_value_final"), hv_by.get(rid, 0))
-            ),
+            "high_value_final": high_value_final,
         }
         by_day.setdefault(_day_from_run_id(rid), []).append(entry)
     return [{"day": day, "runs": entries} for day, entries in by_day.items()]

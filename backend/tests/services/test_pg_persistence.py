@@ -494,8 +494,9 @@ class TestResultsReaderPg:
         assert entry["unique_targets"] == 17
         assert entry["candidates"] == 11
         assert entry["active_requests"] == 7
-        assert entry["final_verified"] == 3
-        assert entry["suspicious"] == 2
+        # Live results counts win over stale funnel columns (final_verified=3).
+        assert entry["final_verified"] == 2
+        assert entry["suspicious"] == 1
         assert entry["high_value_final"] == 1
         assert entry["sources"] == ["fofa", "shodan"]
 

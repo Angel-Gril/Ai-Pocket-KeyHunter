@@ -313,12 +313,68 @@ def clean_pg(
     if hv_dirty:
         print(f"high_value_keys dirty: {hv_dirty} ({'deleted' if apply else 'dry-run'})")
 
+    if apply and (dirty or hv_dirty):
+        n_runs = _sync_runs_funnel_from_results()
+        print(f"runs funnel resynced: {n_runs} row(s)")
+
     return {
         "scanned": len(rows),
         "dirty": len(dirty),
         "updated": updated if apply else 0,
         "hv_deleted": hv_deleted + (hv_dirty if apply else 0),
     }
+
+
+def _sync_runs_funnel_from_results() -> int:
+    """Rewrite runs.final_verified / total_valid / suspicious / high_value_final
+    from live ``results`` + ``high_value_keys`` counts.
+
+    Cleaning reclassifies result rows but leaves the scan-time funnel snapshot
+    stale — History would keep showing e.g. 2469 final_verified after a purge.
+    """
+    from aipocket.core.config import settings
+    from aipocket.core.db import get_pool
+
+    if not settings.pg_enabled:
+        return 0
+    pool = get_pool()
+    with pool.connection() as conn:
+        cur = conn.execute(
+            """
+            UPDATE runs r SET
+              final_verified = COALESCE(c.valid_n, 0),
+              total_valid    = COALESCE(c.valid_n, 0),
+              suspicious     = COALESCE(c.susp_n, 0),
+              high_value_final = COALESCE((
+                SELECT COUNT(*) FROM high_value_keys h WHERE h.run_id = r.run_id
+              ), 0)
+            FROM (
+              SELECT run_id,
+                     COUNT(*) FILTER (WHERE kind = 'valid')      AS valid_n,
+                     COUNT(*) FILTER (WHERE kind = 'suspicious') AS susp_n
+              FROM results
+              GROUP BY run_id
+            ) c
+            WHERE r.run_id = c.run_id
+            """
+        )
+        n = getattr(cur, "rowcount", 0) or 0
+        # Runs that lost every results row (full delete) → zero funnel counts.
+        conn.execute(
+            """
+            UPDATE runs r SET
+              final_verified = 0,
+              total_valid = 0,
+              suspicious = 0,
+              high_value_final = COALESCE((
+                SELECT COUNT(*) FROM high_value_keys h WHERE h.run_id = r.run_id
+              ), 0)
+            WHERE NOT EXISTS (SELECT 1 FROM results res WHERE res.run_id = r.run_id)
+              AND (r.final_verified <> 0 OR r.total_valid <> 0 OR r.suspicious <> 0)
+            """
+        )
+        conn.commit()
+    return n
 
 
 def main() -> None:
