@@ -134,7 +134,9 @@ async def _validate_admin(
             credential_kind=OpenAICredentialKind.ADMIN,
             valid=False,
             status_code=projects_response.status_code,
-            error="admin-projects-read-failed",
+            error=_status_error(
+                projects_response.status_code, default="admin-projects-read-failed"
+            ),
         )
     payload = projects_response.json()
     projects = payload.get("data", []) if isinstance(payload, dict) else []
@@ -175,11 +177,50 @@ async def _validate_admin(
     )
 
 
+def _status_error(status_code: int, *, default: str) -> str:
+    """Map HTTP status to a stable error tag (200/401/429 must not be collapsed)."""
+    if status_code in (401, 403):
+        return "unauthorized"
+    if status_code == 429:
+        return "rate_limited"
+    return default
+
+
+def _looks_like_openai_completion(body: object) -> bool:
+    """True for chat/completions or Responses API success bodies."""
+    if not isinstance(body, dict):
+        return False
+    if isinstance(body.get("choices"), list) and body["choices"]:
+        return True
+    # Responses API
+    resp_id = body.get("id")
+    if body.get("object") == "response" or (
+        isinstance(resp_id, str) and resp_id.startswith("resp_")
+    ):
+        return True
+    return body.get("output") is not None or body.get("status") in {
+        "completed",
+        "incomplete",
+    }
+
+
 async def validate_openai(
     client: httpx.AsyncClient,
     credential: Credential,
     policy: InferencePolicy = InferencePolicy.READ_ONLY,
+    *,
+    probe_model: str = "",
 ) -> OpenAIValidation:
+    """Validate an OpenAI key.
+
+    Status-code contract:
+
+    * **200** on models (READ_ONLY) or on inference (ALLOW_MINIMAL) → valid
+    * **401/403** → unauthorized (``valid=False``)
+    * **429** → rate-limited (``valid=False`` for spend/chat; distinct from 401)
+    * ALLOW_MINIMAL never treats models-list 200 as chat success — only a real
+      completion body with status 200 does.
+    """
     kind = classify_openai_credential(credential)
     if kind is None:
         return OpenAIValidation(
@@ -192,12 +233,26 @@ async def validate_openai(
         return await _validate_admin(client, credential, request)
 
     models_response = await client.get(f"{_BASE_URL}/models", headers=request.headers)
+    if models_response.status_code in (401, 403):
+        return OpenAIValidation(
+            credential_kind=kind,
+            valid=False,
+            status_code=models_response.status_code,
+            error="unauthorized",
+        )
+    if models_response.status_code == 429:
+        return OpenAIValidation(
+            credential_kind=kind,
+            valid=False,
+            status_code=429,
+            error="rate_limited",
+        )
     if models_response.status_code != 200:
         return OpenAIValidation(
             credential_kind=kind,
             valid=False,
             status_code=models_response.status_code,
-            error="models-read-failed",
+            error=_status_error(models_response.status_code, default="models-read-failed"),
         )
     body = models_response.json()
     data = body.get("data", []) if isinstance(body, dict) else []
@@ -206,8 +261,8 @@ async def validate_openai(
         for item in data
         if isinstance(item, dict) and isinstance(item.get("id"), str)
     )
-    model = models[0] if models else ""
-    header_limit = _header_limit(model, models_response)
+    model = probe_model or (models[0] if models else "")
+    header_limit = _header_limit(model or (models[0] if models else ""), models_response)
     limits = (header_limit,) if header_limit is not None else ()
     if policy is InferencePolicy.READ_ONLY or not model:
         return OpenAIValidation(
@@ -218,20 +273,87 @@ async def validate_openai(
             limit_profile=_profile(limits, authoritative=False),
         )
 
+    # Prefer chat/completions for explicit model tests (broader key support);
+    # fall back to Responses API if completions rejects the model shape.
     inference_response = await client.post(
-        f"{_BASE_URL}/responses",
+        f"{_BASE_URL}/chat/completions",
         headers=request.headers,
-        json={"model": model, "input": "ping", "max_output_tokens": 1},
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 5,
+            "stream": False,
+        },
     )
+    # Some org/project keys only expose Responses; retry once if completions 404s.
+    if inference_response.status_code == 404:
+        inference_response = await client.post(
+            f"{_BASE_URL}/responses",
+            headers=request.headers,
+            json={"model": model, "input": "ping", "max_output_tokens": 1},
+        )
+
+    sc = inference_response.status_code
     inference_limit = _header_limit(model, inference_response)
     inference_limits = (inference_limit,) if inference_limit is not None else limits
+
+    if sc in (401, 403):
+        return OpenAIValidation(
+            credential_kind=kind,
+            valid=False,
+            status_code=sc,
+            models=models,
+            inference_performed=True,
+            limit_profile=_profile(inference_limits, authoritative=False),
+            error="unauthorized",
+        )
+    if sc == 429:
+        return OpenAIValidation(
+            credential_kind=kind,
+            valid=False,
+            status_code=429,
+            models=models,
+            inference_performed=True,
+            limit_profile=_profile(inference_limits, authoritative=False),
+            error="rate_limited",
+        )
+    if sc != 200:
+        return OpenAIValidation(
+            credential_kind=kind,
+            valid=False,
+            status_code=sc,
+            models=models,
+            inference_performed=True,
+            limit_profile=_profile(inference_limits, authoritative=False),
+            error=_status_error(sc, default="inference-failed"),
+        )
+
+    try:
+        inf_body = inference_response.json()
+    except ValueError:
+        inf_body = None
+    if not _looks_like_openai_completion(inf_body):
+        return OpenAIValidation(
+            credential_kind=kind,
+            valid=False,
+            status_code=200,
+            models=models,
+            inference_performed=True,
+            limit_profile=_profile(inference_limits, authoritative=False),
+            error="inference-noncompletion",
+        )
+
+    verified = model
+    if isinstance(inf_body, dict) and inf_body.get("model"):
+        verified = str(inf_body["model"])
+
     return OpenAIValidation(
         credential_kind=kind,
-        valid=inference_response.status_code == 200,
-        status_code=inference_response.status_code,
+        valid=True,
+        status_code=200,
         models=models,
-        verified_model=model if inference_response.status_code == 200 else "",
+        verified_model=verified,
         inference_performed=True,
         limit_profile=_profile(inference_limits, authoritative=False),
-        error="" if inference_response.status_code == 200 else "inference-failed",
+        error="",
     )

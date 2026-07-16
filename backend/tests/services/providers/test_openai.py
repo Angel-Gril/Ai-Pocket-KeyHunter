@@ -77,10 +77,15 @@ async def test_service_account_can_make_inference_only_with_explicit_policy() ->
     respx.get(f"{BASE}/models").mock(
         return_value=httpx.Response(200, json={"data": [{"id": "gpt-5"}]})
     )
-    inference = respx.post(f"{BASE}/responses").mock(
+    # ALLOW_MINIMAL prefers chat/completions (broader key support).
+    inference = respx.post(f"{BASE}/chat/completions").mock(
         return_value=httpx.Response(
             200,
-            json={"id": "resp_123", "model": "gpt-5"},
+            json={
+                "id": "chatcmpl_123",
+                "model": "gpt-5",
+                "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+            },
             headers={
                 "x-ratelimit-limit-requests": "10000",
                 "x-ratelimit-limit-tokens": "2000000",
@@ -97,11 +102,84 @@ async def test_service_account_can_make_inference_only_with_explicit_policy() ->
 
     assert result.valid is True
     assert result.inference_performed is True
+    assert result.status_code == 200
+    assert result.verified_model == "gpt-5"
     assert inference.called
     assert result.limit_profile.models[0].model == "gpt-5"
     assert result.limit_profile.models[0].rpm == 10000
     assert result.limit_profile.models[0].tpm == 2000000
     assert result.limit_profile.tier is TierEvidence.TIER5_CANDIDATE
+
+
+@respx.mock
+async def test_inference_429_is_not_reported_as_200() -> None:
+    respx.get(f"{BASE}/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "gpt-5"}]})
+    )
+    respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(
+            429,
+            json={"error": {"message": "Rate limit exceeded", "type": "rate_limit_error"}},
+        )
+    )
+
+    async with httpx.AsyncClient() as client:
+        result = await validate_openai(
+            client,
+            _credential("sk-proj-" + "a" * 40),
+            InferencePolicy.ALLOW_MINIMAL,
+            probe_model="gpt-5",
+        )
+
+    assert result.valid is False
+    assert result.status_code == 429
+    assert result.error == "rate_limited"
+    assert result.verified_model == ""
+    assert result.inference_performed is True
+
+
+@respx.mock
+async def test_inference_401_is_not_reported_as_200() -> None:
+    respx.get(f"{BASE}/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "gpt-5"}]})
+    )
+    respx.post(f"{BASE}/chat/completions").mock(
+        return_value=httpx.Response(
+            401,
+            json={"error": {"message": "Incorrect API key", "type": "invalid_request_error"}},
+        )
+    )
+
+    async with httpx.AsyncClient() as client:
+        result = await validate_openai(
+            client,
+            _credential("sk-proj-" + "a" * 40),
+            InferencePolicy.ALLOW_MINIMAL,
+            probe_model="gpt-5",
+        )
+
+    assert result.valid is False
+    assert result.status_code == 401
+    assert result.error == "unauthorized"
+    assert result.verified_model == ""
+
+
+@respx.mock
+async def test_models_429_is_rate_limited_not_models_read_failed() -> None:
+    respx.get(f"{BASE}/models").mock(
+        return_value=httpx.Response(429, json={"error": {"message": "Rate limit"}})
+    )
+
+    async with httpx.AsyncClient() as client:
+        result = await validate_openai(
+            client,
+            _credential("sk-proj-" + "a" * 40),
+            InferencePolicy.READ_ONLY,
+        )
+
+    assert result.valid is False
+    assert result.status_code == 429
+    assert result.error == "rate_limited"
 
 
 @respx.mock
@@ -270,3 +348,57 @@ async def test_balance_openai_prefix_forces_official_host() -> None:
     assert result["gateway"] == "openai"
     assert result["balance_usd"] == 2.25
     assert grants.called
+
+
+@respx.mock
+async def test_balance_openai_models_429_is_rate_limited_not_unauthorized() -> None:
+    respx.get("https://api.openai.com/dashboard/billing/credit_grants").mock(
+        return_value=httpx.Response(401, json={"error": {"message": "Unauthorized"}})
+    )
+    respx.get("https://api.openai.com/v1/dashboard/billing/credit_grants").mock(
+        return_value=httpx.Response(401)
+    )
+    respx.get("https://api.openai.com/dashboard/billing/subscription").mock(
+        return_value=httpx.Response(401)
+    )
+    respx.get("https://api.openai.com/v1/dashboard/billing/subscription").mock(
+        return_value=httpx.Response(401)
+    )
+    respx.get(f"{BASE}/models").mock(
+        return_value=httpx.Response(429, json={"error": {"message": "Rate limit"}})
+    )
+
+    async with httpx.AsyncClient() as client:
+        result = await query_balance(client, _credential("sk-proj-" + "a" * 40))
+
+    assert result["gateway"] == "openai"
+    assert result["source"] == "rate_limited"
+    assert result["alive"] is True
+    assert result["status_code"] == 429
+
+
+@respx.mock
+async def test_balance_openai_models_401_is_unauthorized() -> None:
+    respx.get("https://api.openai.com/dashboard/billing/credit_grants").mock(
+        return_value=httpx.Response(401)
+    )
+    respx.get("https://api.openai.com/v1/dashboard/billing/credit_grants").mock(
+        return_value=httpx.Response(401)
+    )
+    respx.get("https://api.openai.com/dashboard/billing/subscription").mock(
+        return_value=httpx.Response(401)
+    )
+    respx.get("https://api.openai.com/v1/dashboard/billing/subscription").mock(
+        return_value=httpx.Response(401)
+    )
+    respx.get(f"{BASE}/models").mock(
+        return_value=httpx.Response(401, json={"error": {"message": "Invalid"}})
+    )
+
+    async with httpx.AsyncClient() as client:
+        result = await query_balance(client, _credential("sk-proj-" + "a" * 40))
+
+    assert result["gateway"] == "openai"
+    assert result["source"] == "unauthorized"
+    assert result["alive"] is False
+    assert result["status_code"] == 401

@@ -556,6 +556,9 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             if validation.inference_performed and validation.verified_model:
                 target = "inference_verified"
             apply_state(result, target)
+        elif validation.status_code == 429 or validation.error == "rate_limited":
+            # Distinct from 401: key may be real but not currently usable.
+            apply_state(result, "rate_limited_unconfirmed")
         else:
             apply_state(result, "auth_rejected")
         return result
@@ -618,6 +621,9 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
                 )
             )
             apply_state(result, target)
+        elif validation.status_code == 429 or validation.error == "rate_limited":
+            # Distinct from 401: do not report models-list 200 as success.
+            apply_state(result, "rate_limited_unconfirmed")
         else:
             apply_state(result, "auth_rejected")
         return result

@@ -258,6 +258,23 @@ async def test_anthropic_unauthorized_on_official_host() -> None:
     assert result["balance_usd"] == "N/A"
     assert result["source"] == "unauthorized"
     assert result["alive"] is False
+    assert result["status_code"] == 401
+
+
+@respx.mock
+async def test_anthropic_rate_limited_on_models() -> None:
+    respx.get("https://api.anthropic.com/v1/models").mock(
+        return_value=httpx.Response(429, json={"error": {"type": "rate_limit_error"}})
+    )
+
+    async with httpx.AsyncClient() as client:
+        result = await query_balance(client, _ant_cred())
+
+    assert result["gateway"] == "anthropic"
+    assert result["balance_usd"] == "N/A"
+    assert result["source"] == "rate_limited"
+    assert result["alive"] is True
+    assert result["status_code"] == 429
 
 
 @respx.mock

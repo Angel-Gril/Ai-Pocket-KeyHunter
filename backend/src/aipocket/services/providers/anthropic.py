@@ -83,7 +83,7 @@ async def _validate_org_scope(
             credential_kind=kind,
             valid=False,
             status_code=response.status_code,
-            error="org-scope-read-failed",
+            error=_status_error(response.status_code, default="org-scope-read-failed"),
         )
     org_id, _name = _parse_org(response.json())
     context = credential.bundle.context if credential.bundle is not None else None
@@ -98,10 +98,32 @@ async def _validate_org_scope(
     )
 
 
+def _status_error(status_code: int, *, default: str) -> str:
+    """Map HTTP status to a stable error tag (200/401/429 must not be collapsed)."""
+    if status_code in (401, 403):
+        return "unauthorized"
+    if status_code == 429:
+        return "rate_limited"
+    return default
+
+
 async def _validate_api_key(
     client: httpx.AsyncClient,
     credential: Credential,
+    *,
+    probe_model: str = "",
 ) -> AnthropicValidation:
+    """Validate an ordinary Console API key.
+
+    Status-code contract (must not mask chat failures as models-list 200):
+
+    * **200** on ``/messages`` with a real message body → inference verified
+    * **401/403** → dead / unauthorized (``valid=False``)
+    * **429** → key accepted but rate-limited (``valid=False`` for chat use;
+      ``status_code=429`` so callers can distinguish from 401)
+    * Models list 200 + messages 400/404 (bad model id) → auth confirmed via
+      models only (``status_code=200``, no ``verified_model``)
+    """
     headers = _base_headers(credential, AnthropicCredentialKind.API)
     models_response = await client.get(f"{_BASE_URL}/models", headers=headers)
     models: tuple[str, ...] = ()
@@ -120,36 +142,76 @@ async def _validate_api_key(
             status_code=models_response.status_code,
             error="unauthorized",
         )
+    elif models_response.status_code == 429:
+        return AnthropicValidation(
+            credential_kind=AnthropicCredentialKind.API,
+            valid=False,
+            status_code=429,
+            error="rate_limited",
+        )
+    elif models_response.status_code != 200:
+        # Still attempt messages when models failed for non-auth reasons, unless
+        # the caller already named a probe model (test-chat path).
+        if not probe_model:
+            return AnthropicValidation(
+                credential_kind=AnthropicCredentialKind.API,
+                valid=False,
+                status_code=models_response.status_code,
+                error=_status_error(models_response.status_code, default="models-read-failed"),
+            )
 
-    # Prefer listed models; fall back to a stable high-value probe model.
-    probe_model = models[0] if models else "claude-sonnet-4-6"
+    # Prefer explicit probe model (UI test-chat), then listed models, then fallback.
+    chosen = probe_model or (models[0] if models else "claude-sonnet-4-6")
     messages_response = await client.post(
         f"{_BASE_URL}/messages",
         headers=headers,
         json={
-            "model": probe_model,
+            "model": chosen,
             "messages": [{"role": "user", "content": "hello"}],
             "max_tokens": 5,
         },
     )
-    if messages_response.status_code != 200:
-        # Models list alone is insufficient proof for ordinary API keys.
-        if models and models_response.status_code == 200:
+    sc = messages_response.status_code
+    if sc in (401, 403):
+        return AnthropicValidation(
+            credential_kind=AnthropicCredentialKind.API,
+            valid=False,
+            status_code=sc,
+            models=models,
+            error="unauthorized",
+        )
+    if sc == 429:
+        # Do NOT report models-list 200 — the chat path is rate-limited.
+        return AnthropicValidation(
+            credential_kind=AnthropicCredentialKind.API,
+            valid=False,
+            status_code=429,
+            models=models,
+            error="rate_limited",
+        )
+    if sc != 200:
+        # Scanner path (no explicit probe_model): models list can confirm auth
+        # when messages fails for model-id reasons (400/404). Never do this for
+        # explicit chat tests — report the real messages status instead.
+        if (
+            not probe_model
+            and models
+            and models_response.status_code == 200
+            and sc in (400, 404)
+        ):
             return AnthropicValidation(
                 credential_kind=AnthropicCredentialKind.API,
                 valid=True,
-                status_code=models_response.status_code,
+                status_code=200,
                 models=models,
-                error=""
-                if messages_response.status_code in (404, 400)
-                else "messages-probe-failed",
+                error="",
             )
         return AnthropicValidation(
             credential_kind=AnthropicCredentialKind.API,
             valid=False,
-            status_code=messages_response.status_code,
+            status_code=sc,
             models=models,
-            error="messages-probe-failed",
+            error=_status_error(sc, default="messages-probe-failed"),
         )
 
     body = messages_response.json()
@@ -157,20 +219,32 @@ async def _validate_api_key(
     if isinstance(body, dict) and (
         "content" in body or (body.get("type") == "message" and body.get("id"))
     ):
-        verified = str(body.get("model") or probe_model)
+        verified = str(body.get("model") or chosen)
+
+    if not verified:
+        # 200 but not a message body — not a successful chat.
+        return AnthropicValidation(
+            credential_kind=AnthropicCredentialKind.API,
+            valid=False,
+            status_code=200,
+            models=models,
+            error="messages-noncompletion",
+        )
 
     return AnthropicValidation(
         credential_kind=AnthropicCredentialKind.API,
-        valid=bool(verified) or bool(models),
-        status_code=messages_response.status_code,
+        valid=True,
+        status_code=200,
         models=models,
-        verified_model=verified or (models[0] if models else ""),
+        verified_model=verified,
     )
 
 
 async def validate_anthropic(
     client: httpx.AsyncClient,
     credential: Credential,
+    *,
+    probe_model: str = "",
 ) -> AnthropicValidation:
     kind = classify_anthropic_credential(credential)
     if kind is None:
@@ -181,4 +255,4 @@ async def validate_anthropic(
         )
     if kind is AnthropicCredentialKind.ADMIN or kind is AnthropicCredentialKind.OAUTH:
         return await _validate_org_scope(client, credential, kind)
-    return await _validate_api_key(client, credential)
+    return await _validate_api_key(client, credential, probe_model=probe_model)

@@ -193,13 +193,25 @@ async def _probe_anthropic(client: httpx.AsyncClient, base: str, key: str) -> di
         if org_resp.status_code != 200:
             # Fall through so a misclassified sk-ant-admin on a gateway can still
             # hit one-api / new-api probes when the official host rejects it.
-            if not is_ant_host:
+            if not is_ant_host and org_resp.status_code not in (401, 403, 429):
                 return {}
+            if not is_ant_host and not is_ant_key:
+                return {}
+            # Distinguish auth death vs rate limit vs other errors.
+            if org_resp.status_code in (401, 403):
+                source = "unauthorized"
+                alive = False
+            elif org_resp.status_code == 429:
+                source = "rate_limited"
+                alive = True  # key accepted; throttled
+            else:
+                source = "admin_org_error"
+                alive = False
             return {
                 "balance_usd": _ANTHROPIC_BALANCE_NA,
-                "source": "admin_unauthorized",
+                "source": source,
                 "credential_kind": kind,
-                "alive": False,
+                "alive": alive,
                 "status_code": org_resp.status_code,
             }
         org_body: dict[str, Any] = {}
@@ -284,6 +296,7 @@ async def _probe_anthropic(client: httpx.AsyncClient, base: str, key: str) -> di
         return result
 
     # Ordinary Console API key — models list proves liveness; no balance API.
+    # Status contract: 200=alive, 429=rate-limited (alive), 401/403=dead.
     try:
         models_resp = await client.get(f"{_ANTHROPIC_API_BASE}/models", headers=headers)
     except httpx.HTTPError:
@@ -299,7 +312,27 @@ async def _probe_anthropic(client: httpx.AsyncClient, base: str, key: str) -> di
             "alive": False,
             "status_code": models_resp.status_code,
         }
+    if models_resp.status_code == 429:
+        # Key is accepted but rate-limited — distinct from 401 and from 200.
+        if not is_ant_host and not is_ant_key:
+            return {}
+        return {
+            "balance_usd": _ANTHROPIC_BALANCE_NA,
+            "source": "rate_limited",
+            "credential_kind": "api",
+            "alive": True,
+            "status_code": 429,
+            "note": "Anthropic API key rate-limited on /v1/models (not unauthorized).",
+        }
     if models_resp.status_code != 200:
+        if is_ant_host or is_ant_key:
+            return {
+                "balance_usd": _ANTHROPIC_BALANCE_NA,
+                "source": "models_error",
+                "credential_kind": "api",
+                "alive": False,
+                "status_code": models_resp.status_code,
+            }
         return {}
 
     models: list[str] = []
@@ -885,8 +918,17 @@ async def _probe_openai(client: httpx.AsyncClient, cred: Credential) -> dict[str
                 "alive": False,
                 "status_code": projects_resp.status_code,
             }
+        if projects_resp is not None and projects_resp.status_code == 429:
+            return {
+                "balance_usd": _OPENAI_BALANCE_NA,
+                "source": "rate_limited",
+                "credential_kind": kind,
+                "alive": True,
+                "status_code": 429,
+            }
 
     # --- 4) Liveness via models + rate-limit header profile ---
+    # Status contract: 200=alive, 429=rate-limited (alive), 401/403=dead.
     try:
         models_resp = await client.get(f"{host}/v1/models", headers=headers)
     except httpx.HTTPError:
@@ -906,6 +948,17 @@ async def _probe_openai(client: httpx.AsyncClient, cred: Credential) -> dict[str
                 "status_code": models_resp.status_code,
             }
         return {}
+    if models_resp.status_code == 429:
+        if not is_prefix and not is_host and not is_ordinary:
+            return {}
+        return {
+            "balance_usd": _OPENAI_BALANCE_NA,
+            "source": "rate_limited",
+            "credential_kind": kind,
+            "alive": True,
+            "status_code": 429,
+            "note": "OpenAI API key rate-limited on /v1/models (not unauthorized).",
+        }
     if models_resp.status_code != 200:
         # Transient / unexpected — only claim openai if host matched.
         if is_prefix or is_host:

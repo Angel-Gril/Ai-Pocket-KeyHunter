@@ -108,6 +108,7 @@ async def test_api_key_uses_models_then_optional_messages_semantics() -> None:
                 "id": "msg_1",
                 "type": "message",
                 "content": [{"type": "text", "text": "ok"}],
+                "model": "claude-sonnet-4-6",
             },
         )
     )
@@ -119,6 +120,7 @@ async def test_api_key_uses_models_then_optional_messages_semantics() -> None:
     assert result.credential_kind is AnthropicCredentialKind.API
     assert result.models == ("claude-sonnet-4-6", "claude-haiku-4-5-20251001")
     assert result.verified_model == "claude-sonnet-4-6"
+    assert result.status_code == 200
     assert models.called
     assert messages.called
     assert messages.calls[0].request.headers["x-api-key"] == API_KEY
@@ -126,6 +128,56 @@ async def test_api_key_uses_models_then_optional_messages_semantics() -> None:
     body = messages.calls[0].request.content.decode()
     assert "claude-sonnet-4-6" in body
     assert "max_tokens" in body
+
+
+@respx.mock
+async def test_messages_429_does_not_report_models_200() -> None:
+    """Regression: models 200 + messages 429 must surface status_code=429, not 200."""
+    respx.get(f"{BASE}/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "claude-sonnet-4-6"}]},
+        )
+    )
+    respx.post(f"{BASE}/messages").mock(
+        return_value=httpx.Response(
+            429,
+            json={"error": {"type": "rate_limit_error", "message": "Rate limit"}},
+        )
+    )
+
+    async with httpx.AsyncClient() as client:
+        result = await validate_anthropic(client, _credential(API_KEY))
+
+    assert result.valid is False
+    assert result.status_code == 429
+    assert result.error == "rate_limited"
+    assert result.verified_model == ""
+    assert result.models == ("claude-sonnet-4-6",)
+
+
+@respx.mock
+async def test_messages_401_does_not_report_models_200() -> None:
+    respx.get(f"{BASE}/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "claude-sonnet-4-6"}]},
+        )
+    )
+    respx.post(f"{BASE}/messages").mock(
+        return_value=httpx.Response(
+            401,
+            json={"error": {"type": "authentication_error", "message": "invalid x-api-key"}},
+        )
+    )
+
+    async with httpx.AsyncClient() as client:
+        result = await validate_anthropic(client, _credential(API_KEY))
+
+    assert result.valid is False
+    assert result.status_code == 401
+    assert result.error == "unauthorized"
+    assert result.verified_model == ""
 
 
 @respx.mock
