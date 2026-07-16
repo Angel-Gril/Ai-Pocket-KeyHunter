@@ -4,9 +4,10 @@ import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { api, type ChatResponse, type ExportFormat, type KeyRecord } from "@/lib/api"
 import { ChatTestDialog } from "@/components/chat-test-dialog"
+import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
-import { deriveKeyStatus, extractKeyFields, formatBalance, providerOf } from "@/components/key-record"
+import { extractKeyFields, formatBalance, providerOf } from "@/components/key-record"
 import { providerBrand, providerBrandColor } from "@/components/provider-badge"
 import { copyToClipboard } from "@/lib/utils"
 
@@ -44,10 +45,23 @@ export default function HighValuePage() {
     return [...counts.entries()].sort((a, b) => b[1] - a[1])
   }, [records])
 
+  const balanceOverrides = useMemo(() => {
+    const out: Record<number, string | undefined> = {}
+    for (let i = 0; i < records.length; i++) {
+      const key = extractKeyFields(records[i]).maskedKey
+      const b = balances[key]?.balance
+      if (b) out[i] = b
+    }
+    return out
+  }, [records, balances])
+
+  const listView = useKeyListView(records, balanceOverrides)
+  const { rows } = listView
+
   // Row identity key = masked apikey. Snapshot state in a ref so the row
   // callbacks stay stable and the memoized `IndexedKeyRow`s don't all re-render.
-  const stateRef = useRef({ records, revealed })
-  stateRef.current = { records, revealed }
+  const stateRef = useRef({ records, revealed, rows })
+  stateRef.current = { records, revealed, rows }
 
   const maskedAt = useCallback((index: number): string => {
     const rec = stateRef.current.records[index]
@@ -170,11 +184,17 @@ export default function HighValuePage() {
     })
   }, [])
 
-  const handleToggleAll = useCallback(
-    (checked: boolean) =>
-      setSelected(checked ? new Set(stateRef.current.records.map((_, i) => i)) : new Set()),
-    [],
-  )
+  const handleToggleAll = useCallback((checked: boolean) => {
+    const visible = stateRef.current.rows.map((r) => r.originalIndex)
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const i of visible) {
+        if (checked) next.add(i)
+        else next.delete(i)
+      }
+      return next
+    })
+  }, [])
 
   const openChat = useCallback(
     (index: number) => {
@@ -224,14 +244,9 @@ export default function HighValuePage() {
     }
   }, [])
 
-  const allChecked = records.length > 0 && selected.size === records.length
-
-  // Stable per-row view model (fresh `status`/`fields` each render would defeat
-  // the `IndexedKeyRow` memoization when toggling a single row's selection).
-  const rows = useMemo(
-    () => records.map((rec) => ({ fields: extractKeyFields(rec), status: deriveKeyStatus(rec) })),
-    [records],
-  )
+  const visibleIndices = useMemo(() => rows.map((r) => r.originalIndex), [rows])
+  const allChecked =
+    visibleIndices.length > 0 && visibleIndices.every((i) => selected.has(i))
 
   let body: React.ReactNode
   if (isLoading) {
@@ -245,17 +260,19 @@ export default function HighValuePage() {
     body = <CenterState className="text-danger">{error instanceof Error ? error.message : "加载失败"}</CenterState>
   } else if (records.length === 0) {
     body = <CenterState>暂无高价值密钥。</CenterState>
+  } else if (rows.length === 0) {
+    body = <CenterState>无匹配结果，试试调整搜索或筛选条件。</CenterState>
   } else {
     body = (
       <div className="flex-1 overflow-y-auto">
-        {rows.map(({ fields, status }, index) => {
+        {rows.map(({ fields, status, originalIndex }) => {
           const key = fields.maskedKey
           const reveal = revealed[key]
           const balanceInfo = balances[key]
           return (
             <IndexedKeyRow
-              key={`${key}:${index}`}
-              index={index}
+              key={`${key}:${originalIndex}`}
+              index={originalIndex}
               maskedKey={fields.maskedKey}
               revealedKey={reveal?.apikey}
               apiurl={reveal?.apiurl ?? fields.apiurl}
@@ -271,7 +288,7 @@ export default function HighValuePage() {
               status={status}
               models={models[key]}
               modelsLoading={busy[key]?.models}
-              selected={selected.has(index)}
+              selected={selected.has(originalIndex)}
               expanded={expanded.has(key)}
               busy={busy[key]}
               onSelectedChange={handleSelectedChange}
@@ -288,7 +305,10 @@ export default function HighValuePage() {
     )
   }
 
-  const chatMasked = chatIndex !== null ? rows[chatIndex]?.fields.maskedKey ?? "" : ""
+  const chatMasked =
+    chatIndex !== null && records[chatIndex]
+      ? extractKeyFields(records[chatIndex]).maskedKey
+      : ""
 
   return (
     <div className="flex h-full flex-col">
@@ -316,9 +336,23 @@ export default function HighValuePage() {
         </div>
       </div>
 
+      <KeyListToolbar
+        search={listView.search}
+        onSearchChange={listView.setSearch}
+        provider={listView.provider}
+        onProviderChange={listView.setProvider}
+        providers={listView.providers}
+        balanceSort={listView.balanceSort}
+        onBalanceSortChange={listView.setBalanceSort}
+        filteredCount={listView.filteredCount}
+        total={listView.total}
+        hasActiveFilters={listView.hasActiveFilters}
+        onClear={listView.clearFilters}
+      />
+
       <BulkBar
         selectedCount={selected.size}
-        total={records.length}
+        total={rows.length}
         allChecked={allChecked}
         onToggleAll={handleToggleAll}
         onExportJson={() => void runExport("json")}

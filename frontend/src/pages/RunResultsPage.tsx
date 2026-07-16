@@ -11,9 +11,10 @@ import {
   type ResultKind,
 } from "@/lib/api"
 import { ChatTestDialog } from "@/components/chat-test-dialog"
+import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
-import { deriveKeyStatus, extractKeyFields, formatBalance } from "@/components/key-record"
+import { extractKeyFields, formatBalance } from "@/components/key-record"
 import { cn, copyToClipboard } from "@/lib/utils"
 
 type Revealed = { apikey: string; apiurl: string }
@@ -86,8 +87,20 @@ export default function RunResultsPage() {
     return parts.join(" · ")
   }, [runId, summary])
 
-  const stateRef = useRef({ records, kind, revealed, models })
-  stateRef.current = { records, kind, revealed, models }
+  const balanceOverrides = useMemo(() => {
+    const out: Record<number, string | undefined> = {}
+    for (let i = 0; i < records.length; i++) {
+      const b = balances[rowKeyOf(kind, i)]?.balance
+      if (b) out[i] = b
+    }
+    return out
+  }, [records.length, balances, kind])
+
+  const listView = useKeyListView(records, balanceOverrides)
+  const { rows } = listView
+
+  const stateRef = useRef({ records, kind, revealed, models, rows })
+  stateRef.current = { records, kind, revealed, models, rows }
 
   // Destructure the STABLE `mutateAsync` refs (the mutation objects themselves
   // change identity every render); depending on these keeps the row callbacks
@@ -212,12 +225,17 @@ export default function RunResultsPage() {
     })
   }, [])
 
-  const handleToggleAll = useCallback(
-    (checked: boolean) => {
-      setSelected(checked ? new Set(stateRef.current.records.map((_, i) => i)) : new Set())
-    },
-    [],
-  )
+  const handleToggleAll = useCallback((checked: boolean) => {
+    const visible = stateRef.current.rows.map((r) => r.originalIndex)
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const i of visible) {
+        if (checked) next.add(i)
+        else next.delete(i)
+      }
+      return next
+    })
+  }, [])
 
   const openChat = useCallback(
     (index: number) => {
@@ -282,14 +300,12 @@ export default function RunResultsPage() {
     [runId, selected],
   )
 
-  const allChecked = records.length > 0 && selected.size === records.length
+  const visibleIndices = useMemo(() => rows.map((r) => r.originalIndex), [rows])
+  const allChecked =
+    visibleIndices.length > 0 && visibleIndices.every((i) => selected.has(i))
 
-  // Derive the stable per-row view model once per records change. Passing a
-  // fresh `status` object each render would defeat the row memoization.
-  const rows = useMemo(
-    () => records.map((rec) => ({ fields: extractKeyFields(rec), status: deriveKeyStatus(rec) })),
-    [records],
-  )
+  const chatFields =
+    chatIndex !== null && records[chatIndex] ? extractKeyFields(records[chatIndex]) : null
 
   let body: React.ReactNode
   if (activeQuery.isLoading) {
@@ -303,17 +319,19 @@ export default function RunResultsPage() {
     body = <CenterState className="text-danger">{errorMessage(activeQuery.error, "加载失败")}</CenterState>
   } else if (records.length === 0) {
     body = <CenterState>该分类暂无密钥。</CenterState>
+  } else if (rows.length === 0) {
+    body = <CenterState>无匹配结果，试试调整搜索或筛选条件。</CenterState>
   } else {
     body = (
       <div className="flex-1 overflow-y-auto">
-        {rows.map(({ fields, status }, index) => {
-          const key = rowKeyOf(kind, index)
+        {rows.map(({ fields, status, originalIndex }) => {
+          const key = rowKeyOf(kind, originalIndex)
           const reveal = revealed[key]
           const balanceInfo = balances[key]
           return (
             <IndexedKeyRow
               key={key}
-              index={index}
+              index={originalIndex}
               maskedKey={fields.maskedKey}
               revealedKey={reveal?.apikey}
               apiurl={reveal?.apiurl ?? fields.apiurl}
@@ -328,7 +346,7 @@ export default function RunResultsPage() {
               status={status}
               models={models[key]}
               modelsLoading={busy[key]?.models}
-              selected={selected.has(index)}
+              selected={selected.has(originalIndex)}
               expanded={expanded.has(key)}
               busy={busy[key]}
               onSelectedChange={handleSelectedChange}
@@ -395,9 +413,23 @@ export default function RunResultsPage() {
         </div>
       </div>
 
+      <KeyListToolbar
+        search={listView.search}
+        onSearchChange={listView.setSearch}
+        provider={listView.provider}
+        onProviderChange={listView.setProvider}
+        providers={listView.providers}
+        balanceSort={listView.balanceSort}
+        onBalanceSortChange={listView.setBalanceSort}
+        filteredCount={listView.filteredCount}
+        total={listView.total}
+        hasActiveFilters={listView.hasActiveFilters}
+        onClear={listView.clearFilters}
+      />
+
       <BulkBar
         selectedCount={selected.size}
-        total={records.length}
+        total={rows.length}
         allChecked={allChecked}
         onToggleAll={handleToggleAll}
         onExportJson={() => void runExport("json")}
@@ -415,7 +447,7 @@ export default function RunResultsPage() {
         onOpenChange={(open) => setChatIndex(open ? chatIndex : null)}
         maskedKey={
           chatIndex !== null
-            ? revealed[rowKeyOf(kind, chatIndex)]?.apikey ?? rows[chatIndex]?.fields.maskedKey ?? ""
+            ? revealed[rowKeyOf(kind, chatIndex)]?.apikey ?? chatFields?.maskedKey ?? ""
             : ""
         }
         models={chatIndex !== null ? models[rowKeyOf(kind, chatIndex)] ?? [] : []}

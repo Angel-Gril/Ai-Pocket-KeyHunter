@@ -1,9 +1,10 @@
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Link2, Loader2, RefreshCw, ShieldAlert, TriangleAlert } from "lucide-react"
+import { Link2, Loader2, RefreshCw, Search, ShieldAlert, TriangleAlert } from "lucide-react"
 import { toast } from "sonner"
 
 import { api, ApiError, type CveRecord } from "@/lib/api"
+import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 
 interface NormalCve {
@@ -83,8 +84,17 @@ function CveCard({ cve }: Readonly<{ cve: NormalCve }>) {
   )
 }
 
+function matchesCve(cve: NormalCve, needle: string): boolean {
+  if (!needle) return true
+  const haystack = [cve.id, cve.title, cve.type, cve.description, cve.sourceUrl, SEVERITY_META[cve.severity].label]
+    .join(" ")
+    .toLowerCase()
+  return haystack.includes(needle)
+}
+
 export default function CvePage() {
   const queryClient = useQueryClient()
+  const [query, setQuery] = useState("")
 
   const cveQuery = useQuery({
     queryKey: ["cve"],
@@ -94,6 +104,12 @@ export default function CvePage() {
   const cves = useMemo(
     () => (cveQuery.data?.cves ?? []).map(normalize),
     [cveQuery.data],
+  )
+
+  const needle = query.trim().toLowerCase()
+  const filtered = useMemo(
+    () => (needle ? cves.filter((cve) => matchesCve(cve, needle)) : cves),
+    [cves, needle],
   )
 
   const syncMutation = useMutation({
@@ -107,15 +123,32 @@ export default function CvePage() {
     },
   })
 
+  const countLabel =
+    needle.length > 0
+      ? `显示 ${filtered.length} / ${cves.length} 条`
+      : `${cves.length} 条`
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-4 border-b border-border-primary px-8 py-5">
         <div className="flex flex-1 flex-col gap-[3px]">
           <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">CVE 库</h1>
           <p className="font-mono text-xs text-text-muted">
-            sources/cve_2026_ai.json · {cves.length} 条 · 面向 AI 网关的凭据泄露漏洞
+            sources/cve_2026_ai.json · {countLabel} · 面向 AI 网关的凭据泄露漏洞
           </p>
         </div>
+
+        <div className="relative flex items-center">
+          <Search className="pointer-events-none absolute left-3 size-[15px] text-text-muted" />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索 CVE / 产品 / 描述…"
+            className="w-[260px] border-border-primary bg-surface-raised pl-9 text-[13px] dark:bg-surface-raised"
+            aria-label="搜索 CVE"
+          />
+        </div>
+
         <button
           type="button"
           onClick={() => syncMutation.mutate()}
@@ -147,8 +180,13 @@ export default function CvePage() {
             <ShieldAlert className="size-6 text-text-muted" />
             <span className="font-mono text-sm">暂无 CVE 记录 · 点击「同步 CVE」拉取</span>
           </div>
+        ) : filtered.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 text-text-muted">
+            <ShieldAlert className="size-6 text-text-muted" />
+            <span className="font-mono text-sm">无匹配结果</span>
+          </div>
         ) : (
-          cves.map((cve) => <CveCard key={cve.id} cve={cve} />)
+          filtered.map((cve) => <CveCard key={cve.id} cve={cve} />)
         )}
       </div>
     </div>

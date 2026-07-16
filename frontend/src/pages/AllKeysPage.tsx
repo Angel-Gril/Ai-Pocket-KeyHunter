@@ -10,9 +10,10 @@ import {
   type ResultKind,
 } from "@/lib/api"
 import { ChatTestDialog } from "@/components/chat-test-dialog"
+import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
-import { deriveKeyStatus, extractKeyFields } from "@/components/key-record"
+import { extractKeyFields } from "@/components/key-record"
 import { cn, copyToClipboard } from "@/lib/utils"
 
 type Revealed = { apikey: string; apiurl: string }
@@ -53,8 +54,20 @@ export default function AllKeysPage() {
   const validCount = validQuery.data?.results.length ?? 0
   const suspiciousCount = suspiciousQuery.data?.results.length ?? 0
 
-  const stateRef = useRef({ records, kind, revealed, models })
-  stateRef.current = { records, kind, revealed, models }
+  const balanceOverrides = useMemo(() => {
+    const out: Record<number, string | undefined> = {}
+    for (let i = 0; i < records.length; i++) {
+      const b = balances[rowKeyOf(kind, i)]?.balance
+      if (b) out[i] = b
+    }
+    return out
+  }, [records.length, balances, kind])
+
+  const listView = useKeyListView(records, balanceOverrides)
+  const { rows } = listView
+
+  const stateRef = useRef({ records, kind, revealed, models, rows })
+  stateRef.current = { records, kind, revealed, models, rows }
 
   const { mutateAsync: revealAsync } = useMutation({
     mutationFn: (vars: { kind: ResultKind; index: number; runId: string; sourceIndex: number }) =>
@@ -185,7 +198,15 @@ export default function AllKeysPage() {
   }, [])
 
   const handleToggleAll = useCallback((checked: boolean) => {
-    setSelected(checked ? new Set(stateRef.current.records.map((_, i) => i)) : new Set())
+    const visible = stateRef.current.rows.map((r) => r.originalIndex)
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const i of visible) {
+        if (checked) next.add(i)
+        else next.delete(i)
+      }
+      return next
+    })
   }, [])
 
   const openChat = useCallback(
@@ -248,12 +269,12 @@ export default function AllKeysPage() {
     [selected],
   )
 
-  const allChecked = records.length > 0 && selected.size === records.length
+  const visibleIndices = useMemo(() => rows.map((r) => r.originalIndex), [rows])
+  const allChecked =
+    visibleIndices.length > 0 && visibleIndices.every((i) => selected.has(i))
 
-  const rows = useMemo(
-    () => records.map((rec) => ({ fields: extractKeyFields(rec), status: deriveKeyStatus(rec) })),
-    [records],
-  )
+  const chatFields =
+    chatIndex !== null && records[chatIndex] ? extractKeyFields(records[chatIndex]) : null
 
   let body: React.ReactNode
   if (activeQuery.isLoading) {
@@ -267,17 +288,19 @@ export default function AllKeysPage() {
     body = <CenterState className="text-danger">{errorMessage(activeQuery.error, "加载失败")}</CenterState>
   } else if (records.length === 0) {
     body = <CenterState>该分类暂无密钥。</CenterState>
+  } else if (rows.length === 0) {
+    body = <CenterState>无匹配结果，试试调整搜索或筛选条件。</CenterState>
   } else {
     body = (
       <div className="flex-1 overflow-y-auto">
-        {rows.map(({ fields, status }, index) => {
-          const key = rowKeyOf(kind, index)
+        {rows.map(({ fields, status, originalIndex }) => {
+          const key = rowKeyOf(kind, originalIndex)
           const reveal = revealed[key]
           const balanceInfo = balances[key]
           return (
             <IndexedKeyRow
               key={key}
-              index={index}
+              index={originalIndex}
               maskedKey={fields.maskedKey}
               revealedKey={reveal?.apikey}
               apiurl={reveal?.apiurl ?? fields.apiurl}
@@ -292,7 +315,7 @@ export default function AllKeysPage() {
               status={status}
               models={models[key]}
               modelsLoading={busy[key]?.models}
-              selected={selected.has(index)}
+              selected={selected.has(originalIndex)}
               expanded={expanded.has(key)}
               busy={busy[key]}
               onSelectedChange={handleSelectedChange}
@@ -352,9 +375,23 @@ export default function AllKeysPage() {
         </div>
       </div>
 
+      <KeyListToolbar
+        search={listView.search}
+        onSearchChange={listView.setSearch}
+        provider={listView.provider}
+        onProviderChange={listView.setProvider}
+        providers={listView.providers}
+        balanceSort={listView.balanceSort}
+        onBalanceSortChange={listView.setBalanceSort}
+        filteredCount={listView.filteredCount}
+        total={listView.total}
+        hasActiveFilters={listView.hasActiveFilters}
+        onClear={listView.clearFilters}
+      />
+
       <BulkBar
         selectedCount={selected.size}
-        total={records.length}
+        total={rows.length}
         allChecked={allChecked}
         onToggleAll={handleToggleAll}
         onExportJson={() => void runExport("json")}
@@ -372,7 +409,7 @@ export default function AllKeysPage() {
         onOpenChange={(open) => setChatIndex(open ? chatIndex : null)}
         maskedKey={
           chatIndex !== null
-            ? revealed[rowKeyOf(kind, chatIndex)]?.apikey ?? rows[chatIndex]?.fields.maskedKey ?? ""
+            ? revealed[rowKeyOf(kind, chatIndex)]?.apikey ?? chatFields?.maskedKey ?? ""
             : ""
         }
         models={chatIndex !== null ? models[rowKeyOf(kind, chatIndex)] ?? [] : []}
