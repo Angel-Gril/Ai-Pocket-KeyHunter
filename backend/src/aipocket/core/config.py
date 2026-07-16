@@ -148,7 +148,32 @@ class Settings(BaseSettings):
     # + a rollback path) before committing to PG-only.
     pg_dual_write: bool = False
 
-    @field_validator("fofa_keys", "shodan_keys")
+    # ===== Planner metrics version =====
+    # 2 = rank by active_requests (validation credentials); 3 = total_active_http_requests
+    # (ledger). Default 2 after WS-A; flip to 3 after shadow compare window.
+    planner_metrics_version: int = 2
+
+    # ===== GitHub artifact hunter =====
+    github_hunter_enabled: bool = True
+    github_tokens: str = ""
+    github_api_base_url: str = "https://api.github.com"
+    github_api_version: str = "2022-11-28"
+    github_commit_query_budget: int = 6
+    github_code_query_budget: int = 6
+    github_search_page_size: int = 100
+    github_max_pages_per_shard: int = 10
+    github_lookback_hours: int = 24
+    github_backfill_from: str = ""
+    github_overlap_minutes: int = 15
+    github_request_timeout: float = 20.0
+    github_artifact_concurrency: int = 8
+    github_max_commit_files: int = 3000
+    github_max_blob_bytes: int = 1_048_576
+    github_blob_fallback_budget: int = 100
+    github_file_history_enabled: bool = True
+    github_file_history_commit_limit: int = 100
+
+    @field_validator("fofa_keys", "shodan_keys", "github_tokens")
     @classmethod
     def _strip_keys(cls, v: str) -> str:
         return ",".join(k.strip() for k in v.split(",") if k.strip())
@@ -160,6 +185,10 @@ class Settings(BaseSettings):
     @property
     def shodan_key_list(self) -> list[str]:
         return [k for k in self.shodan_keys.split(",") if k]
+
+    @property
+    def github_token_list(self) -> list[str]:
+        return [k for k in self.github_tokens.split(",") if k]
 
     @property
     def authorized_probe_scope_list(self) -> tuple[str, ...]:

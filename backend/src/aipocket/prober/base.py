@@ -15,6 +15,7 @@ from aipocket.core.key_patterns import KEY_PATTERNS as _PROBE_KEY_PATTERNS_BASE
 from aipocket.core.key_patterns import is_noise as _is_noise
 from aipocket.core.models import Credential
 from aipocket.services.config_extractor import extract_config_bundles
+from aipocket.services.http_transport import InstrumentedAsyncClient, LedgerContext
 
 from .budget import BudgetExhausted, RequestBudget
 from .credentials_dict import BUILTIN_WEAK_CREDENTIALS
@@ -153,6 +154,10 @@ class Prober(ABC):
         self._max_redirects = max_redirects
         self._intrusive_checks = intrusive_checks
         self._authorized_scope = frozenset(authorized_scope)
+        self._transport = InstrumentedAsyncClient(
+            client,
+            defaults=LedgerContext(stage="probe", source="prober", product=self.product_name),
+        )
         # Filled by :meth:`run_specs` so the runner can collect findings/node_outcomes.
         self.last_result: Any = None
 
@@ -215,7 +220,7 @@ class Prober(ABC):
         try:
             self._consume_request()
             async with self._sem:
-                response = await self._client.get(url, **kwargs)
+                response = await self._transport.get(url, **kwargs)
             return await self._follow_same_origin(response, kwargs)
         except BudgetExhausted:
             return None
@@ -232,7 +237,7 @@ class Prober(ABC):
         try:
             self._consume_request()
             async with self._sem:
-                return await self._client.post(url, **kwargs)
+                return await self._transport.post(url, **kwargs)
         except BudgetExhausted:
             return None
         except Exception as e:  # noqa: BLE001
@@ -252,9 +257,13 @@ class Prober(ABC):
                 self._sem,
             ):
                 self._consume_request()
-                if method == "GET":
-                    return await insecure.get(url, **kwargs)
-                return await insecure.post(url, **kwargs)
+                transport = InstrumentedAsyncClient(
+                    insecure,
+                    defaults=LedgerContext(
+                        stage="probe", source="prober", product=self.product_name
+                    ),
+                )
+                return await transport.request(method, url, **kwargs)
         except BudgetExhausted:
             return None
 
@@ -279,7 +288,7 @@ class Prober(ABC):
             try:
                 self._consume_request()
                 async with self._sem:
-                    current = await self._client.get(next_url, **kwargs)
+                    current = await self._transport.get(next_url, **kwargs)
             except (BudgetExhausted, httpx.HTTPError):
                 return None
         return None if current.is_redirect else current

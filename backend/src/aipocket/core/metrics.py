@@ -11,6 +11,8 @@ class QueryFunnel(BaseModel):
 
     raw_hits: int = 0
     unique_targets: int = 0
+    # Compat: validation credential count (not physical HTTP). Prefer
+    # total_active_http_requests as the KPI denominator (metrics v3).
     active_requests: int = 0
     candidates: int = 0
     prefilter_survivors: int = 0
@@ -18,6 +20,8 @@ class QueryFunnel(BaseModel):
     final_verified: int = 0
     noauth_rejected: int = 0
     query_credits: int = 0
+    # Physical HTTP attempts attributed to this query (ledger-backed).
+    total_active_http_requests: int = 0
 
 
 class QueryMetric(BaseModel):
@@ -27,6 +31,10 @@ class QueryMetric(BaseModel):
     query: str
     funnel: QueryFunnel
     attribution_version: int = 2
+    # v3 fields (empty for historical v2 rows)
+    query_id: str = ""
+    lane: str = ""
+    pack_id: str = ""
 
 
 ErrorClass = Literal[
@@ -96,3 +104,6 @@ def classify_error(error: str, validation_state: str, status_code: int | None) -
 class QueryUsage:
     query: str
     credits: int = 0
+    query_id: str = ""
+    lane: str = ""
+    pack_id: str = ""

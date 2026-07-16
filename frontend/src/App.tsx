@@ -7,6 +7,7 @@ import RunResultsPage from "@/pages/RunResultsPage"
 import AllKeysPage from "@/pages/AllKeysPage"
 import HighValuePage from "@/pages/HighValuePage"
 import ScanPage from "@/pages/ScanPage"
+import GithubHunterPage from "@/pages/GithubHunterPage"
 import CvePage from "@/pages/CvePage"
 import SettingsPage from "@/pages/SettingsPage"
 
@@ -22,6 +23,7 @@ export function App() {
           <Route path="/keys" element={<AllKeysPage />} />
           <Route path="/high-value" element={<HighValuePage />} />
           <Route path="/scan" element={<ScanPage />} />
+          <Route path="/github" element={<GithubHunterPage />} />
           <Route path="/cve" element={<CvePage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>

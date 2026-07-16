@@ -22,6 +22,7 @@ from .errors import ApiError
 from .masking import mask_keys_csv
 from .schemas import (
     FofaCheckResponse,
+    GithubCheckResponse,
     SettingsUpdate,
     SettingsUpdateResponse,
     SettingsView,
@@ -44,11 +45,14 @@ _FIELD_TO_ENV = {
     "shodan_max_pages": "SHODAN_MAX_PAGES",
     "shodan_timeout": "SHODAN_TIMEOUT",
     "shodan_page_delay": "SHODAN_PAGE_DELAY",
+    "github_tokens": "GITHUB_TOKENS",
+    "github_api_base_url": "GITHUB_API_BASE_URL",
+    "github_hunter_enabled": "GITHUB_HUNTER_ENABLED",
     "validate_concurrency": "VALIDATE_CONCURRENCY",
     "prober_concurrency": "PROBER_CONCURRENCY",
 }
 
-_SENSITIVE = {"fofa_keys", "shodan_keys"}
+_SENSITIVE = {"fofa_keys", "shodan_keys", "github_tokens"}
 
 # These take effect on the next call that reads settings — no restart needed.
 # (All current editable fields are read fresh per request by the clients.)
@@ -74,6 +78,9 @@ def current_view() -> SettingsView:
         shodan_max_pages=settings.shodan_max_pages,
         shodan_timeout=settings.shodan_timeout,
         shodan_page_delay=settings.shodan_page_delay,
+        github_tokens=mask_keys_csv(settings.github_tokens),
+        github_api_base_url=settings.github_api_base_url,
+        github_hunter_enabled=settings.github_hunter_enabled,
         validate_concurrency=settings.validate_concurrency,
         prober_concurrency=settings.prober_concurrency,
     )
@@ -213,3 +220,60 @@ def check_shodan() -> ShodanCheckResponse:
         n_keys=int(info.get("n_keys", len(keys))),
         n_dead=int(info.get("n_dead", 0)),
     )
+
+
+def check_github() -> GithubCheckResponse:
+    """GitHub connectivity via GET /rate_limit (no search quota)."""
+    if not settings.github_hunter_enabled:
+        return GithubCheckResponse(status="disabled", message="GITHUB_HUNTER_ENABLED=false")
+    if not settings.github_token_list:
+        return GithubCheckResponse(status="invalid", message="no GITHUB_TOKENS configured")
+    if not settings.pg_enabled:
+        return GithubCheckResponse(
+            status="invalid",
+            message="DATABASE_URL required for GitHub hunter (fail-closed)",
+            n_tokens=len(settings.github_token_list),
+        )
+    try:
+        import httpx
+
+        token = settings.github_token_list[0]
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": settings.github_api_version,
+            "User-Agent": "aipocket",
+        }
+        url = f"{settings.github_api_base_url.rstrip('/')}/rate_limit"
+        with httpx.Client(timeout=settings.github_request_timeout) as client:
+            r = client.get(url, headers=headers)
+        if r.status_code in (401, 403):
+            return GithubCheckResponse(
+                status="invalid",
+                message=f"auth failed HTTP {r.status_code}",
+                n_tokens=len(settings.github_token_list),
+            )
+        if r.status_code != 200:
+            return GithubCheckResponse(
+                status="invalid",
+                message=f"HTTP {r.status_code}",
+                n_tokens=len(settings.github_token_list),
+            )
+        data = r.json().get("resources", {})
+        core = data.get("core") or {}
+        search = data.get("search") or {}
+        code = data.get("code_search") or data.get("codeSearch") or {}
+        return GithubCheckResponse(
+            status="ok",
+            message="reachable",
+            core_remaining=int(core.get("remaining", 0) or 0),
+            search_remaining=int(search.get("remaining", 0) or 0),
+            code_search_remaining=int(code.get("remaining", 0) or 0),
+            n_tokens=len(settings.github_token_list),
+        )
+    except Exception as e:  # noqa: BLE001
+        return GithubCheckResponse(
+            status="invalid",
+            message=f"probe failed: {type(e).__name__}",
+            n_tokens=len(settings.github_token_list),
+        )

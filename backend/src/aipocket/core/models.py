@@ -24,6 +24,10 @@ ProviderName = Literal[
     "qwen",
     "siliconflow",
     "google",
+    "cohere",
+    "replicate",
+    "together",
+    "fireworks",
     "groq",
     "openrouter",
     "azure_openai",
@@ -37,8 +41,17 @@ ProviderCategory = Literal["international", "domestic", "gateway", "unknown"]
 
 
 class ProviderInfo(BaseModel):
-    """Provider classification + model availability for a validated credential."""
+    """Provider classification + model availability for a validated credential.
 
+    Dual attribution:
+    - ``validation_provider`` / ``provider``: adapter/endpoint party that auth'd.
+    - ``credential_issuer``: who issued the secret (official name or gateway).
+    - ``served_model_families``: model families proven at the endpoint (capability).
+    """
+
+    # Actual validation adapter / endpoint party.
+    validation_provider: ProviderName = "unknown"
+    # Deprecated alias of validation_provider (kept one release for dual-read).
     provider: ProviderName = "unknown"
     category: ProviderCategory = "unknown"
     # Models listed by GET /v1/models (or equivalent)
@@ -47,6 +60,9 @@ class ProviderInfo(BaseModel):
     models_verified: list[str] = Field(default_factory=list)
     # Official balance endpoint reported this key's provider (redundant w/ balance probes)
     balance_provider: str = ""
+    credential_issuer: ProviderName | Literal["gateway", "unknown"] = "unknown"
+    issuer_evidence: str = ""  # key_shape|official_domain|bundle_hint|validated_endpoint
+    served_model_families: list[str] = Field(default_factory=list)
 
 
 class Credential(BaseModel):
@@ -118,6 +134,9 @@ class ScanRunResult(BaseModel):
     unique_targets: int = 0
     candidates: int = 0
     active_requests: int = 0
+    total_active_http_requests: int = 0
+    ledger_complete: bool = False
+    ledger_incomplete_reason: str = ""
     final_verified: int = 0
     suspicious: int = 0
     high_value_final: int = 0

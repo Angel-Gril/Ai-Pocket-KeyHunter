@@ -22,7 +22,11 @@ function formatTime(iso: string): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-const SOURCE_DOT: Record<string, string> = { fofa: "bg-info", shodan: "bg-warning" }
+const SOURCE_DOT: Record<string, string> = {
+  fofa: "bg-info",
+  shodan: "bg-warning",
+  github: "bg-success",
+}
 
 function SourceBadge({ source }: Readonly<{ source: string }>) {
   const dot = SOURCE_DOT[source] ?? "bg-text-muted"

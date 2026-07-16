@@ -14,6 +14,7 @@ import {
   ApiError,
   api,
   type FofaCheckResponse,
+  type GithubCheckResponse,
   type SettingsUpdate,
   type SettingsView,
   type ShodanCheckResponse,
@@ -23,10 +24,25 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 
-type FormState = Pick<SettingsView, "fofa_keys" | "fofa_base_url" | "shodan_keys" | "shodan_base_url">
+type FormState = Pick<
+  SettingsView,
+  | "fofa_keys"
+  | "fofa_base_url"
+  | "shodan_keys"
+  | "shodan_base_url"
+  | "github_tokens"
+  | "github_api_base_url"
+>
 
-const FORM_FIELDS = ["fofa_keys", "fofa_base_url", "shodan_keys", "shodan_base_url"] as const
-const SENSITIVE = new Set<keyof FormState>(["fofa_keys", "shodan_keys"])
+const FORM_FIELDS = [
+  "fofa_keys",
+  "fofa_base_url",
+  "shodan_keys",
+  "shodan_base_url",
+  "github_tokens",
+  "github_api_base_url",
+] as const
+const SENSITIVE = new Set<keyof FormState>(["fofa_keys", "shodan_keys", "github_tokens"])
 
 function pickForm(view: SettingsView): FormState {
   return {
@@ -34,6 +50,8 @@ function pickForm(view: SettingsView): FormState {
     fofa_base_url: view.fofa_base_url,
     shodan_keys: view.shodan_keys,
     shodan_base_url: view.shodan_base_url,
+    github_tokens: view.github_tokens,
+    github_api_base_url: view.github_api_base_url,
   }
 }
 
@@ -221,6 +239,7 @@ function SettingsForm({ initial }: Readonly<{ initial: SettingsView }>) {
 
   const fofaCheck = useMutation({ mutationFn: () => api.checkFofa() })
   const shodanCheck = useMutation({ mutationFn: () => api.checkShodan() })
+  const githubCheck = useMutation({ mutationFn: () => api.checkGithub() })
 
   const restartMutation = useMutation({
     mutationFn: () => api.systemRestart(),
@@ -265,12 +284,17 @@ function SettingsForm({ initial }: Readonly<{ initial: SettingsView }>) {
               <h2 className="text-base font-semibold text-text-primary">FOFA</h2>
             </div>
 
-            <Field label="FOFA_KEYS" htmlFor="fofa-keys">
+            <Field
+              label="FOFA_KEYS"
+              htmlFor="fofa-keys"
+              hint="逗号分隔多个 key · 运行时轮询 + 429/失败回退"
+            >
               <Input
                 id="fofa-keys"
                 value={form.fofa_keys}
                 onChange={setField("fofa_keys")}
                 spellCheck={false}
+                placeholder="key1,key2,key3"
                 className="border-border-primary bg-surface-inset font-mono text-[13px] dark:bg-surface-inset"
               />
             </Field>
@@ -308,12 +332,17 @@ function SettingsForm({ initial }: Readonly<{ initial: SettingsView }>) {
               <h2 className="text-base font-semibold text-text-primary">Shodan</h2>
             </div>
 
-            <Field label="SHODAN_KEYS" htmlFor="shodan-keys">
+            <Field
+              label="SHODAN_KEYS"
+              htmlFor="shodan-keys"
+              hint="逗号分隔多个 key · 运行时轮询 + 429/失败回退"
+            >
               <Input
                 id="shodan-keys"
                 value={form.shodan_keys}
                 onChange={setField("shodan_keys")}
                 spellCheck={false}
+                placeholder="key1,key2,key3"
                 className="border-border-primary bg-surface-inset font-mono text-[13px] dark:bg-surface-inset"
               />
             </Field>
@@ -348,9 +377,115 @@ function SettingsForm({ initial }: Readonly<{ initial: SettingsView }>) {
               error={shodanCheck.error}
             />
           </section>
+
+          <section className="flex flex-col gap-[18px] rounded-md border border-border-primary bg-surface-raised p-6">
+            <div className="flex items-center gap-2.5">
+              <span className="size-2.5 rounded-full bg-success" />
+              <h2 className="text-base font-semibold text-text-primary">GitHub</h2>
+            </div>
+
+            <Field
+              label="GITHUB_TOKENS"
+              htmlFor="github-tokens"
+              hint="逗号分隔多个 PAT · 与 FOFA 相同：配额轮询 + 401 标记死钥 + 限流冷却回退"
+            >
+              <Input
+                id="github-tokens"
+                value={form.github_tokens}
+                onChange={setField("github_tokens")}
+                spellCheck={false}
+                placeholder="ghp_xxx,github_pat_yyy"
+                className="border-border-primary bg-surface-inset font-mono text-[13px] dark:bg-surface-inset"
+              />
+            </Field>
+
+            <Field label="GITHUB_API_BASE_URL" htmlFor="github-url">
+              <Input
+                id="github-url"
+                value={form.github_api_base_url}
+                onChange={setField("github_api_base_url")}
+                spellCheck={false}
+                className="border-border-primary bg-surface-inset font-mono text-[13px] dark:bg-surface-inset"
+              />
+            </Field>
+
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => githubCheck.mutate()}
+                disabled={githubCheck.isPending}
+                className="border-border-primary bg-surface-overlay text-text-secondary hover:text-text-primary dark:bg-surface-overlay"
+              >
+                <PlugZap />
+                检测 rate_limit
+              </Button>
+              <span className="font-mono text-[11px] text-text-muted">
+                /rate_limit 不消耗 search 配额 · 需 DATABASE_URL
+              </span>
+            </div>
+
+            <GithubResult
+              isPending={githubCheck.isPending}
+              data={githubCheck.data}
+              error={githubCheck.error}
+            />
+          </section>
         </div>
       </div>
     </div>
+  )
+}
+
+function GithubResult({
+  isPending,
+  data,
+  error,
+}: Readonly<{
+  isPending: boolean
+  data: GithubCheckResponse | undefined
+  error: unknown
+}>) {
+  if (isPending) {
+    return resultShell(
+      "bg-surface-inset text-text-secondary",
+      <>
+        <Loader2 className="mt-px size-4 shrink-0 animate-spin" />
+        <span className="font-mono text-xs">检测中…</span>
+      </>,
+    )
+  }
+  if (error) {
+    return resultShell(
+      "bg-danger-dim text-danger",
+      <>
+        <CircleX className="mt-px size-4 shrink-0" />
+        <span className="font-mono text-xs">{errorMessage(error)}</span>
+      </>,
+    )
+  }
+  if (!data) return null
+  const ok = data.status === "ok"
+  return resultShell(
+    ok ? "bg-success-dim text-success" : "bg-danger-dim text-danger",
+    <>
+      {ok ? (
+        <CircleCheck className="mt-px size-4 shrink-0" />
+      ) : (
+        <CircleX className="mt-px size-4 shrink-0" />
+      )}
+      <div className="flex flex-col gap-0.5">
+        <span className="font-mono text-[13px] font-semibold">
+          {ok ? "可用" : data.status === "disabled" ? "已禁用" : "不可用"}
+        </span>
+        <span className="font-mono text-[11px] text-text-secondary">
+          {data.message}
+          {ok
+            ? ` · core=${data.core_remaining} search=${data.search_remaining} code=${data.code_search_remaining}`
+            : ""}
+        </span>
+      </div>
+    </>,
   )
 }
 

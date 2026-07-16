@@ -19,7 +19,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
 import pytest
+import respx
 
 from aipocket.core.metrics import (
     ExtractionMethodAggregate,
@@ -53,13 +55,17 @@ class FakeCursor:
         return False
 
     def execute(self, sql: str, params: Any = None) -> FakeCursor:
-        self._conn.executed.append((_norm(sql), params))
+        normalized = _norm(sql)
+        self._conn.executed.append((normalized, params))
+        self._conn._pool.events.append(normalized)
         self._result = self._conn._lookup(sql)
         return self
 
     def executemany(self, sql: str, rows: list[Any]) -> None:
-        self._conn.executed.append((_norm(sql), None))
-        self._conn.executemany_rows.append((_norm(sql), list(rows)))
+        normalized = _norm(sql)
+        self._conn.executed.append((normalized, None))
+        self._conn.executemany_rows.append((normalized, list(rows)))
+        self._conn._pool.events.append(normalized)
 
     def fetchone(self) -> dict[str, Any] | None:
         return self._result[0] if self._result else None
@@ -117,6 +123,7 @@ class FakePool:
         self.executed: list[tuple[str, Any]] = []
         self.executemany_rows: list[tuple[str, list[Any]]] = []
         self.commits: list[bool] = []
+        self.events: list[str] = []
 
     def connection(self) -> FakeConnection:
         return FakeConnection(self)
@@ -152,6 +159,106 @@ def _vr(
 ) -> ValidationResult:
     cred = Credential(apikey=apikey, apiurl=url, host="a.com")
     return ValidationResult(credential=cred, valid=valid, status_code=status)
+
+
+def test_parent_run_exists_before_ledger_flush(fake_pg):
+    pool = fake_pg()
+    from aipocket.core.request_ledger import make_entry
+    from aipocket.services.writer import create_run_pg, persist_ledger_batch_pg
+
+    create_run_pg("run_ordering", "2026-07-16T00:00:00Z", "incremental")
+    persist_ledger_batch_pg(
+        [
+            make_entry(
+                run_id="run_ordering",
+                stage="discovery",
+                source="github",
+                status_code=200,
+            )
+        ]
+    )
+
+    run_insert_index = next(
+        index for index, sql in enumerate(pool.events) if "INSERT INTO runs" in sql
+    )
+    ledger_insert_index = next(
+        index for index, sql in enumerate(pool.events) if "INSERT INTO request_ledger" in sql
+    )
+    assert run_insert_index < ledger_insert_index
+    assert pool.executemany_rows[0][1][0][1] == "run_ordering"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_http_attempt_persists_source_attributed_v3_metric(fake_pg):
+    pool = fake_pg()
+    from aipocket.core.request_ledger import (
+        RequestAttribution,
+        RequestLedger,
+        current_ledger,
+        current_query_attribution,
+    )
+    from aipocket.services.http_transport import InstrumentedAsyncClient, LedgerContext
+    from aipocket.services.query_metrics import QueryMetricsCollector
+    from aipocket.services.writer import create_run_pg, persist_ledger_batch_pg, persist_run_pg
+
+    respx.get("https://provider.example/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": []})
+    )
+    ledger = RequestLedger(run_id="run_v3")
+    ledger_token = current_ledger.set(ledger)
+    attribution_token = current_query_attribution.set(
+        RequestAttribution(
+            source="github",
+            query_id="code-query-id",
+            pack_id="glm",
+            lane="code_snapshot",
+        )
+    )
+    try:
+        async with httpx.AsyncClient() as raw_client:
+            client = InstrumentedAsyncClient(
+                raw_client,
+                defaults=LedgerContext(stage="validation", source="validator"),
+            )
+            await client.get("https://provider.example/v1/models")
+    finally:
+        current_query_attribution.reset(attribution_token)
+        current_ledger.reset(ledger_token)
+
+    collector = QueryMetricsCollector()
+    collector.increment(
+        "github",
+        "glm anchor",
+        query_id="code-query-id",
+        lane="code_snapshot",
+        pack_id="glm",
+    )
+    collector.apply_ledger(ledger.totals().by_query)
+    metrics = collector.snapshot(attribution_version=3)
+
+    create_run_pg("run_v3", "2026-07-16T00:00:00Z", "incremental")
+    persist_ledger_batch_pg(ledger.drain())
+    persist_run_pg(
+        "run_v3",
+        {
+            "started_at": "2026-07-16T00:00:00Z",
+            "finished_at": "2026-07-16T00:01:00Z",
+            "state": "finished",
+            "ledger_complete": True,
+            "metrics_version": 3,
+            "total_active_http_requests": 1,
+        },
+        [],
+        [],
+        metrics,
+    )
+
+    ledger_row = next(rows for sql, rows in pool.executemany_rows if "request_ledger" in sql)[0]
+    assert ledger_row[3:6] == ("github", "code-query-id", "glm")
+    metric_params = pool.sql_containing("INSERT INTO query_metrics")[0][1]
+    assert metric_params[1:3] == ("github", "glm anchor")
+    assert metric_params[12:17] == (3, 1, "code_snapshot", "glm", "code-query-id")
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +348,10 @@ class TestPersistRunPg:
             0,  # noauth_rejected
             0,  # query_credits
             2,  # attribution_version
+            0,  # total_active_http_requests
+            "",  # lane
+            "",  # pack_id
+            "",  # query_id
         )
 
     def test_persists_low_cardinality_outcomes_without_secret_material(self, fake_pg):
@@ -651,9 +762,7 @@ class TestResultsReaderPg:
         )
         from aipocket.api import results_reader
 
-        found = results_reader.reveal_apikey(
-            "run_2026_07_15_14-44-29", "valid", index=1001
-        )
+        found = results_reader.reveal_apikey("run_2026_07_15_14-44-29", "valid", index=1001)
         assert found["apikey"] == "sk-proj-legacyseqkey99"
         assert found["apiurl"] == "https://api.openai.com/v1"
 

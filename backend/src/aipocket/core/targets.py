@@ -46,6 +46,7 @@ class DiscoveryTarget:
         result["port"] = str(self.identity.port)
         result["_source"] = ",".join(sorted(self.sources))
         result["_query_ids"] = sorted(self.query_ids)
+        result["_provenance_pairs"] = [list(pair) for pair in self.provenance_pairs]
         result["_cves"] = sorted(self.advisory_ids)
         result["_product_hints"] = sorted(self.product_hints)
         if self.product_hints:

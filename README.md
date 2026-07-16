@@ -1,6 +1,6 @@
 # aipocket
 
-> 基于 FOFA + Shodan 的 AI 基础设施暴露面扫描器：从公网暴露的 AI 网关/代理中提取并验证泄露的 `apikey` + `apiurl` 组合。
+> 基于 FOFA + Shodan + GitHub Artifact Hunter 的 AI 基础设施暴露面扫描器：发现暴露目标与泄露凭证，完成归因、验证、余额查询和持久化。
 
 ---
 
@@ -17,7 +17,8 @@ aipocket/
 ├── backend/                     # Python 后端 (FastAPI + Typer CLI)
 │   ├── src/aipocket/
 │   │   ├── core/                # 基础设施：配置、数据库、模型、Key 模式
-│   │   ├── clients/             # 外部 API 客户端 (FOFA, Shodan, Tavily)
+│   │   ├── clients/             # 外部 API 客户端 (FOFA, Shodan, GitHub, Tavily)
+│   │   ├── discovery/           # 数据源注册、GitHub Hunter、Provider Packs
 │   │   ├── services/            # 业务逻辑：扫描、验证、去重、写入等
 │   │   ├── prober/              # 网关指纹探测器 (Dify, LiteLLM, NewAPI 等)
 │   │   ├── api/                 # FastAPI 路由、鉴权、Schema、扫描管理器
@@ -52,13 +53,78 @@ aipocket/
 
 ---
 
-## 工作原理
+## 当前执行机制
 
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ 入口                                                                        │
+│ CLI: aipocket scan              Web: POST /api/scan/start                   │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ run_scan                                                                    │
+│ 选择 source / GitHub pack / full|incremental 策略 / 查询预算                │
+│ 获取单实例 ScanLease                                                        │
+│ PostgreSQL 启用时：先创建 runs(state=running)，再启用 RequestLedger flush   │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌────────────────────────────── SourceRegistry ───────────────────────────────┐
+│                                                                             │
+│  FOFA ── Query Planner ── API ──┐                                           │
+│                                  ├── Host Hits ── canonicalize_hits          │
+│ Shodan ─ Query Planner ── API ──┘                    │                      │
+│                                                      ├── 正则提取凭证       │
+│                                                      ├── 证据门控 Prober    │
+│                                                      └── 可选 GPT 提取      │
+│                                                                             │
+│ GitHub ── Provider Pack ──┬── Commit Message Search                         │
+│                           ├── Code Snapshot（每次从 Page 1 + ETag 开始）    │
+│                           └── Seeded File History                           │
+│                                      │                                      │
+│                                      ▼                                      │
+│          Public-only 检查 ── Checkpoint + Work Queue ── Artifact 提取       │
+│                                      │                                      │
+│                                      └── CredentialSourceObservation        │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌──────────────────────────── 共享凭证处理流水线 ─────────────────────────────┐
+│ ObservationRegistry（来源、query、pack、文件/SHA/行号归因）                 │
+│      │                                                                      │
+│      ▼                                                                      │
+│ 格式预过滤 ── Redis 跨 run 去重/缓存 ── Provider Registry 官方端点路由      │
+│      │                                                                      │
+│      ▼                                                                      │
+│ 只读凭证验证 ── Forged-key No-Auth 检测 ── 可选 GPT Recheck                │
+│      │                                                                      │
+│      ▼                                                                      │
+│ Finalizer（有效 / 拒绝 / 瞬态 / 限流待确认）── 余额与账户信息补全           │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                  ┌────────────────────┴────────────────────┐
+                  ▼                                         ▼
+┌──────────────────────────────────────┐   ┌──────────────────────────────────┐
+│ PostgreSQL 最终事务                  │   │ Run 目录 JSONL                   │
+│ runs(state=finished)                 │   │ scan / valid / suspicious        │
+│ results / query_metrics              │   │ probe findings / debug artifacts │
+│ validation & extraction aggregates   │   └──────────────────────────────────┘
+└──────────────────┬───────────────────┘
+                   │
+                   ▼
+          FastAPI 查询接口 ── React Web UI
+
+所有物理 HTTP 尝试
+        │
+        └── RequestLedger（source + query_id + pack_id + stage）
+                 │
+                 ├── 覆盖完整且 flush 成功：生成 Metrics v3 HTTP 成本
+                 └── 覆盖不完整或持久化失败：降级为 Metrics v2
 ```
-CVE 同步 → 生成 FOFA/Shodan 查询 → 双源拨取命中主机
-    → 正则+GPT 提取凭证 → 主动探测网关 → 验证有效性
-    → GPT 二次校验 → 余额查询 → 写入 PostgreSQL（未配置则回退 JSONL）
-```
+
+GitHub-only 扫描要求 `GITHUB_TOKENS` 和 `DATABASE_URL`，缺少任一项都会 fail closed；
+GitHub v1 只处理响应中明确标记为公开的仓库。
 
 ---
 

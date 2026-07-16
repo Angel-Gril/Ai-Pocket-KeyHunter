@@ -13,6 +13,7 @@ import httpx
 
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ValidationResult
+from aipocket.core.request_ledger import RequestAttribution
 
 log = logging.getLogger(__name__)
 
@@ -133,6 +134,17 @@ def _content_from_chat_response(data: Any) -> str:
     return content
 
 
+def _gpt_client(client: httpx.AsyncClient):
+    from aipocket.services.http_transport import InstrumentedAsyncClient, LedgerContext
+
+    if isinstance(client, InstrumentedAsyncClient):
+        return client
+    return InstrumentedAsyncClient(
+        client,
+        defaults=LedgerContext(stage="gpt", source="gpt", provider=settings.gpt_model),
+    )
+
+
 async def _chat(
     client: httpx.AsyncClient, system: str, user_content: str, max_tokens: int = 1000
 ) -> str:
@@ -160,7 +172,7 @@ async def _chat(
     last_status = 0
     last_body = ""
     for attempt in range(MAX_RETRIES + 1):
-        r = await client.post(base, json=body)
+        r = await _gpt_client(client).post(base, json=body, ledger_attempt=attempt + 1)
         if r.is_success:
             try:
                 data = r.json()
@@ -342,6 +354,28 @@ def _dump_debug_payload(batch_idx: int, payload: str, batch: list[dict[str, Any]
         pass
 
 
+def _hit_request_attribution(hit: dict[str, Any]) -> RequestAttribution:
+    pairs = hit.get("_provenance_pairs")
+    if isinstance(pairs, list) and pairs:
+        pair = pairs[0]
+        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+            return RequestAttribution(
+                source=str(pair[0] or ""),
+                query_id=str(pair[1] or ""),
+                lane="gpt",
+            )
+    sources = str(hit.get("_source") or "").split(",")
+    query_ids = hit.get("_query_ids")
+    query_id = hit.get("_query_id") or (
+        query_ids[0] if isinstance(query_ids, list) and query_ids else ""
+    )
+    return RequestAttribution(
+        source=sources[0] if sources else "",
+        query_id=str(query_id or ""),
+        lane="gpt",
+    )
+
+
 async def _extract_batch(
     client: httpx.AsyncClient,
     sem: asyncio.Semaphore,
@@ -381,52 +415,59 @@ async def _extract_batch_inner(
     if not payload_parts:
         return GPTBatchReport((), entry_ids, frozenset())
     payload = "\n\n".join(payload_parts)
+    from aipocket.core.request_ledger import current_query_attribution
+
+    request_attribution = _hit_request_attribution(batch[0]) if batch else RequestAttribution()
+    attribution_token = current_query_attribution.set(request_attribution)
     if settings.gpt_debug:
         _dump_debug_payload(batch_idx, payload, batch)
-    async with sem:
-        try:
-            resp = await _chat(client, EXTRACT_SYSTEM, payload, max_tokens=8000)
-        except httpx.TimeoutException as e:
-            log.warning(
-                "GPT extract batch %d/%d TIMEOUT (%s): url=%s payload_len=%d",
-                batch_idx,
-                total_batches,
-                type(e).__name__,
-                settings.gpt_base_url,
-                len(payload),
-            )
-            _dump_failed_batch(batch, batch_idx)
-            return GPTBatchReport((), frozenset(), entry_ids)
-        except httpx.HTTPStatusError as e:
-            log.warning(
-                "GPT extract batch %d/%d HTTP %s after retries: body[:300]=%r",
-                batch_idx,
-                total_batches,
-                e.response.status_code,
-                e.response.text[:300],
-            )
-            _dump_failed_batch(batch, batch_idx)
-            return GPTBatchReport((), frozenset(), entry_ids)
-        except httpx.HTTPError as e:
-            log.warning(
-                "GPT extract batch %d/%d failed (%s): %s",
-                batch_idx,
-                total_batches,
-                type(e).__name__,
-                e,
-            )
-            _dump_failed_batch(batch, batch_idx)
-            return GPTBatchReport((), frozenset(), entry_ids)
-        except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
-            log.warning(
-                "GPT extract batch %d/%d malformed response (%s): %s",
-                batch_idx,
-                total_batches,
-                type(e).__name__,
-                e,
-            )
-            _dump_failed_batch(batch, batch_idx)
-            return GPTBatchReport((), frozenset(), entry_ids)
+    try:
+        async with sem:
+            try:
+                resp = await _chat(client, EXTRACT_SYSTEM, payload, max_tokens=8000)
+            except httpx.TimeoutException as e:
+                log.warning(
+                    "GPT extract batch %d/%d TIMEOUT (%s): url=%s payload_len=%d",
+                    batch_idx,
+                    total_batches,
+                    type(e).__name__,
+                    settings.gpt_base_url,
+                    len(payload),
+                )
+                _dump_failed_batch(batch, batch_idx)
+                return GPTBatchReport((), frozenset(), entry_ids)
+            except httpx.HTTPStatusError as e:
+                log.warning(
+                    "GPT extract batch %d/%d HTTP %s after retries: body[:300]=%r",
+                    batch_idx,
+                    total_batches,
+                    e.response.status_code,
+                    e.response.text[:300],
+                )
+                _dump_failed_batch(batch, batch_idx)
+                return GPTBatchReport((), frozenset(), entry_ids)
+            except httpx.HTTPError as e:
+                log.warning(
+                    "GPT extract batch %d/%d failed (%s): %s",
+                    batch_idx,
+                    total_batches,
+                    type(e).__name__,
+                    e,
+                )
+                _dump_failed_batch(batch, batch_idx)
+                return GPTBatchReport((), frozenset(), entry_ids)
+            except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
+                log.warning(
+                    "GPT extract batch %d/%d malformed response (%s): %s",
+                    batch_idx,
+                    total_batches,
+                    type(e).__name__,
+                    e,
+                )
+                _dump_failed_batch(batch, batch_idx)
+                return GPTBatchReport((), frozenset(), entry_ids)
+    finally:
+        current_query_attribution.reset(attribution_token)
 
     items = _parse_json_array(resp)
     if items is None:
@@ -536,72 +577,79 @@ async def _recheck_batch(
     batch: list[ValidationResult],
     batch_idx: int,
     total_batches: int,
+    attribution: dict[int, RequestAttribution] | None = None,
 ) -> tuple[list[ValidationResult], bool]:
-    """Re-check a batch of valid results in one GPT call.
+    """Re-check a batch of valid results in one GPT call."""
+    payload = "\n\n".join(_format_recheck_entry(i, result) for i, result in enumerate(batch))
+    from aipocket.core.request_ledger import current_query_attribution
 
-    Returns (batch, success) where success=False means the GPT call failed
-    entirely and the batch was NOT evaluated.
-    """
-    payload_parts = []
-    for i, r in enumerate(batch):
-        payload_parts.append(_format_recheck_entry(i, r))
-    payload = "\n\n".join(payload_parts)
-
-    async with sem:
-        try:
-            resp = await _chat(client, RECHECK_SYSTEM, payload, max_tokens=200 + 80 * len(batch))
-        except httpx.TimeoutException as e:
-            log.warning(
-                "GPT recheck batch %d/%d TIMEOUT (%s)", batch_idx, total_batches, type(e).__name__
-            )
-            return batch, False
-        except httpx.HTTPStatusError as e:
-            log.warning(
-                "GPT recheck batch %d/%d HTTP %s: body[:300]=%r",
-                batch_idx,
-                total_batches,
-                e.response.status_code,
-                e.response.text[:300],
-            )
-            return batch, False
-        except httpx.HTTPError as e:
-            log.warning(
-                "GPT recheck batch %d/%d failed (%s): %s",
-                batch_idx,
-                total_batches,
-                type(e).__name__,
-                e,
-            )
-            return batch, False
-        except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
-            log.warning(
-                "GPT recheck batch %d/%d malformed (%s): %s",
-                batch_idx,
-                total_batches,
-                type(e).__name__,
-                e,
-            )
-            return batch, False
+    request_attribution = (
+        (attribution or {}).get(id(batch[0].credential), RequestAttribution(lane="gpt"))
+        if batch
+        else RequestAttribution(lane="gpt")
+    )
+    attribution_token = current_query_attribution.set(request_attribution)
+    try:
+        async with sem:
+            try:
+                resp = await _chat(
+                    client,
+                    RECHECK_SYSTEM,
+                    payload,
+                    max_tokens=200 + 80 * len(batch),
+                )
+            except httpx.TimeoutException as e:
+                log.warning(
+                    "GPT recheck batch %d/%d TIMEOUT (%s)",
+                    batch_idx,
+                    total_batches,
+                    type(e).__name__,
+                )
+                return batch, False
+            except httpx.HTTPStatusError as e:
+                log.warning(
+                    "GPT recheck batch %d/%d HTTP %s: body[:300]=%r",
+                    batch_idx,
+                    total_batches,
+                    e.response.status_code,
+                    e.response.text[:300],
+                )
+                return batch, False
+            except httpx.HTTPError as e:
+                log.warning(
+                    "GPT recheck batch %d/%d failed (%s): %s",
+                    batch_idx,
+                    total_batches,
+                    type(e).__name__,
+                    e,
+                )
+                return batch, False
+            except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
+                log.warning(
+                    "GPT recheck batch %d/%d malformed (%s): %s",
+                    batch_idx,
+                    total_batches,
+                    type(e).__name__,
+                    e,
+                )
+                return batch, False
+    finally:
+        current_query_attribution.reset(attribution_token)
 
     try:
         verdicts = _extract_json_array(resp)
-        # Build index map from GPT response
         verdict_map: dict[int, dict[str, Any]] = {}
-        for v in verdicts:
-            if not isinstance(v, dict):
-                continue
-            idx = v.get("idx")
-            if idx is None:
+        for verdict in verdicts:
+            if not isinstance(verdict, dict) or verdict.get("idx") is None:
                 continue
             try:
-                verdict_map[int(idx)] = v
+                verdict_map[int(verdict["idx"])] = verdict
             except (TypeError, ValueError):
                 continue
 
-        # Apply verdicts
         rejected = 0
-        for i, result in enumerate(batch):
-            verdict = verdict_map.get(i)
+        for index, result in enumerate(batch):
+            verdict = verdict_map.get(index)
             if not verdict:
                 continue
             if verdict.get("valid") is False:
@@ -637,11 +685,15 @@ async def _run_recheck_wave(
     batches: list[list[ValidationResult]],
     concurrency: int,
     label: str,
+    attribution: dict[int, RequestAttribution] | None = None,
 ) -> list[list[ValidationResult]]:
     """Run a wave of recheck batches; return list of FAILED batches."""
     total = len(batches)
     sem = asyncio.Semaphore(concurrency)
-    tasks = [_recheck_batch(client, sem, b, idx + 1, total) for idx, b in enumerate(batches)]
+    tasks = [
+        _recheck_batch(client, sem, batch, index + 1, total, attribution)
+        for index, batch in enumerate(batches)
+    ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     failed = []
     for idx, item in enumerate(results):
@@ -668,7 +720,11 @@ async def _run_recheck_wave(
     return failed
 
 
-async def recheck_all_with_gpt(results: list[ValidationResult]) -> list[ValidationResult]:
+async def recheck_all_with_gpt(
+    results: list[ValidationResult],
+    *,
+    attribution: dict[int, RequestAttribution] | None = None,
+) -> list[ValidationResult]:
     if not settings.gpt_key or not settings.gpt_base_url:
         return results
     valid_results = [r for r in results if r.valid]
@@ -698,7 +754,7 @@ async def recheck_all_with_gpt(results: list[ValidationResult]) -> list[Validati
 
     # Wave 1: process all batches with configured concurrency
     async with _make_client(max_connections=concurrency * 2) as client:
-        failed = await _run_recheck_wave(client, batches, concurrency, "wave-1")
+        failed = await _run_recheck_wave(client, batches, concurrency, "wave-1", attribution or {})
 
     # Wave 2: retry failed batches with reduced concurrency + delay
     if failed:
@@ -712,7 +768,9 @@ async def recheck_all_with_gpt(results: list[ValidationResult]) -> list[Validati
         )
         await asyncio.sleep(retry_delay)
         async with _make_client(max_connections=retry_concurrency * 2) as client:
-            still_failed = await _run_recheck_wave(client, failed, retry_concurrency, "wave-2")
+            still_failed = await _run_recheck_wave(
+                client, failed, retry_concurrency, "wave-2", attribution or {}
+            )
 
         # Wave 3: split remaining failed batches into single items for last resort
         if still_failed:
@@ -728,7 +786,11 @@ async def recheck_all_with_gpt(results: list[ValidationResult]) -> list[Validati
                 await asyncio.sleep(10.0)
                 async with _make_client(max_connections=single_concurrency * 2) as client:
                     final_failed = await _run_recheck_wave(
-                        client, single_batches, single_concurrency, "wave-3-singles"
+                        client,
+                        single_batches,
+                        single_concurrency,
+                        "wave-3-singles",
+                        attribution or {},
                     )
                 if final_failed:
                     log.warning(

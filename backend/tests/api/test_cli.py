@@ -55,7 +55,14 @@ def test_cli_scan_persists_results(tmp_path, monkeypatch):
     from aipocket.services.writer import write_scan_metadata, write_valid_results
 
     async def fake_run_scan(
-        query_budgets=None, run_dir=None, *, skip_direct=False, mode="incremental"
+        query_budgets=None,
+        run_dir=None,
+        *,
+        skip_direct=False,
+        mode="incremental",
+        sources=None,
+        policy=None,
+        **_kwargs,
     ):
         # Mimic real run_scan which writes JSONL internally
         if run_dir:
@@ -88,3 +95,28 @@ def test_cli_scan_persists_results(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert list(tmp_path.glob("run_*/scan_*.jsonl"))
     assert list(tmp_path.glob("run_*/valid_*.jsonl"))
+
+
+def test_cli_scan_passes_github_pack_without_mutating_settings(tmp_path, monkeypatch):
+    from aipocket.core.config import Settings
+    from aipocket.core.models import ScanRunResult
+
+    captured: dict = {}
+
+    async def fake_run_scan(**kwargs):
+        captured.update(kwargs)
+        return ScanRunResult(
+            started_at="t0",
+            finished_at="t1",
+            total_hosts=0,
+            total_credentials=0,
+            total_valid=0,
+            queries_used=[],
+            results=[],
+        )
+
+    monkeypatch.setattr("aipocket.services.scanner.run_scan", fake_run_scan)
+    monkeypatch.setattr("aipocket.services.writer.settings", Settings(results_dir=str(tmp_path)))
+    result = runner.invoke(app, ["scan", "--source", "github", "--github-pack", "cohere"])
+    assert result.exit_code == 0
+    assert captured["github_pack_ids"] == ("cohere",)

@@ -92,6 +92,7 @@ class FofaClient:
         *,
         min_interval: float | None = None,
         max_rounds: int = 3,
+        query_id: str = "",
     ):
         if keys is None:
             keys = settings.keys
@@ -105,6 +106,7 @@ class FofaClient:
             interval = max(float(settings.fofa_page_delay), 0.0)
         else:
             interval = max(float(min_interval), 0.0)
+        self.query_id = query_id
         self._pool = KeyPool(
             keys,
             min_interval=interval,
@@ -112,6 +114,49 @@ class FofaClient:
             max_rounds=max_rounds,
         )
         self._client = httpx.Client(timeout=self.timeout, follow_redirects=True)
+
+    def _instrumented_get(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        attempt: int = 1,
+        endpoint_class: str = "/api/v1/search/all",
+    ) -> httpx.Response:
+        """GET with one RequestLedger row per physical attempt (no secrets)."""
+        import time
+
+        from aipocket.services.http_transport import record_sync_attempt
+
+        started = time.perf_counter()
+        error_class = ""
+        status_code: int | None = None
+        response_bytes = 0
+        try:
+            r = self._client.get(url, params=params)
+            status_code = r.status_code
+            response_bytes = len(r.content or b"")
+            return r
+        except httpx.TimeoutException:
+            error_class = "timeout"
+            raise
+        except httpx.HTTPError:
+            error_class = "network"
+            raise
+        finally:
+            record_sync_attempt(
+                method="GET",
+                url=url,
+                stage="discovery",
+                source="fofa",
+                status_code=status_code,
+                error_class=error_class,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                attempt=attempt,
+                endpoint_class=endpoint_class,
+                response_bytes=response_bytes,
+                query_id=self.query_id,
+            )
 
     @property
     def _dead(self) -> set[str]:
@@ -179,6 +224,7 @@ class FofaClient:
         size: int | None = None,
         fields: str = DEFAULT_FIELDS,
     ) -> list[dict[str, Any]]:
+        self.query_id = query
         pages = pages or settings.fofa_max_pages
         size = size or settings.fofa_page_size
         qbase64 = base64.b64encode(query.encode()).decode()
@@ -246,7 +292,12 @@ class FofaClient:
                 "fields": fields,
             }
             try:
-                r = self._client.get(url, params=params)
+                r = self._instrumented_get(
+                    url,
+                    params=params,
+                    attempt=attempt,
+                    endpoint_class="/api/v1/search/all",
+                )
             except httpx.HTTPError as e:
                 last_err = f"network: {e}"
                 log.warning("  fofa key %s… network error: %s", key[:6], e)

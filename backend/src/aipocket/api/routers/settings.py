@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends
 from ..deps import get_current_user
 from ..schemas import (
     FofaCheckResponse,
+    GithubCheckResponse,
     SettingsUpdate,
     SettingsUpdateResponse,
     SettingsView,
@@ -16,6 +17,7 @@ from ..schemas import (
 )
 from ..settings_io import (
     check_fofa,
+    check_github,
     check_shodan,
     current_view,
     update_settings,
@@ -49,3 +51,9 @@ async def check_fofa_endpoint() -> FofaCheckResponse:
 async def check_shodan_endpoint() -> ShodanCheckResponse:
     """Shodan connectivity + real remaining credits (no quota cost)."""
     return await asyncio.to_thread(check_shodan)
+
+
+@router.post("/check/github", response_model=GithubCheckResponse)
+async def check_github_endpoint() -> GithubCheckResponse:
+    """GitHub connectivity via /rate_limit (no search quota)."""
+    return await asyncio.to_thread(check_github)

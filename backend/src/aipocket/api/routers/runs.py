@@ -93,7 +93,9 @@ async def get_gpt_failed_status(run_id: str, request: Request) -> GptFailedStatu
             GptFailedFileInfo(name=f.name, hits=f.hits, batch_idx=f.batch_idx)
             for f in summary.failed_files
         ],
-        retry=job if (job.run_id == run_id or job.state == "idle") else RetryGptFailedJobStatus(state="idle"),
+        retry=job
+        if (job.run_id == run_id or job.state == "idle")
+        else RetryGptFailedJobStatus(state="idle"),
     )
 
 

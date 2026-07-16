@@ -21,6 +21,10 @@ EXPECTED_PROVIDERS = {
     "qwen",
     "siliconflow",
     "google",
+    "cohere",
+    "replicate",
+    "together",
+    "fireworks",
     "groq",
     "openrouter",
     "azure_openai",
@@ -34,17 +38,18 @@ EXPECTED_PROVIDERS = {
 CURRENT_DOMAIN_ROUTES = {
     "https://api.openai.com/v1": (
         "openai",
-        ("gpt-5.5", "gpt-5.4", "gpt-4o-mini", "gpt-3.5-turbo"),
+        ("gpt-5.6-sol", "gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-4o-mini", "gpt-3.5-turbo"),
     ),
     "https://files.oaiusercontent.com/v1": (
         "openai",
-        ("gpt-5.5", "gpt-5.4", "gpt-4o-mini"),
+        ("gpt-5.6-sol", "gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-4o-mini"),
     ),
     "https://api.anthropic.com/v1": (
         "anthropic",
         (
-            "claude-sonnet-4-6",
+            "claude-fable-5",
             "claude-sonnet-5",
+            "claude-sonnet-4-6",
             "claude-opus-4-8",
             "claude-opus-4-7",
             "claude-haiku-4-5-20251001",
@@ -56,7 +61,7 @@ CURRENT_DOMAIN_ROUTES = {
     ),
     "https://api.moonshot.cn/v1": (
         "kimi",
-        ("kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "moonshot-v1-8k"),
+        ("kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "moonshot-v1-8k"),
     ),
     "https://open.bigmodel.cn/api/paas/v4": (
         "glm",
@@ -68,7 +73,17 @@ CURRENT_DOMAIN_ROUTES = {
     ),
     "https://api.siliconflow.cn/v1": (
         "siliconflow",
-        ("deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-7B-Instruct"),
+        (
+            "deepseek-ai/DeepSeek-V4-Pro",
+            "deepseek-ai/DeepSeek-V4-Flash",
+            "deepseek-ai/DeepSeek-V3",
+            "Qwen/Qwen3.5-397B-A17B",
+            "Qwen/Qwen3-Max",
+            "Qwen/Qwen3-32B",
+            "THUDM/GLM-Z1-32B-0414",
+            "zai-org/GLM-4.5",
+            "moonshotai/Kimi-K2.5",
+        ),
     ),
     "https://dashscope.aliyuncs.com/compatible-mode/v1": (
         "qwen",
@@ -144,6 +159,64 @@ def test_groq_domain_resolves_through_registry():
 def test_openrouter_key_resolves_through_registry():
     apikey = "sk-or-v1-" + "a" * 32
     assert resolve_provider(apikey=apikey).provider == "openrouter"
+
+
+def test_cohere_is_first_party_not_aggregator():
+    """Cohere serves its own Command models — not OpenAI/Claude multi-vendor."""
+    decision = resolve_provider(apiurl="https://api.cohere.com/v1")
+    assert decision.provider == "cohere"
+    assert decision.category == "international"
+    assert decision.default_model_hints[0].startswith("command")
+
+
+@pytest.mark.parametrize(
+    ("apiurl", "provider"),
+    [
+        ("https://openrouter.ai/api/v1", "openrouter"),
+        ("https://api.siliconflow.cn/v1", "siliconflow"),
+        ("https://api.together.ai/v1", "together"),
+        ("https://api.fireworks.ai/inference/v1", "fireworks"),
+        ("https://api.replicate.com/v1", "replicate"),
+    ],
+)
+def test_multi_model_hosts_are_gateway_category(apiurl: str, provider: str):
+    decision = resolve_provider(apiurl=apiurl)
+    assert decision.provider == provider
+    assert decision.category == "gateway"
+    assert decision.default_model_hints  # must probe something high-value
+
+
+def test_openrouter_hints_prioritize_international_models():
+    """International aggregator: OpenAI/Claude before domestic."""
+    hints = resolve_provider(apiurl="https://openrouter.ai/api/v1").default_model_hints
+    assert hints[0].startswith("openai/")
+    assert any(h.startswith("anthropic/") for h in hints)
+    first_domestic = next(
+        (i for i, h in enumerate(hints) if h.startswith(("deepseek/", "qwen/", "z-ai/", "moonshotai/"))),
+        len(hints),
+    )
+    first_intl = next(
+        (i for i, h in enumerate(hints) if h.startswith(("openai/", "anthropic/"))),
+        len(hints),
+    )
+    assert first_intl < first_domestic
+
+
+def test_siliconflow_hints_prioritize_domestic_models():
+    """Domestic aggregator: DeepSeek/Qwen/GLM before any Western open weights."""
+    hints = resolve_provider(apiurl="https://api.siliconflow.cn/v1").default_model_hints
+    assert hints[0].startswith("deepseek-ai/")
+    joined = " ".join(hints)
+    assert "Qwen/" in joined
+    assert "GLM" in joined or "glm" in joined.lower()
+    assert not any(h.startswith(("openai/", "anthropic/", "gpt-", "claude-")) for h in hints)
+
+
+def test_together_hints_prioritize_international_open_models():
+    hints = resolve_provider(apiurl="https://api.together.ai/v1").default_model_hints
+    assert hints[0].startswith("meta-llama/")
+    deepseek_idx = next((i for i, h in enumerate(hints) if "deepseek" in h.lower()), len(hints))
+    assert 0 < deepseek_idx  # Llama before DeepSeek
 
 
 @pytest.mark.parametrize(

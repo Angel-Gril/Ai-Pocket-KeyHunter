@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   CircleCheck,
   Gem,
+  GitBranch,
   Globe,
   KeyRound,
   Layers,
@@ -15,12 +16,20 @@ import {
   Terminal,
 } from "lucide-react"
 import { toast } from "sonner"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 import {
   api,
   ApiError,
   openScanLogStream,
   type ScanLogLine,
+  type GitHubPackId,
   type ScanMode,
   type ScanSource,
   type ScanStatusResponse,
@@ -34,6 +43,18 @@ const SOURCES: { value: ScanSource; label: string; icon: typeof Globe }[] = [
   { value: "all", label: "全部", icon: Layers },
   { value: "fofa", label: "FOFA", icon: Globe },
   { value: "shodan", label: "Shodan", icon: Radar },
+  { value: "github", label: "GitHub", icon: GitBranch },
+]
+
+const GITHUB_PACKS: readonly { value: GitHubPackId; label: string }[] = [
+  { value: "glm", label: "GLM" },
+  { value: "kimi", label: "Kimi" },
+  { value: "qwen", label: "Qwen" },
+  { value: "cohere", label: "Cohere" },
+  { value: "replicate", label: "Replicate" },
+  { value: "together", label: "Together" },
+  { value: "fireworks", label: "Fireworks" },
+  { value: "all", label: "全部 Provider" },
 ]
 
 function isActive(state: string | undefined): boolean {
@@ -99,14 +120,33 @@ function MetricCard({ icon: Icon, label, value, valueClass, iconClass }: Readonl
   )
 }
 
-export default function ScanPage() {
+export interface ScanConsoleProps {
+  /** Lock source selector and always start with this source (e.g. github-only page). */
+  fixedSource?: ScanSource
+  title?: string
+  subtitle?: string
+  startLabel?: string
+}
+
+export function ScanConsole({
+  fixedSource,
+  title = "执行扫描",
+  subtitle,
+  startLabel = "开始扫描",
+}: Readonly<ScanConsoleProps>) {
   const queryClient = useQueryClient()
-  const [source, setSource] = useState<ScanSource>("all")
+  const [source, setSource] = useState<ScanSource>(fixedSource ?? "all")
   const [mode, setMode] = useState<ScanMode>("incremental")
+  const [githubPack, setGithubPack] = useState<GitHubPackId>("glm")
   const [lines, setLines] = useState<ScanLogLine[]>([])
 
   const lastSeqRef = useRef(0)
   const logViewRef = useRef<HTMLDivElement>(null)
+
+  // Keep locked source in sync if prop changes.
+  useEffect(() => {
+    if (fixedSource) setSource(fixedSource)
+  }, [fixedSource])
 
   const statusQuery = useQuery({
     queryKey: ["scan-status"],
@@ -199,8 +239,11 @@ export default function ScanPage() {
     if (el) el.scrollTop = el.scrollHeight
   }, [lines])
 
+  const launchSource = fixedSource ?? source
+  const includesGitHub = launchSource === "github" || launchSource === "all"
+
   const startMutation = useMutation({
-    mutationFn: () => api.scanStart(source, mode),
+    mutationFn: () => api.scanStart(launchSource, mode, includesGitHub ? [githubPack] : []),
     onSuccess: applyStatus,
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
@@ -236,17 +279,23 @@ export default function ScanPage() {
   }, [total, validated])
   const indeterminate = running && total <= 0
 
-  const activeSource = running ? ((status?.source as ScanSource | undefined) ?? source) : source
+  const activeSource = running ? ((status?.source as ScanSource | undefined) ?? launchSource) : launchSource
+  const activeGithubPack = running
+    ? (status?.github_pack_ids?.[0] ?? githubPack)
+    : githubPack
   const stopping = state === "stopping"
+  const locked = Boolean(fixedSource)
+
+  const defaultSubtitle = locked
+    ? `固定数据源 ${fixedSource} · 全局单例 · 结果入库后与其它来源一致展示 · ${stateLabel(state)}`
+    : `全局单例 · 同一时刻只允许一个扫描运行 · ${stateLabel(state)}`
 
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-4 border-b border-border-primary px-8 py-5">
         <div className="flex flex-1 flex-col gap-[3px]">
-          <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">执行扫描</h1>
-          <p className="font-mono text-xs text-text-muted">
-            全局单例 · 同一时刻只允许一个扫描运行 · {stateLabel(state)}
-          </p>
+          <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">{title}</h1>
+          <p className="font-mono text-xs text-text-muted">{subtitle ?? defaultSubtitle}</p>
         </div>
         {running ? (
           <button
@@ -274,42 +323,89 @@ export default function ScanPage() {
             ) : (
               <Play className="size-[14px]" />
             )}
-            开始扫描
+            {startLabel}
           </button>
         )}
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-5 px-8 py-6">
-        <div className="flex items-center gap-3.5">
-          <span className="font-mono text-xs text-text-muted">数据源</span>
-          {SOURCES.map(({ value, label, icon: Icon }) => {
-            const selected = activeSource === value
-            return (
-              <button
-                key={value}
-                type="button"
-                disabled={running}
-                onClick={() => setSource(value)}
-                className={cn(
-                  "inline-flex items-center gap-2 rounded-[4px] border px-4 py-[9px] text-[13px] transition-colors",
-                  selected
-                    ? "border-accent bg-accent-dim font-semibold text-accent"
-                    : "border-border-primary bg-surface-raised text-text-secondary hover:text-text-primary",
-                  running && "cursor-not-allowed opacity-50",
-                )}
-              >
-                <Icon className="size-[15px]" />
-                {label}
-              </button>
-            )
-          })}
-          {running ? (
-            <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-[11px] text-text-muted">
-              <Lock className="size-[13px]" />
-              运行中不可修改
+        {locked ? (
+          <div className="flex items-center gap-3.5">
+            <span className="font-mono text-xs text-text-muted">数据源</span>
+            <span className="inline-flex items-center gap-2 rounded-[4px] border border-accent bg-accent-dim px-4 py-[9px] text-[13px] font-semibold text-accent">
+              <GitBranch className="size-[15px]" />
+              GitHub
             </span>
-          ) : null}
-        </div>
+            <span className="font-mono text-[11px] text-text-muted">
+              本页固定为 source=github · 全量扫描请用「执行扫描 → 全部」
+            </span>
+            {running ? (
+              <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-[11px] text-text-muted">
+                <Lock className="size-[13px]" />
+                运行中不可修改
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          <div className="flex items-center gap-3.5">
+            <span className="font-mono text-xs text-text-muted">数据源</span>
+            {SOURCES.map(({ value, label, icon: Icon }) => {
+              const selected = activeSource === value
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  disabled={running}
+                  onClick={() => setSource(value)}
+                  className={cn(
+                    "inline-flex items-center gap-2 rounded-[4px] border px-4 py-[9px] text-[13px] transition-colors",
+                    selected
+                      ? "border-accent bg-accent-dim font-semibold text-accent"
+                      : "border-border-primary bg-surface-raised text-text-secondary hover:text-text-primary",
+                    running && "cursor-not-allowed opacity-50",
+                  )}
+                >
+                  <Icon className="size-[15px]" />
+                  {label}
+                </button>
+              )
+            })}
+            {running ? (
+              <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-[11px] text-text-muted">
+                <Lock className="size-[13px]" />
+                运行中不可修改
+              </span>
+            ) : null}
+          </div>
+        )}
+
+        {activeSource === "github" || activeSource === "all" ? (
+          <div className="flex items-center gap-3.5">
+            <span className="font-mono text-xs text-text-muted">GitHub Provider 包</span>
+            <Select
+              value={activeGithubPack}
+              onValueChange={(value) => setGithubPack(value as GitHubPackId)}
+              disabled={running}
+            >
+              <SelectTrigger
+                className="w-[190px] border-border-primary bg-surface-raised font-mono text-xs text-text-primary"
+                aria-label="选择 GitHub Provider 包"
+              >
+                <SelectValue placeholder="选择 Provider" />
+              </SelectTrigger>
+              <SelectContent align="start" position="popper">
+                {GITHUB_PACKS.map((pack) => (
+                  <SelectItem key={pack.value} value={pack.value} className="font-mono text-xs">
+                    {pack.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span className="font-mono text-[11px] text-text-muted">
+              单包控制查询预算；“全部 Provider”会依次运行所有已注册包
+            </span>
+          </div>
+        ) : null}
 
         <div className="flex items-center gap-3.5">
           <span className="font-mono text-xs text-text-muted">扫描模式</span>
@@ -414,4 +510,8 @@ export default function ScanPage() {
       </div>
     </div>
   )
+}
+
+export default function ScanPage() {
+  return <ScanConsole />
 }

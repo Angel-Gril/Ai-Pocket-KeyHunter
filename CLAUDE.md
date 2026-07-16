@@ -1,6 +1,6 @@
 # AIPocket
 
-Scan for exposed AI infrastructure (FOFA + Shodan), extract and validate leaked API key/URL pairs, check balances, and flag high-value findings.
+Scan for exposed AI infrastructure (FOFA + Shodan + GitHub artifact source), extract and validate leaked API key/URL pairs, check balances, and flag high-value findings.
 
 ## Architecture
 
@@ -62,7 +62,7 @@ docker compose -f docker-compose.yml up -d
 
 | Command | Description |
 |---------|-------------|
-| `aipocket scan` | Run a full scan (FOFA + Shodan + extract + validate + balance) |
+| `aipocket scan` | Run a full scan (FOFA + Shodan + optional GitHub + extract + validate + balance) |
 | `aipocket serve` | Start FastAPI web API |
 | `aipocket watch` | Periodic scanner (scheduler loop) |
 | `aipocket queries` | Print current FOFA/Shodan query sets |

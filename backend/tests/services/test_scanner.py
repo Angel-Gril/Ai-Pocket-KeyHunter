@@ -7,7 +7,14 @@ import pytest
 
 from aipocket.core.models import Credential, ValidationResult
 from aipocket.core.targets import canonicalize_hits
-from aipocket.services.scanner import QueryBudgets, _fetch_fofa, _fetch_shodan, _trim_hits, run_scan
+from aipocket.services.scanner import (
+    QueryBudgets,
+    _complete_ledger,
+    _fetch_fofa,
+    _fetch_shodan,
+    _trim_hits,
+    run_scan,
+)
 
 FOFA_KEY = "Bearer sk-proj-abc123def456ghi789"
 
@@ -67,6 +74,59 @@ def test_shodan_fetch_preserves_complete_query_provenance(monkeypatch):
     assert target.product_hints == frozenset({"example", "example-ai"})
 
 
+def test_complete_ledger_rejects_stale_instrumentation_version(monkeypatch):
+    from aipocket.core.request_ledger import RequestLedger
+
+    monkeypatch.setattr("aipocket.core.config.settings.database_url", "postgresql://test/test")
+    monkeypatch.setattr("aipocket.services.http_transport.HTTP_INSTRUMENTATION_VERSION", 0)
+    ledger = RequestLedger(run_id="run_old", on_flush=lambda _batch: None)
+
+    total, complete, reason = _complete_ledger(ledger)
+
+    assert total == 0
+    assert complete is False
+    assert reason == "http_instrumentation_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_run_scan_creates_parent_before_fetch_without_run_dir(monkeypatch):
+    from aipocket.core.metrics import QueryUsage
+    from aipocket.discovery.base import SourceFetchResult
+
+    events: list[str] = []
+    monkeypatch.setattr("aipocket.core.config.settings.database_url", "postgresql://test/test")
+    monkeypatch.setattr("aipocket.core.config.settings.fofa_keys", "key")
+    monkeypatch.setattr("aipocket.core.config.settings.shodan_keys", "")
+    monkeypatch.setattr("aipocket.core.config.settings.scan_prober", False)
+    monkeypatch.setattr("aipocket.core.config.settings.gpt_key", "")
+    monkeypatch.setattr(
+        "aipocket.services.writer.create_run_pg",
+        lambda *_args: events.append("parent"),
+    )
+    monkeypatch.setattr(
+        "aipocket.services.writer.persist_ledger_batch_pg",
+        lambda *_args: events.append("ledger"),
+    )
+    monkeypatch.setattr(
+        "aipocket.services.writer.persist_run_pg",
+        lambda *_args: events.append("finished"),
+    )
+    monkeypatch.setattr(
+        "aipocket.services.writer.mark_run_interrupted_pg",
+        lambda *_args: events.append("interrupted"),
+    )
+
+    async def fake_fetch_all(*_args, **_kwargs):
+        events.append("fetch")
+        return [SourceFetchResult(source="fofa", query_usage=(QueryUsage(query="q"),))]
+
+    monkeypatch.setattr("aipocket.discovery.registry.SourceRegistry.fetch_all", fake_fetch_all)
+
+    await run_scan(sources={"fofa"})
+
+    assert events == ["parent", "fetch", "finished"]
+
+
 @pytest.mark.asyncio
 async def test_run_scan_fofa_and_shodan_both_run(tmp_path, monkeypatch):
     """One scan walks BOTH sources and merges their hits."""
@@ -116,7 +176,7 @@ async def test_run_scan_fofa_and_shodan_both_run(tmp_path, monkeypatch):
         "aipocket.clients.shodan.ShodanClient", lambda: _make_mock_client(shodan_hits)
     )
 
-    async def fake_validate(creds):
+    async def fake_validate(creds, **kwargs):
         return [
             ValidationResult(credential=c, valid=True, status_code=200, tier="tier5") for c in creds
         ]
@@ -173,7 +233,7 @@ async def test_run_scan_same_key_from_both_sources_merges_backend(tmp_path, monk
         "aipocket.clients.shodan.ShodanClient", lambda: _make_mock_client(copy.deepcopy(same_hits))
     )
 
-    async def fake_validate(creds):
+    async def fake_validate(creds, **kwargs):
         return [ValidationResult(credential=c, valid=True, status_code=200) for c in creds]
 
     monkeypatch.setattr("aipocket.services.scanner.validate_all", fake_validate)
@@ -242,10 +302,20 @@ async def test_run_scan_preserves_exact_source_query_pairs_for_merged_target(tmp
     )
     monkeypatch.setattr("aipocket.core.config.settings.scan_prober", False)
     monkeypatch.setattr("aipocket.core.config.settings.database_url", "postgresql://test/test")
+    monkeypatch.setattr("aipocket.services.writer.create_run_pg", lambda *_args: None)
+    monkeypatch.setattr("aipocket.services.writer.persist_ledger_batch_pg", lambda *_args: None)
     monkeypatch.setattr("aipocket.services.scanner.load_query_history", lambda _source: ())
     persisted_metrics = []
 
-    def capture_persist(_run_id, _metadata, _valid, _suspicious, metrics):
+    def capture_persist(
+        _run_id,
+        _metadata,
+        _valid,
+        _suspicious,
+        metrics,
+        _validation_outcomes=None,
+        _observation_counts=None,
+    ):
         persisted_metrics.extend(metrics)
 
     monkeypatch.setattr("aipocket.services.writer.persist_run_pg", capture_persist)
@@ -362,7 +432,7 @@ async def test_dedup_second_run_skips_cached_valid_credential(tmp_path, monkeypa
 
     validate_calls: list[list[Credential]] = []
 
-    async def counting_validate(creds):
+    async def counting_validate(creds, **kwargs):
         validate_calls.append(list(creds))
         return [
             ValidationResult(credential=c, valid=True, status_code=200, tier="tier5") for c in creds
@@ -410,7 +480,7 @@ async def test_dedup_recently_failed_cred_skipped_same_run(tmp_path, monkeypatch
 
     validated: list[Credential] = []
 
-    async def counting_validate(creds):
+    async def counting_validate(creds, **kwargs):
         validated.extend(creds)
         return [ValidationResult(credential=c, valid=False) for c in creds]
 
@@ -440,10 +510,10 @@ async def test_scanner_passes_forged_key_verdicts_to_finalizer(tmp_path, monkeyp
     monkeypatch.setattr("aipocket.core.config.settings.scan_prober", False)
     monkeypatch.setattr("aipocket.core.config.settings.gpt_recheck", False)
 
-    async def fake_validate(creds):
+    async def fake_validate(creds, **kwargs):
         return [ValidationResult(credential=c, valid=True, status_code=200) for c in creds]
 
-    async def fake_verdicts(results):
+    async def fake_verdicts(results, **kwargs):
         return {results[0].credential.host}, set()
 
     monkeypatch.setattr("aipocket.services.scanner.validate_all", fake_validate)

@@ -431,7 +431,7 @@ async def test_run_recheck_wave_isolates_batch_crashes(
     good = [_valid_result("https://good.example")]
     bad = [_valid_result("https://bad.example")]
 
-    async def flaky_recheck(client, sem, batch, batch_idx, total_batches):
+    async def flaky_recheck(client, sem, batch, batch_idx, total_batches, attribution=None):
         if batch is bad:
             raise RuntimeError("recheck coroutine exploded")
         return batch, True

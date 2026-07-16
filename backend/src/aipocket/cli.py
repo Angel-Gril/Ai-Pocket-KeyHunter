@@ -50,7 +50,32 @@ def scan(
     shodan_queries: int = typer.Option(
         0, "--shodan-queries", help="Shodan query budget (0=configured default)"
     ),
-    mode: str = typer.Option("incremental", "--mode", help="Scan mode: incremental or full"),
+    source: str = typer.Option(
+        "all",
+        "--source",
+        help="Discovery source: all | fofa | shodan | github",
+    ),
+    github_pack: str = typer.Option(
+        "",
+        "--github-pack",
+        help="Restrict GitHub hunter to a single pack id (e.g. glm)",
+    ),
+    github_commit_queries: int = typer.Option(
+        0,
+        "--github-commit-queries",
+        help="GitHub commit-message query budget (0=configured default)",
+    ),
+    github_code_queries: int = typer.Option(
+        0,
+        "--github-code-queries",
+        help="GitHub code-snapshot query budget (0=configured default)",
+    ),
+    mode: str = typer.Option(
+        "incremental",
+        "--mode",
+        help="Scan mode: incremental or full "
+        "(full = discovery coverage only; verification still uses TTL cache)",
+    ),
     fast: bool = typer.Option(
         False, "--fast", help="Fast GPT mode: higher concurrency + bigger batches"
     ),
@@ -63,11 +88,17 @@ def scan(
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
-    """Run a single scan across all configured sources (FOFA + Shodan) and write JSONL results."""
+    """Run a single scan across configured sources (FOFA + Shodan + GitHub) and write results."""
     if mode not in {"full", "incremental"}:
         raise typer.BadParameter("mode must be 'full' or 'incremental'")
+    if source not in {"all", "fofa", "shodan", "github"}:
+        raise typer.BadParameter("source must be all|fofa|shodan|github")
     if fast:
         settings.gpt_fast = True
+    if github_commit_queries:
+        settings.github_commit_query_budget = github_commit_queries
+    if github_code_queries:
+        settings.github_code_query_budget = github_code_queries
 
     skip_direct = False
     if realtest:
@@ -115,12 +146,15 @@ def scan(
         fofa=fofa_queries or settings.fofa_query_budget,
         shodan=shodan_queries or settings.shodan_query_budget,
     )
+    sources = None if source == "all" else {source}
     result = asyncio.run(
         run_scan(
             query_budgets=budgets,
             run_dir=run_dir,
             skip_direct=skip_direct,
             mode=mode,  # type: ignore[arg-type]
+            sources=sources,
+            github_pack_ids=(github_pack,) if github_pack else (),
         )
     )
     _print_summary(result)
