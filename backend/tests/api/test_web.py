@@ -335,6 +335,7 @@ def test_scan_manager_initial_state():
     st = mgr.status()
     assert st["state"] == "idle"
     assert st["run_id"] is None
+    assert st["phase"] == ""
 
 
 def test_scan_manager_log_buffer_does_not_parse_progress_from_prose():
@@ -359,9 +360,24 @@ def test_scan_manager_log_buffer_does_not_parse_progress_from_prose():
         "suspicious": 0,
         "high_value_final": 0,
     }
+    assert st["phase"] == ""
     # since filter
     lines2, _ = mgr.logs_since(1)
     assert len(lines2) == 2
+
+
+def test_scan_manager_set_phase():
+    from aipocket.api.scan_manager import ScanManager
+    from aipocket.core.scan_phase import report_phase, reset_phase_reporter, set_phase_reporter
+
+    mgr = ScanManager()
+    token = set_phase_reporter(mgr.set_phase)
+    try:
+        report_phase("GitHub · cohere · file history 12/30")
+    finally:
+        reset_phase_reporter(token)
+
+    assert mgr.status()["phase"] == "GitHub · cohere · file history 12/30"
 
 
 @pytest.mark.asyncio

@@ -103,6 +103,8 @@ export interface ScanStatusResponse {
   started_at: string | null
   finished_at: string | null
   progress: ScanProgress
+  /** Coarse human-readable stage, e.g. "GitHub · cohere · file history 12/300". */
+  phase?: string
   error: string | null
   log_seq: number
 }
@@ -120,6 +122,22 @@ export interface ScanLogsResponse {
 export interface CveSyncResponse {
   total: number
   added: number
+}
+
+export interface CveAddRequest {
+  url?: string
+  id?: string
+  product?: string
+  type?: string
+  description?: string
+  cvss?: number
+  huntable?: string
+}
+
+export interface CveAddResponse {
+  created: boolean
+  total: number
+  cve: CveRecord
 }
 
 export interface SettingsView {
@@ -523,6 +541,8 @@ export const api = {
   // CVE
   getCve: () => request<CveResponse>("/cve"),
   cveSync: () => request<CveSyncResponse>("/cve/sync", { method: "POST" }),
+  cveAdd: (body: CveAddRequest) =>
+    request<CveAddResponse>("/cve/add", { method: "POST", body }),
 
   // Settings
   getSettings: () => request<SettingsView>("/settings"),

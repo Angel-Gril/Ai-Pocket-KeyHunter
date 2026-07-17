@@ -19,6 +19,7 @@ from aipocket.core.metrics import (
 from aipocket.core.models import Credential, ScanMode, ScanRunResult, ValidationResult
 from aipocket.core.observations import ExtractionMethod, ObservationRegistry
 from aipocket.core.request_ledger import RequestAttribution, RequestLedger, current_ledger
+from aipocket.core.scan_phase import report_phase
 from aipocket.core.scan_policy import ScanPolicy, policy_from_mode
 from aipocket.core.targets import DiscoveryTarget, canonicalize_hits
 from aipocket.discovery import SourceBudgets, SourceRegistry, merge_fetch_results
@@ -266,6 +267,8 @@ async def _run_scan_inner(
         github_commit=settings.github_commit_query_budget,
         github_code=settings.github_code_query_budget,
     )
+    source_names = ", ".join(s.name for s in resolved) or "none"
+    report_phase(f"发现中 · 数据源 {source_names}")
     fetch_results = await registry.fetch_all(
         resolved,
         budgets=source_budgets,
@@ -334,11 +337,16 @@ async def _run_scan_inner(
         len(cred_observations),
         ", ".join(sources_used),
     )
+    report_phase(
+        f"发现完成 · hits={len(all_hits)} targets={len(targets)} "
+        f"github_obs={len(cred_observations)}"
+    )
 
     # ------------------------------------------------------------------
     # Shared downstream pipeline (source-agnostic): extract -> validate
     # -> GPT recheck -> balance
     # ------------------------------------------------------------------
+    report_phase("提取候选密钥")
     creds = extract_credentials(all_hits)
     observations = ObservationRegistry()
     # Map a credential back to its discovery target for per-query funnel metrics.
@@ -420,6 +428,7 @@ async def _run_scan_inner(
 
     probed_creds: list[Credential] = []
     if settings.scan_prober:
+        report_phase(f"主机探测 · {len(targets)} 个目标")
         # Sort: high-signal hosts first (have sk- / api_key / OPENAI / ANTHROPIC in banner/header)
         _SIGNAL_RE = re.compile(
             r"sk-[A-Za-z0-9_\-]{6,}|api[_-]?key|OPENAI|ANTHROPIC|authorization", re.I
@@ -555,6 +564,8 @@ async def _run_scan_inner(
         fofa_sampled,
         shodan_sampled,
     )
+    if sampled:
+        report_phase(f"GPT 提取 · 采样 {len(sampled)} 个目标")
     gpt_report = await extract_with_gpt(sampled)
     for entry_id in gpt_report.successful_entry_ids:
         target = target_by_entry_id.get(entry_id)
@@ -668,6 +679,7 @@ async def _run_scan_inner(
         len(to_validate),
         settings.validate_concurrency,
     )
+    report_phase(f"验证 credentials · {len(to_validate)} 待验 (缓存命中 {len(cached_results)})")
     fresh_results: list[ValidationResult] = (
         await validate_all(
             to_validate,
@@ -791,6 +803,7 @@ async def _run_scan_inner(
         from .balance import enrich_results
 
         log.info("Querying balance for %d valid credentials...", len(valid))
+        report_phase(f"查询余额 · {len(valid)} 个可用密钥")
         enrichable = [r for r in results if r.valid and not r.suspicious]
         await enrich_results(
             enrichable,

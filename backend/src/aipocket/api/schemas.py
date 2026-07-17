@@ -136,6 +136,7 @@ class ScanStatusResponse(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     progress: ScanProgress = Field(default_factory=ScanProgress)
+    phase: str = ""  # coarse human-readable stage for the live console
     error: str | None = None
     log_seq: int = 0  # latest log sequence number (for ?since= polling)
 
@@ -197,6 +198,28 @@ class GptFailedStatusResponse(BaseModel):
 class CveSyncResponse(BaseModel):
     total: int
     added: int
+
+
+class CveAddRequest(BaseModel):
+    """Add a CVE manually from a source URL and/or explicit fields.
+
+    Prefer ``url`` (fetched and parsed). If parse is incomplete or no URL is
+    given, supply ``id`` + ``product`` (and optionally the rest).
+    """
+
+    url: str = ""
+    id: str = ""
+    product: str = ""
+    type: str = ""
+    description: str = ""
+    cvss: float = 0.0
+    huntable: str = ""
+
+
+class CveAddResponse(BaseModel):
+    created: bool
+    total: int
+    cve: dict[str, Any]
 
 
 # ----------------------------------------------------------------------------

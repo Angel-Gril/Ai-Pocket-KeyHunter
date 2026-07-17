@@ -41,6 +41,7 @@ def _to_status(raw: dict) -> ScanStatusResponse:
         finished_at=raw.get("finished_at"),
         error=raw.get("error"),
         progress=ScanProgress(**raw.get("progress", {})),
+        phase=raw.get("phase") or "",
         log_seq=raw.get("log_seq", 0),
     )
 

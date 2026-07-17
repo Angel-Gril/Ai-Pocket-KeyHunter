@@ -22,6 +22,7 @@ from aipocket.core.request_ledger import (
     current_query_attribution,
     get_current_ledger,
 )
+from aipocket.core.scan_phase import report_phase
 from aipocket.core.scan_policy import ScanPolicy
 from aipocket.discovery.base import (
     ArtifactProvenance,
@@ -208,15 +209,24 @@ class GitHubSource:
         errors: list[str] = []
         seeds: list[dict[str, Any]] = []
 
+        pack_ids = [p.pack_id for p in packs]
+        report_phase(f"GitHub 狩猎 · packs={','.join(pack_ids)}")
         try:
             # Claim pending work before new search shards.
             pending = claim_pending(limit=200)
             if pending:
+                report_phase(f"GitHub · 处理队列中积压 work · {len(pending)} 项")
+                log.info("GitHub: processing %d pending work items", len(pending))
                 obs, err = await self._process_work_items(
                     client, pending, packs=packs, message_hints={}
                 )
                 observations.extend(obs)
                 errors.extend(err)
+                log.info(
+                    "GitHub: pending work done · obs=+%d errors=%d",
+                    len(obs),
+                    len(err),
+                )
 
             run_id = (ledger.run_id if ledger else "") or kwargs.get("run_id") or ""
             commit_budget = budgets.github_commit
@@ -229,6 +239,12 @@ class GitHubSource:
             for pack in packs:
                 # Lane A — commit_message
                 try:
+                    report_phase(f"GitHub · {pack.pack_id} · commit_message 搜索")
+                    log.info(
+                        "GitHub lane=commit_message pack=%s budget=%s",
+                        pack.pack_id,
+                        commit_budget,
+                    )
                     a_obs, a_usage, a_cp, a_err, a_seeds = await self._run_commit_message_lane(
                         client,
                         pack,
@@ -241,12 +257,25 @@ class GitHubSource:
                     checkpoints.extend(a_cp)
                     errors.extend(a_err)
                     seeds.extend(a_seeds)
+                    log.info(
+                        "GitHub lane=commit_message pack=%s done · obs=+%d seeds=+%d errors=%d",
+                        pack.pack_id,
+                        len(a_obs),
+                        len(a_seeds),
+                        len(a_err),
+                    )
                 except Exception as exc:  # noqa: BLE001
                     log.exception("commit_message lane failed for pack=%s", pack.pack_id)
                     errors.append(f"commit_message:{pack.pack_id}:{type(exc).__name__}")
 
                 # Lane B — code_snapshot
                 try:
+                    report_phase(f"GitHub · {pack.pack_id} · code_snapshot 搜索")
+                    log.info(
+                        "GitHub lane=code_snapshot pack=%s budget=%s",
+                        pack.pack_id,
+                        code_budget,
+                    )
                     b_obs, b_usage, b_cp, b_err, b_seeds = await self._run_code_snapshot_lane(
                         client,
                         pack,
@@ -258,6 +287,13 @@ class GitHubSource:
                     checkpoints.extend(b_cp)
                     errors.extend(b_err)
                     seeds.extend(b_seeds)
+                    log.info(
+                        "GitHub lane=code_snapshot pack=%s done · obs=+%d seeds=+%d errors=%d",
+                        pack.pack_id,
+                        len(b_obs),
+                        len(b_seeds),
+                        len(b_err),
+                    )
                 except Exception as exc:  # noqa: BLE001
                     log.exception("code_snapshot lane failed for pack=%s", pack.pack_id)
                     errors.append(f"code_snapshot:{pack.pack_id}:{type(exc).__name__}")
@@ -265,6 +301,14 @@ class GitHubSource:
                 # Lane C — seeded_file_history
                 if self._settings.github_file_history_enabled and seeds:
                     try:
+                        report_phase(
+                            f"GitHub · {pack.pack_id} · file history · {len(seeds)} 个 seed 文件"
+                        )
+                        log.info(
+                            "GitHub lane=seeded_file_history pack=%s seeds=%d",
+                            pack.pack_id,
+                            len(seeds),
+                        )
                         c_obs, c_usage, c_cp, c_err = await self._run_seeded_history_lane(
                             client,
                             pack,
@@ -276,6 +320,12 @@ class GitHubSource:
                         usage.extend(c_usage)
                         checkpoints.extend(c_cp)
                         errors.extend(c_err)
+                        log.info(
+                            "GitHub lane=seeded_file_history pack=%s done · obs=+%d errors=%d",
+                            pack.pack_id,
+                            len(c_obs),
+                            len(c_err),
+                        )
                     except Exception as exc:  # noqa: BLE001
                         log.exception("seeded_file_history lane failed for pack=%s", pack.pack_id)
                         errors.append(f"seeded_file_history:{pack.pack_id}:{type(exc).__name__}")
@@ -285,6 +335,13 @@ class GitHubSource:
                 if close is not None:
                     await close()
 
+        report_phase(f"GitHub 狩猎完成 · observations={len(observations)}")
+        log.info(
+            "GitHub fetch complete · observations=%d usage=%d errors=%d",
+            len(observations),
+            len(usage),
+            len(errors),
+        )
         return SourceFetchResult(
             source=self.name,
             host_hits=(),  # NEVER fake hosts
@@ -343,9 +400,26 @@ class GitHubSource:
             window_end=window_end,
             page_budget=cfg.github_max_pages_per_shard,
         )[: max(0, commit_budget)]
+        total_shards = len(shards)
+        log.info(
+            "GitHub commit_message pack=%s shards=%d window=%s..%s",
+            pack.pack_id,
+            total_shards,
+            window_start.isoformat(),
+            window_end.isoformat(),
+        )
 
         message_hints: dict[str, str] = {}
-        for shard in shards:
+        for idx, shard in enumerate(shards, start=1):
+            if idx == 1 or idx == total_shards or idx % 5 == 0:
+                report_phase(f"GitHub · {pack.pack_id} · commit_message {idx}/{total_shards}")
+                log.info(
+                    "GitHub commit_message [%d/%d] pack=%s q=%s",
+                    idx,
+                    total_shards,
+                    pack.pack_id,
+                    (shard.build_q() or shard.query_id or "")[:80],
+                )
             try:
                 o, u, cp, e, sh, mh = await self._search_shard(client, shard, run_id=run_id)
                 observations.extend(o)
@@ -401,8 +475,23 @@ class GitHubSource:
         shards = build_code_snapshot_shards(pack, page_budget=cfg.github_max_pages_per_shard)[
             : max(0, code_budget)
         ]
+        total_shards = len(shards)
+        log.info(
+            "GitHub code_snapshot pack=%s shards=%d",
+            pack.pack_id,
+            total_shards,
+        )
 
-        for shard in shards:
+        for idx, shard in enumerate(shards, start=1):
+            if idx == 1 or idx == total_shards or idx % 5 == 0:
+                report_phase(f"GitHub · {pack.pack_id} · code_snapshot {idx}/{total_shards}")
+                log.info(
+                    "GitHub code_snapshot [%d/%d] pack=%s q=%s",
+                    idx,
+                    total_shards,
+                    pack.pack_id,
+                    (shard.build_q() or shard.query_id or "")[:80],
+                )
             try:
                 o, u, cp, e, sh, _mh = await self._search_shard(client, shard, run_id=run_id)
                 observations.extend(o)
@@ -410,8 +499,22 @@ class GitHubSource:
                 checkpoints.extend(cp)
                 errors.extend(e)
                 seeds.extend(sh)
+                if o or sh:
+                    log.info(
+                        "GitHub code_snapshot [%d/%d] hits → obs=+%d seeds=+%d",
+                        idx,
+                        total_shards,
+                        len(o),
+                        len(sh),
+                    )
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{shard.query_id}:{type(exc).__name__}")
+                log.warning(
+                    "GitHub code_snapshot [%d/%d] failed: %s",
+                    idx,
+                    total_shards,
+                    type(exc).__name__,
+                )
 
         return observations, usage, checkpoints, errors, seeds
 
@@ -448,8 +551,27 @@ class GitHubSource:
         )
         limit = cfg.github_file_history_commit_limit
         pack_hints = pack if hasattr(pack, "path_hints") else _default_glm_pack()
+        total_shards = len(shards)
+        log.info(
+            "GitHub file_history pack=%s unique_seeds=%d",
+            pack.pack_id,
+            total_shards,
+        )
 
-        for shard in shards:
+        for idx, shard in enumerate(shards, start=1):
+            if idx == 1 or idx == total_shards or idx % 10 == 0:
+                report_phase(
+                    f"GitHub · {pack.pack_id} · file history {idx}/{total_shards} · "
+                    f"{shard.owner}/{shard.repo}"
+                )
+                log.info(
+                    "GitHub file_history [%d/%d] %s/%s path=%s",
+                    idx,
+                    total_shards,
+                    shard.owner,
+                    shard.repo,
+                    (shard.file_path or "")[:120],
+                )
             since = window_start.isoformat()
             until = window_end.isoformat()
             attribution_token = current_query_attribution.set(
@@ -521,6 +643,13 @@ class GitHubSource:
                 )
                 observations.extend(obs)
                 errors.extend(err)
+                log.info(
+                    "GitHub file_history [%d/%d] commits=%d obs=+%d",
+                    idx,
+                    total_shards,
+                    len(work_items),
+                    len(obs),
+                )
 
             usage.append(
                 QueryUsage(

@@ -83,10 +83,12 @@ function stateLabel(state: string | undefined): string {
 const RE_LINE_DANGER = /\b(ERROR|CRITICAL|FATAL|401|403)\b/
 const RE_LINE_WARNING = /\b(WARN|WARNING|429)\b/
 const RE_LINE_SUCCESS = /\b(200|saved|valid|success)\b/i
+const RE_LINE_PHASE = /阶段 ·|GitHub (lane=|file_history|code_snapshot|commit_message)/
 
 function lineTone(line: string): string {
   if (RE_LINE_DANGER.test(line)) return "text-danger"
   if (RE_LINE_WARNING.test(line)) return "text-warning"
+  if (RE_LINE_PHASE.test(line)) return "text-accent font-semibold"
   if (RE_LINE_SUCCESS.test(line)) return "text-success"
   return "text-text-secondary"
 }
@@ -139,6 +141,8 @@ export function ScanConsole({
   const [mode, setMode] = useState<ScanMode>("incremental")
   const [githubPack, setGithubPack] = useState<GitHubPackId>("glm")
   const [lines, setLines] = useState<ScanLogLine[]>([])
+  /** Live phase derived from log SSE (faster than status poll). */
+  const [phaseFromLogs, setPhaseFromLogs] = useState("")
 
   const lastSeqRef = useRef(0)
   const logViewRef = useRef<HTMLDivElement>(null)
@@ -169,6 +173,14 @@ export function ScanConsole({
     const fresh = incoming.filter((l) => l.seq > lastSeqRef.current)
     if (fresh.length === 0) return
     lastSeqRef.current = fresh.reduce((max, l) => Math.max(max, l.seq), lastSeqRef.current)
+    // Prefer the latest "阶段 · …" marker so the phase badge tracks SSE without waiting for /status.
+    for (let i = fresh.length - 1; i >= 0; i -= 1) {
+      const match = fresh[i].line.match(/阶段 ·\s*(.+)$/)
+      if (match?.[1]) {
+        setPhaseFromLogs(match[1].trim())
+        break
+      }
+    }
     setLines((prev) => {
       const merged = prev.concat(fresh)
       return merged.length > MAX_LINES ? merged.slice(merged.length - MAX_LINES) : merged
@@ -178,6 +190,7 @@ export function ScanConsole({
   useEffect(() => {
     lastSeqRef.current = 0
     setLines([])
+    setPhaseFromLogs("")
   }, [runId])
 
   useEffect(() => {
@@ -278,6 +291,14 @@ export function ScanConsole({
     return Math.min(100, Math.round((validated / total) * 100))
   }, [total, validated])
   const indeterminate = running && total <= 0
+  const phaseLabel = useMemo(() => {
+    const phase = (phaseFromLogs || status?.phase || "").trim()
+    if (phase) return phase
+    if (running) return "运行中…"
+    if (state === "finished") return "已完成"
+    if (state === "interrupted") return "已中断"
+    return "等待开始"
+  }, [phaseFromLogs, status?.phase, running, state])
 
   const activeSource = running ? ((status?.source as ScanSource | undefined) ?? launchSource) : launchSource
   const activeGithubPack = running
@@ -455,10 +476,21 @@ export function ScanConsole({
         </div>
 
         <div className="flex flex-col gap-2">
-          <div className="flex items-center">
-            <span className="flex-1 font-mono text-xs text-text-secondary">进度 · 验证 credentials</span>
-            <span className="font-mono text-xs font-semibold text-accent">
-              {indeterminate ? "—" : `${percent}%`}
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="font-mono text-[11px] text-text-muted">当前阶段</div>
+              <div
+                className={cn(
+                  "mt-0.5 font-mono text-xs font-semibold leading-snug break-all",
+                  running ? "text-accent" : "text-text-secondary",
+                )}
+                title={phaseLabel}
+              >
+                {phaseLabel}
+              </div>
+            </div>
+            <span className="shrink-0 pt-3 font-mono text-xs font-semibold text-accent">
+              {indeterminate ? "发现中" : `${percent}%`}
             </span>
           </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-surface-inset">
@@ -470,6 +502,11 @@ export function ScanConsole({
               style={indeterminate ? undefined : { width: `${percent}%` }}
             />
           </div>
+          {running && total <= 0 ? (
+            <p className="font-mono text-[11px] leading-relaxed text-text-muted">
+              验证进度在候选密钥产生后才会更新百分比；当前仍在发现阶段，请看下方实时日志中的「阶段 · …」行。
+            </p>
+          ) : null}
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border-primary bg-surface-inset">
@@ -485,10 +522,20 @@ export function ScanConsole({
               </span>
             ) : null}
           </div>
+          {running || status?.phase ? (
+            <div className="border-b border-border-subtle bg-accent-dim/40 px-4 py-2">
+              <span className="font-mono text-[11px] text-text-muted">阶段 · </span>
+              <span className="font-mono text-xs font-semibold text-accent break-all">
+                {phaseLabel}
+              </span>
+            </div>
+          ) : null}
           <div ref={logViewRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
             {lines.length === 0 ? (
               <div className="flex h-full items-center justify-center font-mono text-xs text-text-muted">
-                {running ? "等待日志输出…" : "扫描未运行 · 点击右上角开始扫描"}
+                {running
+                  ? "等待日志输出… 后端正在初始化 / 进入发现阶段"
+                  : "扫描未运行 · 点击右上角开始扫描"}
               </div>
             ) : (
               <div className="flex flex-col gap-[3px]">

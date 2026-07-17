@@ -8,7 +8,7 @@ Wraps the existing async :func:`aipocket.scanner.run_scan` so the web layer can:
 * buffer the most recent log lines in memory for a rolling window + SSE, while
   ALSO writing the full log to ``<run_dir>/run.log`` (same mechanism as the CLI);
 * stop a running scan cooperatively (``task.cancel()``);
-* derive coarse progress from the scanner's existing log lines (no scanner change).
+* expose a human-readable ``phase`` string updated via :mod:`aipocket.core.scan_phase`.
 
 Process restart == the in-flight scan is lost; state resets to ``idle`` — which
 matches the "restart = interrupted, no resume" semantic from the spec.
@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aipocket.core.config import settings
+from aipocket.core.scan_phase import reset_phase_reporter, set_phase_reporter
 
 if TYPE_CHECKING:
     from aipocket.core.models import ScanRunResult
@@ -80,6 +81,7 @@ class ScanManager:
         self._handlers: list[logging.Handler] = []
 
         self._progress = self._empty_progress()
+        self._phase = ""
 
     @staticmethod
     def _empty_progress() -> dict[str, int]:
@@ -98,6 +100,11 @@ class ScanManager:
     def state(self) -> str:
         return self._state
 
+    def set_phase(self, message: str) -> None:
+        """Update the coarse phase label shown on the web console."""
+        with self._lock:
+            self._phase = (message or "").strip()
+
     def status(self) -> dict:
         with self._lock:
             run_id = self._run_dir.name if self._run_dir else None
@@ -111,6 +118,7 @@ class ScanManager:
                 "finished_at": self._finished_at,
                 "error": self._error,
                 "progress": dict(self._progress),
+                "phase": self._phase,
                 "log_seq": self._seq,
             }
 
@@ -165,6 +173,7 @@ class ScanManager:
         self._error = None
         self._state = "running"
         self._progress = self._empty_progress()
+        self._phase = "启动中"
 
     def _attach_log_handlers(self) -> None:
         # Attach to the "aipocket" logger (not root), so only our own modules'
@@ -208,8 +217,12 @@ class ScanManager:
         sources = None if source == "all" else {source}
 
         result: ScanRunResult | None = None
+        phase_token = set_phase_reporter(self.set_phase)
         try:
             log.info("Web scan starting (source=%s, run=%s)", source, self._run_dir)
+            from aipocket.core.scan_phase import report_phase
+
+            report_phase(f"启动扫描 · source={source}")
             result = await run_scan(
                 run_dir=self._run_dir,
                 sources=sources,
@@ -227,6 +240,7 @@ class ScanManager:
                     "suspicious": result.suspicious,
                     "high_value_final": result.high_value_final,
                 }
+                self._phase = f"已完成 · 可用 {result.final_verified} / 候选 {result.candidates}"
             log.info(
                 "Web scan finished: %d valid / %d creds",
                 result.total_valid,
@@ -235,14 +249,17 @@ class ScanManager:
         except asyncio.CancelledError:
             with self._lock:
                 self._state = "interrupted"
+                self._phase = "已中断"
             log.warning("Web scan interrupted (stopped by request)")
             raise
         except Exception as e:  # noqa: BLE001 — surface but don't crash the server
             with self._lock:
                 self._state = "interrupted"
                 self._error = str(e)
+                self._phase = f"失败 · {type(e).__name__}"
             log.exception("Web scan failed: %s", e)
         finally:
+            reset_phase_reporter(phase_token)
             with self._lock:
                 self._finished_at = datetime.now(UTC).isoformat()
             self._detach_log_handlers()
