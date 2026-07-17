@@ -117,7 +117,7 @@ def build_commit_message_shards(
     *,
     window_start: datetime,
     window_end: datetime,
-    page_budget: int = 10,
+    page_budget: int = 5,
     extra_qualifiers: tuple[str, ...] = (),
 ) -> list[GitHubQueryShard]:
     """Build commit-message search shards from pack anchors.
@@ -170,7 +170,7 @@ def build_commit_message_shards(
 def build_code_snapshot_shards(
     pack: PackLike,
     *,
-    page_budget: int = 10,
+    page_budget: int = 5,
 ) -> list[GitHubQueryShard]:
     """Build code-search shards: each (anchor × qualifier group)."""
     groups = pack.code_qualifier_groups or ((),)
@@ -212,7 +212,7 @@ def build_seeded_file_history_shards(
     *,
     window_start: datetime | None = None,
     window_end: datetime | None = None,
-    page_budget: int = 10,
+    page_budget: int = 5,
 ) -> list[GitHubQueryShard]:
     """Build core-resource history shards from (repo, path) seeds.
 

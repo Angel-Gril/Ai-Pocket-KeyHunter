@@ -161,7 +161,7 @@ class Settings(BaseSettings):
     github_commit_query_budget: int = 6
     github_code_query_budget: int = 6
     github_search_page_size: int = 100
-    github_max_pages_per_shard: int = 10
+    github_max_pages_per_shard: int = 5
     github_lookback_hours: int = 24
     github_backfill_from: str = ""
     github_overlap_minutes: int = 15

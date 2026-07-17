@@ -532,6 +532,13 @@ class GitHubSource:
         list[CheckpointUpdate],
         list[str],
     ]:
+        """Lane C: path history for code_snapshot seeds.
+
+        Optimization: group seeds by repo, probe repo activity once
+        (``list_commits`` without ``path``). Empty window → skip all paths
+        for that repo (1 core call instead of N). Active repos still get
+        per-path history.
+        """
         cfg = self._settings
         observations: list[CredentialSourceObservation] = []
         usage: list[QueryUsage] = []
@@ -551,115 +558,191 @@ class GitHubSource:
         )
         limit = cfg.github_file_history_commit_limit
         pack_hints = pack if hasattr(pack, "path_hints") else _default_glm_pack()
+        since = window_start.isoformat()
+        until = window_end.isoformat()
+
+        by_repo: dict[tuple[str, str], list[GitHubQueryShard]] = {}
+        for shard in shards:
+            by_repo.setdefault((shard.owner, shard.repo), []).append(shard)
+
         total_shards = len(shards)
+        total_repos = len(by_repo)
+        paths_probed = 0
+        paths_skipped_empty_repo = 0
+        empty_repos = 0
         log.info(
-            "GitHub file_history pack=%s unique_seeds=%d",
+            "GitHub file_history pack=%s unique_seeds=%d unique_repos=%d",
             pack.pack_id,
             total_shards,
+            total_repos,
         )
 
-        for idx, shard in enumerate(shards, start=1):
-            if idx == 1 or idx == total_shards or idx % 10 == 0:
+        for repo_idx, ((owner, repo), repo_shards) in enumerate(by_repo.items(), start=1):
+            if repo_idx == 1 or repo_idx == total_repos or repo_idx % 10 == 0:
                 report_phase(
-                    f"GitHub · {pack.pack_id} · file history {idx}/{total_shards} · "
-                    f"{shard.owner}/{shard.repo}"
+                    f"GitHub · {pack.pack_id} · file history repo {repo_idx}/{total_repos} · "
+                    f"{owner}/{repo} · paths={len(repo_shards)}"
                 )
                 log.info(
-                    "GitHub file_history [%d/%d] %s/%s path=%s",
-                    idx,
-                    total_shards,
-                    shard.owner,
-                    shard.repo,
-                    (shard.file_path or "")[:120],
+                    "GitHub file_history repo [%d/%d] %s/%s paths=%d",
+                    repo_idx,
+                    total_repos,
+                    owner,
+                    repo,
+                    len(repo_shards),
                 )
-            since = window_start.isoformat()
-            until = window_end.isoformat()
+
+            probe_shard = repo_shards[0]
             attribution_token = current_query_attribution.set(
                 RequestAttribution(
                     source="github",
-                    query_id=shard.query_id,
-                    pack_id=shard.pack_id,
-                    lane=shard.lane,
+                    query_id=probe_shard.query_id,
+                    pack_id=probe_shard.pack_id,
+                    lane=probe_shard.lane,
                 )
             )
             try:
                 try:
-                    commits = await client.list_commits(
-                        shard.owner,
-                        shard.repo,
-                        path=shard.file_path,
+                    # Cheap activity check: any commit in window (no path filter).
+                    repo_commits = await client.list_commits(
+                        owner,
+                        repo,
                         since=since,
                         until=until,
                         page=1,
-                        per_page=min(100, limit),
+                        per_page=1,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{shard.query_id}:{type(exc).__name__}")
+                    errors.append(f"history_repo:{owner}/{repo}:{type(exc).__name__}")
                     continue
             finally:
                 current_query_attribution.reset(attribution_token)
 
-            work_items: list[ArtifactWorkItem] = []
-            for c in commits[:limit]:
-                if not isinstance(c, dict):
-                    continue
-                item = work_from_search_item(
-                    {
-                        **c,
-                        "repository": {
-                            "id": shard.repo_id,
-                            "full_name": f"{shard.owner}/{shard.repo}",
-                        },
-                    },
-                    source_kind="patch",
-                    run_id=run_id,
-                    query_id=shard.query_id,
-                    pack_id=shard.pack_id,
-                    lane=shard.lane,
-                    coverage_mode="seeded_only",
-                    file_path=shard.file_path,
-                )
-                if item:
-                    work_items.append(item)
-
-            if work_items:
-                cp = CheckpointRow(
-                    source="github",
-                    lane=shard.lane,
-                    pack_id=shard.pack_id,
-                    shard_id=shard.shard_id,
-                    watermark=until,
-                    cursor_state={"seed_origin": shard.seed_origin, "path": shard.file_path},
-                    status="ok",
-                )
-                advance_checkpoint_with_work(
-                    checkpoint=cp,
-                    work_rows=work_items,
-                    upsert_work_fn=upsert_work_rows,
-                )
-                checkpoints.append(cp.to_update())
-                obs, err = await self._process_work_items(
-                    client, work_items, packs=[pack_hints], message_hints={}
-                )
-                observations.extend(obs)
-                errors.extend(err)
-                log.info(
-                    "GitHub file_history [%d/%d] commits=%d obs=+%d",
-                    idx,
-                    total_shards,
-                    len(work_items),
-                    len(obs),
-                )
-
             usage.append(
                 QueryUsage(
-                    query=f"history:{shard.owner}/{shard.repo}:{shard.file_path}",
-                    query_id=shard.query_id,
-                    lane=shard.lane,
-                    pack_id=shard.pack_id,
+                    query=f"history_repo:{owner}/{repo}",
+                    query_id=probe_shard.query_id,
+                    lane=probe_shard.lane,
+                    pack_id=probe_shard.pack_id,
                 )
             )
 
+            if not repo_commits:
+                empty_repos += 1
+                paths_skipped_empty_repo += len(repo_shards)
+                continue
+
+            for shard in repo_shards:
+                paths_probed += 1
+                if paths_probed == 1 or paths_probed % 20 == 0:
+                    log.info(
+                        "GitHub file_history path [%d seeds · %d probed] %s/%s path=%s",
+                        total_shards,
+                        paths_probed,
+                        shard.owner,
+                        shard.repo,
+                        (shard.file_path or "")[:120],
+                    )
+                attribution_token = current_query_attribution.set(
+                    RequestAttribution(
+                        source="github",
+                        query_id=shard.query_id,
+                        pack_id=shard.pack_id,
+                        lane=shard.lane,
+                    )
+                )
+                try:
+                    try:
+                        commits = await client.list_commits(
+                            shard.owner,
+                            shard.repo,
+                            path=shard.file_path,
+                            since=since,
+                            until=until,
+                            page=1,
+                            per_page=min(100, limit),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"{shard.query_id}:{type(exc).__name__}")
+                        continue
+                finally:
+                    current_query_attribution.reset(attribution_token)
+
+                work_items: list[ArtifactWorkItem] = []
+                for c in commits[:limit]:
+                    if not isinstance(c, dict):
+                        continue
+                    item = work_from_search_item(
+                        {
+                            **c,
+                            "repository": {
+                                "id": shard.repo_id,
+                                "full_name": f"{shard.owner}/{shard.repo}",
+                            },
+                        },
+                        source_kind="patch",
+                        run_id=run_id,
+                        query_id=shard.query_id,
+                        pack_id=shard.pack_id,
+                        lane=shard.lane,
+                        coverage_mode="seeded_only",
+                        file_path=shard.file_path,
+                    )
+                    if item:
+                        work_items.append(item)
+
+                if work_items:
+                    cp = CheckpointRow(
+                        source="github",
+                        lane=shard.lane,
+                        pack_id=shard.pack_id,
+                        shard_id=shard.shard_id,
+                        watermark=until,
+                        cursor_state={
+                            "seed_origin": shard.seed_origin,
+                            "path": shard.file_path,
+                        },
+                        status="ok",
+                    )
+                    advance_checkpoint_with_work(
+                        checkpoint=cp,
+                        work_rows=work_items,
+                        upsert_work_fn=upsert_work_rows,
+                    )
+                    checkpoints.append(cp.to_update())
+                    obs, err = await self._process_work_items(
+                        client, work_items, packs=[pack_hints], message_hints={}
+                    )
+                    observations.extend(obs)
+                    errors.extend(err)
+                    log.info(
+                        "GitHub file_history %s/%s path=%s commits=%d obs=+%d",
+                        shard.owner,
+                        shard.repo,
+                        (shard.file_path or "")[:80],
+                        len(work_items),
+                        len(obs),
+                    )
+
+                usage.append(
+                    QueryUsage(
+                        query=f"history:{shard.owner}/{shard.repo}:{shard.file_path}",
+                        query_id=shard.query_id,
+                        lane=shard.lane,
+                        pack_id=shard.pack_id,
+                    )
+                )
+
+        log.info(
+            "GitHub file_history pack=%s summary · repos=%d empty_repos=%d "
+            "paths_skipped=%d paths_probed=%d obs=+%d",
+            pack.pack_id,
+            total_repos,
+            empty_repos,
+            paths_skipped_empty_repo,
+            paths_probed,
+            len(observations),
+        )
         return observations, usage, checkpoints, errors
 
     @staticmethod

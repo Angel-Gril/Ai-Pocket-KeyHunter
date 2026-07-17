@@ -265,6 +265,72 @@ async def test_seeded_history_lane_exercised(monkeypatch):
     )
     assert usage
     assert isinstance(obs, list)
+    # Repo probe + path probe when repo is active.
+    assert any("history_repo:" in (u.query or "") for u in usage)
+    assert any(u.query.startswith("history:o/r:") for u in usage)
+
+
+@pytest.mark.asyncio
+async def test_seeded_history_skips_paths_when_repo_idle(monkeypatch):
+    """Empty repo window → one probe, no per-path list_commits."""
+    monkeypatch.setattr("aipocket.core.config.settings.database_url", "")
+    monkeypatch.setattr("aipocket.services.github_work_queue.settings.database_url", "")
+    monkeypatch.setattr("aipocket.services.github_checkpoint.settings.database_url", "")
+
+    calls: list[dict] = []
+
+    class FakeClient:
+        async def list_commits(self, owner, repo, **kw):
+            calls.append({"owner": owner, "repo": repo, **kw})
+            # Repo-level probe (no path) is empty → skip all seed paths.
+            return []
+
+        async def aclose(self):
+            return None
+
+    src = GitHubSource(
+        settings=_cfg(github_file_history_enabled=True),
+        packs=[MINI_PACK],
+        client=FakeClient(),
+    )
+    _obs, usage, _cps, errs = await src._run_seeded_history_lane(
+        FakeClient(),
+        MINI_PACK,
+        seeds=[
+            {
+                "owner": "o",
+                "repo": "r",
+                "path": "config.example.toml",
+                "repo_id": "1",
+                "seed_origin": "code_snapshot",
+                "public": True,
+            },
+            {
+                "owner": "o",
+                "repo": "r",
+                "path": "config.toml",
+                "repo_id": "1",
+                "seed_origin": "code_snapshot",
+                "public": True,
+            },
+            {
+                "owner": "o",
+                "repo": "r2",
+                "path": ".env",
+                "repo_id": "2",
+                "seed_origin": "code_snapshot",
+                "public": True,
+            },
+        ],
+        run_id="run_idle",
+        mode="incremental",
+    )
+    assert not errs
+    # Two unique repos → two probes only; never path-scoped calls.
+    assert len(calls) == 2
+    assert all(not c.get("path") for c in calls)
+    assert all(u.query.startswith("history_repo:") for u in usage)
+    assert not any(u.query.startswith("history:o/") for u in usage)
 
 
 @pytest.mark.asyncio
