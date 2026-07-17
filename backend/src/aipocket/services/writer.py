@@ -57,6 +57,7 @@ def _result_row(r: ValidationResult, kind: str, seq: int) -> tuple:
 
     rec = r.model_dump()
     cred = rec.get("credential") or {}
+    provider_info = rec.get("provider_info") or {}
     return (
         kind,
         seq,
@@ -65,7 +66,107 @@ def _result_row(r: ValidationResult, kind: str, seq: int) -> tuple:
         cred.get("host", ""),
         bool(rec.get("valid")),
         Jsonb(rec),
+        str(provider_info.get("credential_issuer") or "unknown"),
+        str(provider_info.get("validation_provider") or provider_info.get("provider") or ""),
     )
+
+
+def create_run_pg(run_id: str, started_at: str, scan_mode: str) -> None:
+    """Create the parent run before any request-ledger child rows can flush."""
+    from aipocket.core.db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn, conn.transaction():
+        conn.execute(
+            """
+            INSERT INTO runs (
+                run_id, started_at, state, sources, hits_by_source, queries_used,
+                total_hosts, total_credentials, total_valid, metrics_version,
+                scan_mode, ledger_complete, ledger_incomplete_reason
+            ) VALUES (%s, %s, 'running', '[]'::jsonb, '{}'::jsonb, '[]'::jsonb,
+                      0, 0, 0, 2, %s, FALSE, 'running')
+            ON CONFLICT (run_id) DO UPDATE SET
+                started_at = EXCLUDED.started_at,
+                finished_at = NULL,
+                state = 'running',
+                ledger_complete = FALSE,
+                ledger_incomplete_reason = 'running'
+            """,
+            (run_id, started_at, scan_mode),
+        )
+
+
+def mark_run_interrupted_pg(run_id: str, reason: str) -> None:
+    """Leave a durable non-v3 run marker when execution aborts after creation."""
+    from aipocket.core.db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn:
+        conn.execute(
+            """
+            UPDATE runs
+            SET finished_at = NOW(), state = 'interrupted', metrics_version = 2,
+                ledger_complete = FALSE, ledger_incomplete_reason = %s
+            WHERE run_id = %s
+            """,
+            (reason, run_id),
+        )
+        conn.commit()
+
+
+def persist_ledger_batch_pg(entries: list[Any]) -> None:
+    """Batch-insert request_ledger rows. Callers pass RequestLedgerEntry objects."""
+    if not entries:
+        return
+    from aipocket.core.db import get_pool
+
+    rows = [
+        (
+            e.request_id,
+            e.run_id,
+            e.stage,
+            e.source,
+            e.query_id,
+            e.pack_id,
+            e.credential_fingerprint,
+            e.target_identity,
+            e.artifact_identity,
+            e.product,
+            e.spec_id,
+            e.provider,
+            e.http_method,
+            e.endpoint_class,
+            e.status_class,
+            e.status_code,
+            e.error_class,
+            e.latency_ms,
+            e.request_bytes,
+            e.response_bytes,
+            e.query_credit,
+            e.rate_resource,
+            e.attempt,
+            e.started_at or None,
+        )
+        for e in entries
+    ]
+    pool = get_pool()
+    with pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
+        cur.executemany(
+            """
+                INSERT INTO request_ledger (
+                    request_id, run_id, stage, source, query_id, pack_id,
+                    credential_fingerprint, target_identity, artifact_identity,
+                    product, spec_id, provider, http_method, endpoint_class,
+                    status_class, status_code, error_class, latency_ms,
+                    request_bytes, response_bytes, query_credit, rate_resource,
+                    attempt, started_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+            rows,
+        )
 
 
 def persist_run_pg(
@@ -111,8 +212,11 @@ def persist_run_pg(
                               total_credentials, total_valid, raw_hits,
                               unique_targets, candidates, active_requests,
                               final_verified, suspicious, high_value_final,
-                              metrics_version, scan_mode)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              metrics_version, scan_mode,
+                              total_active_http_requests, ledger_complete,
+                              ledger_incomplete_reason)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s)
             ON CONFLICT (run_id) DO UPDATE SET
                 finished_at = EXCLUDED.finished_at,
                 state = EXCLUDED.state,
@@ -130,7 +234,10 @@ def persist_run_pg(
                 suspicious = EXCLUDED.suspicious,
                 high_value_final = EXCLUDED.high_value_final,
                 metrics_version = EXCLUDED.metrics_version,
-                scan_mode = EXCLUDED.scan_mode
+                scan_mode = EXCLUDED.scan_mode,
+                total_active_http_requests = EXCLUDED.total_active_http_requests,
+                ledger_complete = EXCLUDED.ledger_complete,
+                ledger_incomplete_reason = EXCLUDED.ledger_incomplete_reason
             """,
             (
                 run_id,
@@ -152,6 +259,9 @@ def persist_run_pg(
                 metadata.get("high_value_final", 0),
                 metadata.get("metrics_version", 2),
                 metadata.get("scan_mode", "incremental"),
+                metadata.get("total_active_http_requests", 0),
+                bool(metadata.get("ledger_complete", False)),
+                metadata.get("ledger_incomplete_reason", ""),
             ),
         )
         # Replace this run's result rows so a re-persist is idempotent.
@@ -163,8 +273,11 @@ def persist_run_pg(
             with conn.cursor() as cur:
                 cur.executemany(
                     """
-                    INSERT INTO results (run_id, kind, seq, apikey, apiurl, host, valid, record)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO results (
+                        run_id, kind, seq, apikey, apiurl, host, valid, record,
+                        credential_issuer, validation_provider
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     rows,
                 )
@@ -176,9 +289,9 @@ def persist_run_pg(
                     run_id, source, query, raw_hits, unique_targets,
                     active_requests, candidates, prefilter_survivors,
                     auth_confirmed, final_verified, noauth_rejected, query_credits,
-                    attribution_version
+                    attribution_version, total_active_http_requests, lane, pack_id, query_id
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (run_id, source, query) DO UPDATE SET
                     raw_hits = EXCLUDED.raw_hits,
                     unique_targets = EXCLUDED.unique_targets,
@@ -189,7 +302,11 @@ def persist_run_pg(
                     final_verified = EXCLUDED.final_verified,
                     noauth_rejected = EXCLUDED.noauth_rejected,
                     query_credits = EXCLUDED.query_credits,
-                    attribution_version = EXCLUDED.attribution_version
+                    attribution_version = EXCLUDED.attribution_version,
+                    total_active_http_requests = EXCLUDED.total_active_http_requests,
+                    lane = EXCLUDED.lane,
+                    pack_id = EXCLUDED.pack_id,
+                    query_id = EXCLUDED.query_id
                 """,
                 (
                     run_id,
@@ -205,6 +322,10 @@ def persist_run_pg(
                     funnel.noauth_rejected,
                     funnel.query_credits,
                     metric.attribution_version,
+                    funnel.total_active_http_requests,
+                    metric.lane,
+                    metric.pack_id,
+                    metric.query_id,
                 ),
             )
         conn.execute("DELETE FROM extraction_method_aggregates WHERE run_id = %s", (run_id,))

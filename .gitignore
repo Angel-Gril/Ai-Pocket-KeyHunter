@@ -64,3 +64,4 @@ preview/*.js
 
 # Design files
 *.pen
+.coverage

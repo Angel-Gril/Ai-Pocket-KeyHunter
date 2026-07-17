@@ -193,12 +193,7 @@ async def _validate_api_key(
         # Scanner path (no explicit probe_model): models list can confirm auth
         # when messages fails for model-id reasons (400/404). Never do this for
         # explicit chat tests — report the real messages status instead.
-        if (
-            not probe_model
-            and models
-            and models_response.status_code == 200
-            and sc in (400, 404)
-        ):
+        if not probe_model and models and models_response.status_code == 200 and sc in (400, 404):
             return AnthropicValidation(
                 credential_kind=AnthropicCredentialKind.API,
                 valid=True,

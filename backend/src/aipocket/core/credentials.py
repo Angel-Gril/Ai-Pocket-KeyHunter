@@ -44,6 +44,17 @@ class CredentialEvidence(BaseModel):
     path: str = ""
     variable: str = ""
     pairing: str = ""
+    # GitHub / artifact extensions (empty for FOFA/Shodan host paths)
+    query_id: str = ""
+    pack_id: str = ""
+    repository_id: str = ""
+    repository_full_name: str = ""
+    commit_sha: str = ""
+    object_sha: str = ""
+    source_kind: str = ""  # commit_message|patch|blob
+    change_side: str = ""  # added|removed|context|message
+    line_start: int | None = None
+    line_end: int | None = None
 
 
 class CredentialBundle(BaseModel):

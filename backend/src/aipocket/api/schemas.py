@@ -12,8 +12,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ScanSource = Literal["fofa", "shodan", "all"]
+ScanSource = Literal["fofa", "shodan", "github", "all"]
 ScanMode = Literal["full", "incremental"]
+GitHubPackId = Literal["all", "glm", "kimi", "qwen", "cohere", "replicate", "together", "fireworks"]
 ExportFormat = Literal["json", "csv"]
 ExportDataset = Literal["selected", "run", "high-value", "all"]
 
@@ -113,6 +114,7 @@ class ExportRequest(BaseModel):
 class ScanStartRequest(BaseModel):
     source: ScanSource = "all"
     mode: ScanMode = "incremental"
+    github_pack_ids: list[GitHubPackId] = Field(default_factory=list, max_length=8)
 
 
 class ScanProgress(BaseModel):
@@ -129,6 +131,7 @@ class ScanStatusResponse(BaseModel):
     state: str  # idle | running | stopping | finished | interrupted
     source: str | None = None
     mode: ScanMode = "incremental"
+    github_pack_ids: list[GitHubPackId] = Field(default_factory=list)
     run_id: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
@@ -200,7 +203,7 @@ class CveSyncResponse(BaseModel):
 # Settings
 # ----------------------------------------------------------------------------
 class SettingsView(BaseModel):
-    """Editable FOFA/Shodan config. Sensitive keys are masked on read."""
+    """Editable FOFA/Shodan/GitHub config. Sensitive keys are masked on read."""
 
     fofa_keys: str  # masked on GET
     fofa_base_url: str
@@ -212,6 +215,9 @@ class SettingsView(BaseModel):
     shodan_max_pages: int
     shodan_timeout: float
     shodan_page_delay: float
+    github_tokens: str = ""  # masked on GET
+    github_api_base_url: str = "https://api.github.com"
+    github_hunter_enabled: bool = True
     validate_concurrency: int
     prober_concurrency: int
 
@@ -233,6 +239,9 @@ class SettingsUpdate(BaseModel):
     shodan_max_pages: int | None = None
     shodan_timeout: float | None = None
     shodan_page_delay: float | None = None
+    github_tokens: str | None = None
+    github_api_base_url: str | None = None
+    github_hunter_enabled: bool | None = None
     validate_concurrency: int | None = None
     prober_concurrency: int | None = None
 
@@ -264,3 +273,14 @@ class ShodanCheckResponse(BaseModel):
     n_keys: int = 0
     n_dead: int = 0
     consumes_quota: bool = False
+
+
+class GithubCheckResponse(BaseModel):
+    """GitHub /rate_limit connectivity snapshot (no search cost)."""
+
+    status: Literal["ok", "invalid", "disabled"] = "invalid"
+    message: str = ""
+    core_remaining: int | None = None
+    search_remaining: int | None = None
+    code_search_remaining: int | None = None
+    n_tokens: int = 0

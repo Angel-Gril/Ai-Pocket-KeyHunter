@@ -99,7 +99,7 @@ class TestRetryGptFailedService:
                 failed_entry_ids=frozenset(),
             )
 
-        async def fake_validate(creds):
+        async def fake_validate(creds, **kwargs):
             return [result]
 
         async def fake_enrich(results, **kwargs):
@@ -159,7 +159,7 @@ class TestRetryGptFailedService:
 
             return GPTExtractionReport((cred,), frozenset(), frozenset())
 
-        async def fake_validate(creds):
+        async def fake_validate(creds, **kwargs):
             return [result]
 
         monkeypatch.setattr(mod, "extract_credentials", lambda hits: [])

@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import {
   Gem,
+  GitBranch,
   KeyRound,
   LayoutList,
   type LucideIcon,
@@ -26,6 +27,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/keys", label: "全部密钥", icon: KeyRound },
   { to: "/high-value", label: "高价值 Key", icon: Gem },
   { to: "/scan", label: "执行扫描", icon: Radar },
+  { to: "/github", label: "GitHub 狩猎", icon: GitBranch },
   { to: "/cve", label: "CVE 库", icon: ShieldAlert },
   { to: "/settings", label: "设置", icon: Settings },
 ]

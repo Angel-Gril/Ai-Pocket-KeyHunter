@@ -74,3 +74,23 @@ def test_canonical_observation_is_counted_once_with_first_attribution() -> None:
     assert rows[0].query == "query-1"
     assert rows[0].funnel.candidates == 1
     assert rows[0].attribution_version == 2
+
+
+def test_v3_snapshot_binds_ledger_cost_and_github_metadata() -> None:
+    collector = QueryMetricsCollector()
+    collector.increment(
+        "github",
+        '"GLM_API_KEY" extension:env',
+        query_id="cs-stable",
+        lane="code_snapshot",
+        pack_id="glm",
+        query_credits=0,
+    )
+    collector.apply_ledger({("github", "cs-stable"): 3})
+
+    row = collector.snapshot(attribution_version=3)[0]
+    assert row.attribution_version == 3
+    assert row.query_id == "cs-stable"
+    assert row.lane == "code_snapshot"
+    assert row.pack_id == "glm"
+    assert row.funnel.total_active_http_requests == 3

@@ -153,6 +153,7 @@ class ShodanClient:
         *,
         min_interval: float | None = None,
         max_rounds: int = 3,
+        query_id: str = "",
     ):
         if keys is None:
             keys = settings.shodan_key_list
@@ -167,6 +168,7 @@ class ShodanClient:
             interval = max(float(settings.shodan_page_delay), 1.0)
         else:
             interval = max(float(min_interval), 0.0)
+        self.query_id = query_id
         self._pool = KeyPool(
             keys,
             min_interval=interval,
@@ -174,6 +176,49 @@ class ShodanClient:
             max_rounds=max_rounds,
         )
         self._client = httpx.Client(timeout=self.timeout, follow_redirects=True)
+
+    def _instrumented_get(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        attempt: int = 1,
+        endpoint_class: str = "/shodan/host/search",
+    ) -> httpx.Response:
+        """GET with one RequestLedger row per physical attempt (no secrets)."""
+        import time
+
+        from aipocket.services.http_transport import record_sync_attempt
+
+        started = time.perf_counter()
+        error_class = ""
+        status_code: int | None = None
+        response_bytes = 0
+        try:
+            r = self._client.get(url, params=params)
+            status_code = r.status_code
+            response_bytes = len(r.content or b"")
+            return r
+        except httpx.TimeoutException:
+            error_class = "timeout"
+            raise
+        except httpx.HTTPError:
+            error_class = "network"
+            raise
+        finally:
+            record_sync_attempt(
+                method="GET",
+                url=url,
+                stage="discovery",
+                source="shodan",
+                status_code=status_code,
+                error_class=error_class,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                attempt=attempt,
+                endpoint_class=endpoint_class,
+                response_bytes=response_bytes,
+                query_id=self.query_id,
+            )
 
     @property
     def _dead(self) -> set[str]:
@@ -248,6 +293,7 @@ class ShodanClient:
         silently drop a live query. Returns ``0`` ONLY when Shodan explicitly
         reported zero matches (safe to skip).
         """
+        self.query_id = query
         data = self._request("/shodan/host/count", {"query": query})
         if data is None:
             return None
@@ -269,6 +315,7 @@ class ShodanClient:
         query from page 1 (up to ``max_cursor_restarts`` times) and merge
         results with de-duplication so earlier pages are not lost.
         """
+        self.query_id = query
         pages = pages or settings.shodan_max_pages
         all_results: list[dict[str, Any]] = []
         seen: set[tuple[str, str, str]] = set()
@@ -353,8 +400,15 @@ class ShodanClient:
 
             self._pool.throttle()
             req_params = {**params, "key": key}
+            # Map path to a stable endpoint_class without query secrets.
+            ep = path if path.startswith("/") else f"/{path}"
             try:
-                r = self._client.get(url, params=req_params)
+                r = self._instrumented_get(
+                    url,
+                    params=req_params,
+                    attempt=attempt,
+                    endpoint_class=ep,
+                )
             except httpx.HTTPError as e:
                 last_err = f"network: {e}"
                 log.warning("  shodan key %s… network error: %s", key[:6], e)

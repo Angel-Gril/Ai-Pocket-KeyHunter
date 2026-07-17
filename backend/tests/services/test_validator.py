@@ -7,12 +7,16 @@ import respx
 from aipocket.core.models import Credential, ValidationResult
 from aipocket.services.providers import resolve_provider
 from aipocket.services.validator import (
+    HIGH_VALUE_DOMESTIC,
+    HIGH_VALUE_INTERNATIONAL,
+    HIGH_VALUE_MODELS,
     _extract_rate_headers,
     _infer_tier,
     _is_severe_model_mismatch,
     _model_family_and_gen,
     _normalize_apiurl,
     _probe,
+    high_value_probe_order,
     validate_all,
     verify_no_auth,
 )
@@ -55,7 +59,7 @@ async def test_probe_success_200():
     assert r.status_code == 200
     assert r.tier == "rpm:10000"
     assert r.validation_state == "inference_verified"
-    assert r.model_available == "gpt-5.5"
+    assert r.model_available == "gpt-5.6-sol"
     assert "Hi there" in r.response_snippet
 
 
@@ -425,6 +429,36 @@ async def test_probe_follows_redirect():
     async with httpx.AsyncClient(follow_redirects=True) as client:
         r = await _probe(client, cred)
     assert r.valid is True
+
+
+# ---------------------------------------------------------------------------
+# Region-aware high-value probe order
+# ---------------------------------------------------------------------------
+
+
+class TestHighValueProbeOrder:
+    def test_membership_covers_both_regions(self):
+        assert set(HIGH_VALUE_MODELS) == set(HIGH_VALUE_INTERNATIONAL) | set(
+            HIGH_VALUE_DOMESTIC
+        )
+
+    def test_domestic_aggregator_prefers_domestic_models(self):
+        order = high_value_probe_order("siliconflow")
+        assert order[0] in HIGH_VALUE_DOMESTIC
+        assert order.index(HIGH_VALUE_DOMESTIC[0]) < order.index(
+            HIGH_VALUE_INTERNATIONAL[0]
+        )
+
+    def test_international_aggregator_prefers_international_models(self):
+        order = high_value_probe_order("openrouter")
+        assert order[0] in HIGH_VALUE_INTERNATIONAL
+        assert order.index(HIGH_VALUE_INTERNATIONAL[0]) < order.index(
+            HIGH_VALUE_DOMESTIC[0]
+        )
+
+    def test_unknown_gateway_defaults_international_first(self):
+        order = high_value_probe_order("gateway")
+        assert order[0] in HIGH_VALUE_INTERNATIONAL
 
 
 # ---------------------------------------------------------------------------

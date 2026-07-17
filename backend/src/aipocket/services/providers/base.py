@@ -73,3 +73,12 @@ class ProviderResolution:
     @property
     def official_api_url(self) -> str:
         return self.spec.official_api_url
+
+
+@dataclass(frozen=True, slots=True)
+class ReadOnlyProviderValidation:
+    valid: bool
+    status_code: int | None = None
+    models: tuple[str, ...] = ()
+    scope: str = ""
+    error: str = ""

@@ -10,24 +10,142 @@ from aipocket.core.models import ProviderName
 from .base import ProviderResolution, ProviderSpec
 from .gemini import is_gemini_api_key
 
-_OPENAI_MODELS = ("gpt-5.5", "gpt-5.4", "gpt-4o-mini", "gpt-3.5-turbo")
-_OAIUSERCONTENT_MODELS = ("gpt-5.5", "gpt-5.4", "gpt-4o-mini")
+# ---------------------------------------------------------------------------
+# First-party model families (official hosts only serve their own models)
+# ---------------------------------------------------------------------------
+_OPENAI_MODELS = ("gpt-5.6-sol", "gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-4o-mini", "gpt-3.5-turbo")
+_OAIUSERCONTENT_MODELS = ("gpt-5.6-sol", "gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-4o-mini")
 _ANTHROPIC_MODELS = (
-    "claude-sonnet-4-6",
+    "claude-fable-5",
     "claude-sonnet-5",
+    "claude-sonnet-4-6",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-haiku-4-5-20251001",
 )
-_FALLBACK_MODELS = (
+_DEEPSEEK_MODELS = ("deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat")
+_GLM_MODELS = ("glm-5.2", "glm-5.1", "glm-5", "glm-4-flash")
+_QWEN_MODELS = ("qwen3.7-max", "qwen3-max", "qwen-turbo")
+_KIMI_MODELS = (
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "kimi-k2.6",
+    "kimi-k2.5",
+    "moonshot-v1-8k",
+)
+# Cohere is first-party (Command family) — NOT a multi-model aggregator.
+_COHERE_MODELS = ("command-r-plus", "command-r", "command-a-03-2025")
+
+# ---------------------------------------------------------------------------
+# Multi-vendor gateways / aggregators — region-aware probe order
+#
+# Domestic aggregators (e.g. SiliconFlow, Chinese NewAPI relays):
+#   DeepSeek → GLM → Qwen → Kimi first, then OpenAI/Claude as secondary.
+# International aggregators (OpenRouter, Together, Fireworks, Replicate, Groq):
+#   OpenAI → Claude → Llama/Meta first, then domestic models as secondary.
+#
+# Bare IDs match NewAPI/OneAPI-style relays; vendor-prefixed IDs match
+# OpenRouter / SiliconFlow org namespaces.
+# ---------------------------------------------------------------------------
+_INTERNATIONAL_BARE = (
+    "gpt-5.6-sol",
+    "gpt-5.6",
     "gpt-5.5",
     "gpt-5.4",
+    "claude-fable-5",
+    "claude-sonnet-5",
     "claude-sonnet-4-6",
     "claude-opus-4-8",
-    "claude-opus-4-7",
+)
+_DOMESTIC_BARE = (
     "deepseek-v4-pro",
     "deepseek-v4-flash",
+    "glm-5.2",
     "glm-5.1",
+    "qwen3.7-max",
+    "qwen3-max",
+    "kimi-k3",
+)
+# Unknown third-party endpoints (may be either region) — international canaries first
+# for honeypot resistance, then domestic high-value.
+_FALLBACK_MODELS = (*_INTERNATIONAL_BARE, *_DOMESTIC_BARE)
+# Domestic multi-vendor relays (Chinese NewAPI etc. when attributed domestic).
+_DOMESTIC_GATEWAY_MODELS = (*_DOMESTIC_BARE, *_INTERNATIONAL_BARE)
+
+# OpenRouter: international multi-vendor first, domestic vendor prefixes later.
+_OPENROUTER_MODELS = (
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5.6",
+    "openai/gpt-5.5",
+    "anthropic/claude-fable-5",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-sonnet-4",
+    "anthropic/claude-opus-4.1",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-chat",
+    "z-ai/glm-4.5",
+    "qwen/qwen3-max",
+    "moonshotai/kimi-k3",
+    *_INTERNATIONAL_BARE,
+    *_DOMESTIC_BARE,
+)
+# SiliconFlow: domestic Chinese aggregator — DeepSeek / Qwen / GLM / Kimi first.
+_SILICONFLOW_MODELS = (
+    "deepseek-ai/DeepSeek-V4-Pro",
+    "deepseek-ai/DeepSeek-V4-Flash",
+    "deepseek-ai/DeepSeek-V3",
+    "Qwen/Qwen3.5-397B-A17B",
+    "Qwen/Qwen3-Max",
+    "Qwen/Qwen3-32B",
+    "THUDM/GLM-Z1-32B-0414",
+    "zai-org/GLM-4.5",
+    "moonshotai/Kimi-K2.5",
+)
+# International open-model hosts: Western open weights first, Chinese OSS later.
+_TOGETHER_MODELS = (
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
+    "deepseek-ai/DeepSeek-V3",
+    "deepseek-ai/DeepSeek-R1",
+    "Qwen/Qwen2.5-72B-Instruct-Turbo",
+)
+_FIREWORKS_MODELS = (
+    "accounts/fireworks/models/llama-v3p3-70b-instruct",
+    "accounts/fireworks/models/llama-v3p1-405b-instruct",
+    "accounts/fireworks/models/deepseek-v3",
+    "accounts/fireworks/models/deepseek-r1",
+    "accounts/fireworks/models/qwen2p5-72b-instruct",
+)
+_GROQ_MODELS = (
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "deepseek-r1-distill-llama-70b",
+    "qwen-qwq-32b",
+)
+_REPLICATE_MODELS = (
+    "meta/meta-llama-3.1-405b-instruct",
+    "meta/meta-llama-3-70b-instruct",
+    "deepseek-ai/deepseek-r1",
+)
+
+# Providers whose default probe order should put domestic high-value models first
+# when /v1/models is available (see validator.high_value_probe_order).
+DOMESTIC_PROBE_PROVIDERS = frozenset({"siliconflow", "deepseek", "kimi", "glm", "qwen"})
+INTERNATIONAL_PROBE_PROVIDERS = frozenset(
+    {
+        "openai",
+        "anthropic",
+        "openrouter",
+        "together",
+        "fireworks",
+        "replicate",
+        "groq",
+        "cohere",
+        "google",
+        "gemini",
+        "azure_openai",
+        "vertex",
+    }
 )
 
 _PROVIDER_SPECS = (
@@ -56,7 +174,7 @@ _PROVIDER_SPECS = (
         domain_suffixes=("deepseek.com",),
         key_prefixes=(),
         protocol_family="openai_compatible",
-        default_model_hints=("deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat"),
+        default_model_hints=_DEEPSEEK_MODELS,
     ),
     ProviderSpec(
         name="kimi",
@@ -64,12 +182,8 @@ _PROVIDER_SPECS = (
         domain_suffixes=("moonshot.cn",),
         key_prefixes=(),
         protocol_family="openai_compatible",
-        default_model_hints=(
-            "kimi-k2.7-code",
-            "kimi-k2.6",
-            "kimi-k2.5",
-            "moonshot-v1-8k",
-        ),
+        default_model_hints=_KIMI_MODELS,
+        official_api_url="https://api.moonshot.cn/v1",
     ),
     ProviderSpec(
         name="glm",
@@ -77,7 +191,9 @@ _PROVIDER_SPECS = (
         domain_suffixes=("bigmodel.cn", "zhipuai.cn", "zhipuai.com"),
         key_prefixes=(),
         protocol_family="openai_compatible",
-        default_model_hints=("glm-5.2", "glm-5.1", "glm-5", "glm-4-flash"),
+        default_model_hints=_GLM_MODELS,
+        # OpenAI-compatible chat base (balance probe uses host + /api/paas/v4/...).
+        official_api_url="https://open.bigmodel.cn/api/paas/v4",
     ),
     ProviderSpec(
         name="qwen",
@@ -85,36 +201,76 @@ _PROVIDER_SPECS = (
         domain_suffixes=("dashscope.aliyuncs.com", "baidu.com"),
         key_prefixes=(),
         protocol_family="openai_compatible",
-        default_model_hints=("qwen3.7-max", "qwen3-max", "qwen-turbo"),
+        default_model_hints=_QWEN_MODELS,
         domain_model_hints=(("baidu.com", ("ernie-bot-turbo", "ernie-4.0-8k")),),
+        official_api_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     ),
+    # Aggregator: hosts DeepSeek / Qwen / GLM / Llama (not official OpenAI/Claude).
     ProviderSpec(
         name="siliconflow",
-        category="domestic",
+        category="gateway",
         domain_suffixes=("siliconflow.cn",),
         key_prefixes=(),
         protocol_family="openai_compatible",
-        default_model_hints=(
-            "deepseek-ai/DeepSeek-V3",
-            "Qwen/Qwen2.5-7B-Instruct",
-        ),
+        default_model_hints=_SILICONFLOW_MODELS,
+        official_api_url="https://api.siliconflow.cn/v1",
     ),
+    # First-party Command models — not a multi-vendor aggregator.
+    ProviderSpec(
+        name="cohere",
+        category="international",
+        domain_suffixes=("cohere.com", "cohere.ai"),
+        key_prefixes=(),
+        protocol_family="openai_compatible",
+        default_model_hints=_COHERE_MODELS,
+        official_api_url="https://api.cohere.com/v1",
+    ),
+    # Model marketplace / open-weight hosting (not proprietary OpenAI/Claude).
+    ProviderSpec(
+        name="replicate",
+        category="gateway",
+        domain_suffixes=("replicate.com",),
+        key_prefixes=("r8_",),
+        protocol_family="openai_compatible",
+        default_model_hints=_REPLICATE_MODELS,
+        official_api_url="https://api.replicate.com/v1",
+    ),
+    ProviderSpec(
+        name="together",
+        category="gateway",
+        domain_suffixes=("together.xyz", "together.ai"),
+        key_prefixes=(),
+        protocol_family="openai_compatible",
+        default_model_hints=_TOGETHER_MODELS,
+        official_api_url="https://api.together.ai/v1",
+    ),
+    ProviderSpec(
+        name="fireworks",
+        category="gateway",
+        domain_suffixes=("fireworks.ai",),
+        key_prefixes=(),
+        protocol_family="openai_compatible",
+        default_model_hints=_FIREWORKS_MODELS,
+        official_api_url="https://api.fireworks.ai/inference/v1",
+    ),
+    # Fast open-model inference (LPU) — not a multi-vendor OpenAI/Claude broker.
     ProviderSpec(
         name="groq",
         category="international",
         domain_suffixes=("groq.com",),
         key_prefixes=("gsk_",),
         protocol_family="openai_compatible",
-        default_model_hints=("llama-3.3-70b-versatile",),
+        default_model_hints=_GROQ_MODELS,
         official_api_url="https://api.groq.com/openai/v1",
     ),
+    # True multi-vendor aggregator (OpenAI + Claude + DeepSeek + …).
     ProviderSpec(
         name="openrouter",
         category="gateway",
         domain_suffixes=("openrouter.ai",),
         key_prefixes=("sk-or-v1-",),
         protocol_family="openai_compatible",
-        default_model_hints=_FALLBACK_MODELS,
+        default_model_hints=_OPENROUTER_MODELS,
         official_api_url="https://openrouter.ai/api/v1",
     ),
     ProviderSpec(

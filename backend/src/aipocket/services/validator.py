@@ -11,18 +11,21 @@ import httpx
 
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
+from aipocket.core.request_ledger import RequestAttribution
 from aipocket.core.validation_state import apply_state
 from aipocket.services.providers import (
     provider_registry,
     resolve_provider,
     uses_anthropic_adapter,
 )
+from aipocket.services.providers.additional import validate_additional_provider
 from aipocket.services.providers.anthropic import validate_anthropic
 from aipocket.services.providers.azure_openai import (
     AzureInferencePolicy,
     validate_azure_openai,
 )
 from aipocket.services.providers.gemini import validate_gemini
+from aipocket.services.providers.issuer import decide_issuer
 from aipocket.services.providers.openai import InferencePolicy, validate_openai
 from aipocket.services.providers.vertex import validate_vertex
 
@@ -46,50 +49,75 @@ RATE_LIMIT_HEADERS = [
 ]
 
 
-# High-value models — the core targets. When any of these appear in /v1/models,
-# we probe with them FIRST (not as a secondary pass). This avoids honeypot false
-# positives: faking gpt-3.5-turbo is trivial, faking gpt-5.5 is not.
-# Order: most valuable first. Model IDs sourced from lobehub/model-bank (canary).
-HIGH_VALUE_MODELS = [
-    # OpenAI frontier
+# High-value models — core canary targets. When any appear in /v1/models we
+# probe them first (honeypot resistance: faking gpt-5.x is harder than gpt-3.5).
+# Split by region so domestic aggregators prefer domestic models and vice versa.
+# Membership set = international ∪ domestic; probe order is region-aware via
+# high_value_probe_order().
+HIGH_VALUE_INTERNATIONAL = [
+    # OpenAI frontier (gpt-5.6-sol is flagship; gpt-5.6 is its official alias)
+    "gpt-5.6-sol",
+    "gpt-5.6",
     "gpt-5.5-pro",
     "gpt-5.5",
     "gpt-5.4-pro",
     "gpt-5.4",
-    # Anthropic — official IDs + common proxy aliases (anthropic/ prefix, dot versions, -latest)
-    "claude-sonnet-4-6",
+    # Anthropic (claude-fable-5 is the widely-released flagship)
+    "claude-fable-5",
     "claude-sonnet-5",
+    "claude-sonnet-4-6",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
-    "claude-fable-5",
-    # Proxy variants (OpenRouter/ZenMux style)
+    # OpenRouter / proxy vendor prefixes
+    "openai/gpt-5.6-sol",
+    "openai/gpt-5.6",
+    "openai/gpt-5.5",
+    "anthropic/claude-fable-5",
+    "anthropic/claude-sonnet-5",
     "anthropic/claude-sonnet-4",
     "anthropic/claude-opus-4",
     "anthropic/claude-opus-4.1",
     "anthropic/claude-sonnet-4.5",
-    # Legacy naming still seen on some proxies
+    # Legacy proxy aliases
     "claude-3-7-sonnet-latest",
     "claude-3-5-sonnet-latest",
-    # Google Gemini (3.5-flash > 3.1-pro > gemini-pro-latest)
+    # Google Gemini
     "gemini-3.5-flash",
     "gemini-3.1-pro-preview",
     "gemini-pro-latest",
-    # DeepSeek V4
+    # Western open-weight hosts (Together / Fireworks / Replicate style)
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "meta/meta-llama-3.1-405b-instruct",
+    "accounts/fireworks/models/llama-v3p3-70b-instruct",
+    "llama-3.3-70b-versatile",
+]
+
+HIGH_VALUE_DOMESTIC = [
+    # DeepSeek (official + OpenRouter + SiliconFlow)
     "deepseek-v4-pro",
     "deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-chat",
+    "deepseek-ai/DeepSeek-V4-Pro",
+    "deepseek-ai/DeepSeek-V4-Flash",
+    "deepseek-ai/DeepSeek-V3",
     # Kimi / Moonshot
+    "kimi-k3",
     "kimi-k2.7-code",
     "kimi-k2.7-code-highspeed",
     "kimi-k2.6",
     "kimi-k2.5",
+    "moonshotai/kimi-k3",
     # Zhipu / GLM
     "glm-5.2",
     "glm-5.1",
     "glm-5v-turbo",
     "glm-5-turbo",
     "glm-5",
-    # Qwen / Alibaba Cloud DashScope
+    "z-ai/glm-4.5",
+    "zai-org/GLM-4.5",
+    # Qwen / DashScope
     "qwen3.7-max",
     "qwen3.6-max-preview",
     "qwen3-max",
@@ -98,7 +126,33 @@ HIGH_VALUE_MODELS = [
     "qwen3.7-plus",
     "qwen3.6-plus",
     "qwen3.5-plus",
+    "qwen/qwen3-max",
+    "Qwen/Qwen3-Max",
+    "Qwen/Qwen3.5-397B-A17B",
 ]
+
+# Default flat list (international first) — used for membership checks.
+HIGH_VALUE_MODELS = HIGH_VALUE_INTERNATIONAL + HIGH_VALUE_DOMESTIC
+
+
+def high_value_probe_order(provider: str = "") -> list[str]:
+    """Region-aware high-value model order for probing.
+
+    Domestic aggregators (SiliconFlow, official DeepSeek/Kimi/GLM/Qwen) probe
+    domestic models first. International aggregators (OpenRouter, Together, …)
+    probe OpenAI/Claude/Llama first. Unknown / generic gateway keeps the default
+    international-first canary order.
+    """
+    from aipocket.services.providers.registry import (
+        DOMESTIC_PROBE_PROVIDERS,
+        INTERNATIONAL_PROBE_PROVIDERS,
+    )
+
+    if provider in DOMESTIC_PROBE_PROVIDERS:
+        return HIGH_VALUE_DOMESTIC + HIGH_VALUE_INTERNATIONAL
+    if provider in INTERNATIONAL_PROBE_PROVIDERS:
+        return HIGH_VALUE_INTERNATIONAL + HIGH_VALUE_DOMESTIC
+    return list(HIGH_VALUE_MODELS)
 
 
 # "Generation" major version per model family — used to distinguish a plausible
@@ -153,14 +207,52 @@ def _is_severe_model_mismatch(requested: str, actual: str) -> bool:
     return bool(gen_req and gen_act and gen_req != gen_act)
 
 
-async def validate_all(credentials: list[Credential]) -> list[ValidationResult]:
+def _validation_client(client: httpx.AsyncClient, cred: Credential | None = None):
+    from aipocket.core.observations import credential_identity
+    from aipocket.services.http_transport import InstrumentedAsyncClient, LedgerContext
+
+    if isinstance(client, InstrumentedAsyncClient):
+        return client
+
+    defaults = LedgerContext(stage="validation", source="validator")
+    if cred is not None:
+        identity = credential_identity(cred)
+        defaults = LedgerContext(
+            stage="validation",
+            source="validator",
+            credential_fingerprint=identity.secret_fingerprint,
+            target_identity=identity.endpoint,
+            product=cred.product,
+        )
+    return InstrumentedAsyncClient(client, defaults=defaults)
+
+
+async def validate_all(
+    credentials: list[Credential],
+    *,
+    attribution: dict[int, RequestAttribution] | None = None,
+) -> list[ValidationResult]:
     sem = asyncio.Semaphore(settings.validate_concurrency)
     timeout = httpx.Timeout(settings.validate_timeout)
     limits = httpx.Limits(max_connections=settings.validate_concurrency * 2)
 
-    async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True) as client:
-        tasks = [_probe_one(client, sem, c) for c in credentials]
-        return await asyncio.gather(*tasks)
+    async with httpx.AsyncClient(
+        timeout=timeout, limits=limits, follow_redirects=True
+    ) as raw_client:
+        client = _validation_client(raw_client)
+
+        async def one(credential: Credential) -> ValidationResult:
+            from aipocket.core.request_ledger import current_query_attribution
+
+            token = current_query_attribution.set(
+                (attribution or {}).get(id(credential), RequestAttribution())
+            )
+            try:
+                return await _probe_one(client, sem, credential)
+            finally:
+                current_query_attribution.reset(token)
+
+        return await asyncio.gather(*(one(c) for c in credentials))
 
 
 # A forged key that no real gateway would ever accept. Realistic-looking
@@ -241,7 +333,14 @@ async def _forged_key_probe(
 
     for attempt in range(_FORGED_PROBE_RETRIES):
         try:
-            r = await client.post(endpoint, headers=headers, json=payload, timeout=timeout)
+            request_client = _validation_client(client)
+            r = await request_client.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+                ledger_stage="noauth",
+            )
         except httpx.HTTPError:
             return "error"
         if r.status_code == 429:
@@ -286,6 +385,8 @@ def _forged_probe_provider(result: ValidationResult) -> str:
 
 async def verify_no_auth(
     results: list[ValidationResult],
+    *,
+    attribution: dict[int, RequestAttribution] | None = None,
 ) -> tuple[set[str], set[str]]:
     """Probe each host that has a valid result with a FORGED key.
 
@@ -326,7 +427,7 @@ async def verify_no_auth(
     # OpenAI's Authorization: Bearer + /chat/completions and a no-auth honeypot
     # on a non-OpenAI protocol (e.g. a strict *.openai.azure.com endpoint) would
     # reject the wrong-protocol probe and escape detection.
-    seen_hosts: dict[str, tuple[str, str, str]] = {}
+    seen_hosts: dict[str, tuple[str, str, str, RequestAttribution]] = {}
     for r in results:
         if not r.valid:
             continue
@@ -336,8 +437,9 @@ async def verify_no_auth(
         api_url = _normalize_apiurl(r.credential.apiurl)
         model = r.model_available or "gpt-4o-mini"
         provider = _forged_probe_provider(r)
+        request_attribution = (attribution or {}).get(id(r.credential), RequestAttribution())
         if api_url:
-            seen_hosts[host] = (api_url, model, provider)
+            seen_hosts[host] = (api_url, model, provider, request_attribution)
 
     if not seen_hosts:
         return set(), set()
@@ -345,50 +447,62 @@ async def verify_no_auth(
     sem = asyncio.Semaphore(settings.validate_concurrency)
     timeout = httpx.Timeout(settings.validate_timeout)
 
-    async def _probe_forged(host: str, api_url: str, model: str, provider: str) -> str:
-        """Probe one host with a forged key; return a verdict tag.
+    async def _probe_forged(
+        host: str,
+        api_url: str,
+        model: str,
+        provider: str,
+        request_attribution: RequestAttribution,
+    ) -> str:
+        """Probe one host with a forged key; return a verdict tag."""
+        from aipocket.core.request_ledger import current_query_attribution
 
-        Thin wrapper over :func:`_forged_key_probe` that carries the per-host
-        ``log.warning`` calls (those need ``host``/``api_url`` for triage).
-        Never raises — a single host must not abort the whole no-auth wave.
-        """
+        attribution_token = current_query_attribution.set(request_attribution)
         try:
-            async with sem, httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                verdict = await _forged_key_probe(
-                    client, api_url, model, provider=provider, timeout=timeout
+            try:
+                async with (
+                    sem,
+                    httpx.AsyncClient(timeout=timeout, follow_redirects=True) as raw_client,
+                ):
+                    client = _validation_client(raw_client)
+                    verdict = await _forged_key_probe(
+                        client, api_url, model, provider=provider, timeout=timeout
+                    )
+            except Exception as e:  # noqa: BLE001 — isolate per-host probe failures
+                log.warning(
+                    "verify_no_auth probe failed for %s (%s): %s: %s",
+                    host,
+                    api_url,
+                    type(e).__name__,
+                    e,
                 )
-        except Exception as e:  # noqa: BLE001 — isolate per-host probe failures
-            log.warning(
-                "verify_no_auth probe failed for %s (%s): %s: %s",
-                host,
-                api_url,
-                type(e).__name__,
-                e,
-            )
-            return "error"
-        if verdict == "suspicious_429":
-            log.warning(
-                "suspicious host (forged-key 429): %s (%s) — host "
-                "rate-limits without checking auth (open proxy?)",
-                host,
-                api_url,
-            )
-        elif verdict == "noauth":
-            log.warning(
-                "no-auth host confirmed: forged key validated on "
-                "%s (%s) — voiding all keys on this host",
-                host,
-                api_url,
-            )
-        elif verdict == "suspicious_noncompletion":
-            log.warning(
-                "suspicious host (200 non-completion): %s (%s) — host is not a real LLM gateway",
-                host,
-                api_url,
-            )
-        return verdict
+                return "error"
+            if verdict == "suspicious_429":
+                log.warning(
+                    "suspicious host (forged-key 429): %s (%s) — host "
+                    "rate-limits without checking auth (open proxy?)",
+                    host,
+                    api_url,
+                )
+            elif verdict == "noauth":
+                log.warning(
+                    "no-auth host confirmed: forged key validated on "
+                    "%s (%s) — voiding all keys on this host",
+                    host,
+                    api_url,
+                )
+            elif verdict == "suspicious_noncompletion":
+                log.warning(
+                    "suspicious host (200 non-completion): %s (%s) — "
+                    "host is not a real LLM gateway",
+                    host,
+                    api_url,
+                )
+            return verdict
+        finally:
+            current_query_attribution.reset(attribution_token)
 
-    tasks = [_probe_forged(h, u, m, p) for h, (u, m, p) in seen_hosts.items()]
+    tasks = [_probe_forged(h, u, m, p, a) for h, (u, m, p, a) in seen_hosts.items()]
     verdicts = await asyncio.gather(*tasks, return_exceptions=True)
     # Normalize any residual exceptions (should not happen after _probe_forged).
     clean: list[str] = []
@@ -431,7 +545,7 @@ async def _probe_one(
 ) -> ValidationResult:
     try:
         async with sem:
-            result = await _probe(client, cred)
+            result = await _probe(_validation_client(client, cred), cred)
     except Exception as exc:  # noqa: BLE001 - per-credential isolation boundary
         fingerprint = hashlib.sha256(cred.apikey.encode()).hexdigest()[:12]
         log.error(
@@ -453,6 +567,15 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
     result = ValidationResult(credential=cred, validated_at=datetime.now(UTC).isoformat())
     apply_state(result, "structurally_valid")
 
+    try:
+        return await _probe_inner(client, cred, result)
+    finally:
+        _apply_issuer_attribution(result)
+
+
+async def _probe_inner(
+    client: httpx.AsyncClient, cred: Credential, result: ValidationResult
+) -> ValidationResult:
     effective_url = cred.apiurl
 
     key_spec = provider_registry.match_key(cred.apikey)
@@ -504,6 +627,7 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             pass
 
     result.provider_info = ProviderInfo(
+        validation_provider=resolution.provider,
         provider=resolution.provider,
         category=resolution.category,
     )
@@ -665,6 +789,22 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
             apply_state(result, state)
         return result
 
+    if resolution.provider in {"cohere", "replicate", "together", "fireworks"}:
+        validation = await validate_additional_provider(client, cred, resolution.provider)
+        result.status_code = validation.status_code
+        result.error = validation.error
+        result.credential_kind = "api_key"
+        result.scope = validation.scope
+        result.provider_info.models_available = list(validation.models)
+        result.model_available = validation.models[0] if validation.models else ""
+        if validation.valid:
+            apply_state(result, "authentication_confirmed")
+        elif validation.status_code == 429:
+            apply_state(result, "rate_limited_unconfirmed")
+        else:
+            apply_state(result, "auth_rejected")
+        return result
+
     probe_models = list(resolution.default_model_hints)
     # Best-effort: query /v1/models to enrich models_available for OpenAI-compatible gateways.
     available_models = await _fetch_models_list(client, cred, api_url)
@@ -672,12 +812,11 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
         result.provider_info.models_available = available_models
 
         # STRATEGY: Probe with HIGH-VALUE MODELS FIRST if they exist in the list.
-        # This serves two purposes:
-        # 1. Directly validates access to what we actually want.
-        # 2. Honeypot resistance — faking gpt-5.5 quality responses is much harder
-        #    than faking gpt-3.5-turbo. If a "gpt-5.5" response reads like gpt-3.5,
-        #    something is wrong.
-        hv_available = [m for m in HIGH_VALUE_MODELS if m in available_models]
+        # Region-aware: domestic aggregators prefer DeepSeek/GLM/Qwen/Kimi;
+        # international aggregators prefer OpenAI/Claude/Llama.
+        # Also honeypot-resistant (faking gpt-5.x is harder than gpt-3.5).
+        hv_order = high_value_probe_order(resolution.provider)
+        hv_available = [m for m in hv_order if m in available_models]
         if hv_available:
             # Put high-value models at the front of probe list
             probe_models = hv_available + probe_models
@@ -696,6 +835,36 @@ async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResul
         result = await _probe_chat_completions(client, cred, api_url, result, probe_models)
 
     return result
+
+
+def _apply_issuer_attribution(result: ValidationResult) -> None:
+    """Fill dual attribution fields after auth; discovery-only leaves issuer unknown."""
+    cred = result.credential
+    pi = result.provider_info
+    validation_provider = (
+        pi.validation_provider if pi.validation_provider != "unknown" else pi.provider
+    )
+    hint = "unknown"
+    variables: tuple[str, ...] = ()
+    if cred.bundle is not None:
+        hint = cred.bundle.provider_hint or "unknown"
+        variables = tuple(ev.variable for ev in cred.bundle.evidence if ev.variable)
+    decision = decide_issuer(
+        apikey=cred.apikey,
+        apiurl=cred.apiurl,
+        validation_provider=validation_provider,
+        auth_confirmed=result.is_authenticated,
+        models_available=pi.models_available,
+        models_verified=pi.models_verified,
+        provider_hint=hint,
+        variable_names=variables,
+    )
+    pi.validation_provider = decision.validation_provider
+    # Dual-read alias for one release.
+    pi.provider = decision.validation_provider
+    pi.credential_issuer = decision.credential_issuer
+    pi.issuer_evidence = decision.issuer_evidence
+    pi.served_model_families = list(decision.served_model_families)
 
 
 def _models_list_request(cred: Credential, chat_url: str) -> tuple[str, dict[str, str]]:

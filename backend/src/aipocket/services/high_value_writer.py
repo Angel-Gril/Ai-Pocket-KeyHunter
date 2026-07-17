@@ -35,12 +35,14 @@ HIGH_VALUE_PREFIXES = (
 # Models that elevate a validated Anthropic API key to high-value.
 _ANTHROPIC_HIGH_VALUE_MODELS = frozenset(
     {
+        "claude-fable-5",
         "claude-sonnet-4-6",
         "claude-sonnet-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
-        "claude-fable-5",
+        "anthropic/claude-fable-5",
+        "anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-4",
         "anthropic/claude-opus-4",
         "anthropic/claude-opus-4.1",

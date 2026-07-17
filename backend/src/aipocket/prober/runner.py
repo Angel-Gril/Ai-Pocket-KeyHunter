@@ -283,6 +283,12 @@ async def _probe_one(
     target = assignment.target
     hit = target.to_hit()
     hit["_evidence_score"] = score_target(target).score
+    from aipocket.core.request_ledger import RequestAttribution, current_query_attribution
+
+    source, query_id = target.provenance_pairs[0] if target.provenance_pairs else ("", "")
+    attribution_token = current_query_attribution.set(
+        RequestAttribution(source=source, query_id=query_id, lane="probe")
+    )
     host_label = target.identity.url[:40]
     credentials: list[Credential] = []
     findings: list[Finding] = []
@@ -293,48 +299,51 @@ async def _probe_one(
     reason = "no-request-issued"
 
     try:
-        for prober_cls in assignment.probers:
-            budget = _budget_for_prober(prober_cls)
-            prober = prober_cls(
-                client,
-                sem,
-                budget,
-                max_redirects=settings.max_probe_redirects,
-                intrusive_checks=settings.intrusive_checks,
-                authorized_scope=settings.authorized_probe_scope_list,
+        try:
+            for prober_cls in assignment.probers:
+                budget = _budget_for_prober(prober_cls)
+                prober = prober_cls(
+                    client,
+                    sem,
+                    budget,
+                    max_redirects=settings.max_probe_redirects,
+                    intrusive_checks=settings.intrusive_checks,
+                    authorized_scope=settings.authorized_probe_scope_list,
+                )
+                prober_names.append(prober.product_name)
+                credentials.extend(await prober.probe(hit))
+                total_requests += budget.consumed
+                last = getattr(prober, "last_result", None)
+                if last is not None:
+                    findings.extend(last.findings)
+                    node_outcomes.extend(last.node_outcomes)
+            if total_requests > 0:
+                status = ProbeStatus.ATTEMPTED
+                reason = ""
+        except Exception as exc:  # noqa: BLE001 - isolate each target
+            status = ProbeStatus.FAILED
+            reason = type(exc).__name__
+            log.debug(
+                "prober %s on %s crashed: %s",
+                ",".join(prober_names) or "unknown",
+                host_label,
+                reason,
             )
-            prober_names.append(prober.product_name)
-            credentials.extend(await prober.probe(hit))
-            total_requests += budget.consumed
-            last = getattr(prober, "last_result", None)
-            if last is not None:
-                findings.extend(last.findings)
-                node_outcomes.extend(last.node_outcomes)
-        if total_requests > 0:
-            status = ProbeStatus.ATTEMPTED
-            reason = ""
-    except Exception as exc:  # noqa: BLE001 - isolate each target
-        status = ProbeStatus.FAILED
-        reason = type(exc).__name__
-        log.debug(
-            "prober %s on %s crashed: %s",
-            ",".join(prober_names) or "unknown",
-            host_label,
-            reason,
-        )
 
-    return (
-        credentials,
-        ProbeTargetOutcome(
-            identity_hash=target.identity.identity_hash,
-            status=status,
-            request_count=total_requests,
-            prober=",".join(prober_names),
-            reason=reason,
-        ),
-        findings,
-        node_outcomes,
-    )
+        return (
+            credentials,
+            ProbeTargetOutcome(
+                identity_hash=target.identity.identity_hash,
+                status=status,
+                request_count=total_requests,
+                prober=",".join(prober_names),
+                reason=reason,
+            ),
+            findings,
+            node_outcomes,
+        )
+    finally:
+        current_query_attribution.reset(attribution_token)
 
 
 async def _run_probe_batch(

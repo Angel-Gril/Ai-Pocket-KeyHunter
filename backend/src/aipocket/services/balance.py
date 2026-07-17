@@ -11,6 +11,7 @@ from rich.table import Table
 
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ValidationResult
+from aipocket.core.request_ledger import RequestAttribution
 from aipocket.services.providers import uses_openai_adapter
 
 if TYPE_CHECKING:
@@ -28,6 +29,26 @@ _OPENAI_API_HOST = "https://api.openai.com"
 # OpenAI has no fully-public remaining-balance API for all key types; when
 # dashboard endpoints reject API keys we still mark the row resolved.
 _OPENAI_BALANCE_NA = "N/A"
+
+
+def _balance_client(client: httpx.AsyncClient, cred: Credential):
+    from aipocket.core.observations import credential_identity
+    from aipocket.services.http_transport import InstrumentedAsyncClient, LedgerContext
+
+    if isinstance(client, InstrumentedAsyncClient):
+        return client
+
+    identity = credential_identity(cred)
+    return InstrumentedAsyncClient(
+        client,
+        defaults=LedgerContext(
+            stage="balance",
+            source="balance",
+            credential_fingerprint=identity.secret_fingerprint,
+            target_identity=identity.endpoint,
+            product=cred.product,
+        ),
+    )
 
 
 async def _safe_get(
@@ -66,6 +87,7 @@ def _strip_api_base(apiurl: str) -> str:
 
 
 async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str, Any]:
+    client = _balance_client(client, cred)
     # Official OpenAI keys: force platform host (billing lives on the account,
     # not a reverse-proxy leak host). Runs before generic gateway probes.
     if uses_openai_adapter(apiurl=cred.apiurl, apikey=cred.apikey) or _is_openai_official_key(
@@ -1233,45 +1255,52 @@ async def enrich_results(
     dedup: DedupStore | None = None,
     *,
     use_cache: bool = True,
+    attribution: dict[int, RequestAttribution] | None = None,
 ) -> list[ValidationResult]:
     sem = asyncio.Semaphore(settings.validate_concurrency)
     timeout = httpx.Timeout(settings.validate_timeout)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
 
         async def _one(r: ValidationResult) -> ValidationResult:
-            if not r.valid:
-                return r
-            # Cross-run balance cache: reuse the previous run's balance result
-            # instead of re-querying the endpoint. Falls through to a live
-            # query on miss / when dedup is disabled.
-            if dedup is not None and use_cache:
-                cached = await dedup.get_cached_balance(r.credential)
-                if cached:
-                    r.balance = str(cached.get("balance_usd", ""))
-                    r.gateway = cached.get("gateway", "") or r.gateway
-                    if cached.get("tier"):
-                        r.tier = r.tier or cached["tier"]
-                    r.rate_limit_headers["balance_detail"] = str(cached)
-                    r.provider_info.balance_provider = (
-                        cached.get("gateway", "") or r.provider_info.balance_provider
-                    )
-                    return r
+            from aipocket.core.request_ledger import current_query_attribution
+
+            attribution_token = current_query_attribution.set(
+                (attribution or {}).get(id(r.credential), RequestAttribution())
+            )
             try:
-                async with sem:
-                    bal = await query_balance(client, r.credential)
-            except Exception as e:
-                log.warning("Balance query failed for %s…: %s", r.credential.apikey[:12], e)
+                if not r.valid:
+                    return r
+                # Cross-run balance cache: reuse the previous run's result.
+                if dedup is not None and use_cache:
+                    cached = await dedup.get_cached_balance(r.credential)
+                    if cached:
+                        r.balance = str(cached.get("balance_usd", ""))
+                        r.gateway = cached.get("gateway", "") or r.gateway
+                        if cached.get("tier"):
+                            r.tier = r.tier or cached["tier"]
+                        r.rate_limit_headers["balance_detail"] = str(cached)
+                        r.provider_info.balance_provider = (
+                            cached.get("gateway", "") or r.provider_info.balance_provider
+                        )
+                        return r
+                try:
+                    async with sem:
+                        bal = await query_balance(client, r.credential)
+                except Exception as e:
+                    log.warning("Balance query failed for %s…: %s", r.credential.apikey[:12], e)
+                    return r
+                if bal:
+                    r.balance = str(bal.get("balance_usd", ""))
+                    r.gateway = bal.get("gateway", "")
+                    if bal.get("tier"):
+                        r.tier = r.tier or bal["tier"]
+                    r.rate_limit_headers["balance_detail"] = str(bal)
+                    r.provider_info.balance_provider = bal.get("gateway", "")
+                    if dedup is not None:
+                        await dedup.cache_balance(r.credential, bal)
                 return r
-            if bal:
-                r.balance = str(bal.get("balance_usd", ""))
-                r.gateway = bal.get("gateway", "")
-                if bal.get("tier"):
-                    r.tier = r.tier or bal["tier"]
-                r.rate_limit_headers["balance_detail"] = str(bal)
-                r.provider_info.balance_provider = bal.get("gateway", "")
-                if dedup is not None:
-                    await dedup.cache_balance(r.credential, bal)
-            return r
+            finally:
+                current_query_attribution.reset(attribution_token)
 
         return await asyncio.gather(*[_one(r) for r in results])
 

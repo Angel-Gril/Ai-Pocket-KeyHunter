@@ -4,7 +4,7 @@ Guidelines for AI agents (Claude Code, Copilot, Cursor, etc.) working on this co
 
 ## Project Overview
 
-**AIPocket** scans for exposed AI infrastructure via FOFA + Shodan, extracts and validates leaked API key/URL pairs, checks balances, and flags high-value findings.
+**AIPocket** scans for exposed AI infrastructure via FOFA + Shodan (+ GitHub artifact source), extracts and validates leaked API key/URL pairs, checks balances, and flags high-value findings.
 
 Monorepo layout:
 - `backend/` — Python 3.11+, FastAPI + Typer CLI, `uv` package manager

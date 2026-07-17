@@ -403,6 +403,40 @@ async def test_scan_manager_preserves_explicit_zero_metrics(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_scan_manager_passes_immutable_github_pack_filter(tmp_path, monkeypatch):
+    from aipocket.api.scan_manager import ScanManager
+    from aipocket.core.models import ScanRunResult
+
+    captured: dict = {}
+    result = ScanRunResult(
+        started_at="2026-07-16T00:00:00Z",
+        finished_at="2026-07-16T00:01:00Z",
+        sources=["github"],
+        total_hosts=0,
+        total_credentials=0,
+        total_valid=0,
+        queries_used=[],
+        results=[],
+    )
+
+    async def fake_run_scan(**kwargs):
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr("aipocket.services.scanner.run_scan", fake_run_scan)
+    monkeypatch.setattr("aipocket.core.config.settings.database_url", "")
+    manager = ScanManager()
+    manager._run_dir = tmp_path
+    manager._github_pack_ids = ("cohere",)
+
+    await manager._run("github", github_pack_ids=manager._github_pack_ids)
+
+    assert captured["sources"] == {"github"}
+    assert captured["github_pack_ids"] == ("cohere",)
+    assert manager.status()["github_pack_ids"] == ["cohere"]
+
+
+@pytest.mark.asyncio
 async def test_scan_manager_stop_when_idle_raises():
     from aipocket.api.scan_manager import ScanManager
 

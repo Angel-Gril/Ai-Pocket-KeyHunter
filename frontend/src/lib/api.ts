@@ -4,8 +4,17 @@ import { clearToken, getToken } from "@/lib/auth-storage"
 /* Types — mirror src/aipocket/web/schemas.py and models.py            */
 /* ------------------------------------------------------------------ */
 
-export type ScanSource = "fofa" | "shodan" | "all"
+export type ScanSource = "fofa" | "shodan" | "github" | "all"
 export type ScanMode = "full" | "incremental"
+export type GitHubPackId =
+  | "all"
+  | "glm"
+  | "kimi"
+  | "qwen"
+  | "cohere"
+  | "replicate"
+  | "together"
+  | "fireworks"
 export type ExportFormat = "json" | "csv"
 export type ExportDataset = "selected" | "run" | "high-value" | "all"
 export type ResultKind = "valid" | "suspicious"
@@ -89,6 +98,7 @@ export interface ScanStatusResponse {
   state: ScanState | string
   source: string | null
   mode: ScanMode
+  github_pack_ids: GitHubPackId[]
   run_id: string | null
   started_at: string | null
   finished_at: string | null
@@ -123,6 +133,9 @@ export interface SettingsView {
   shodan_max_pages: number
   shodan_timeout: number
   shodan_page_delay: number
+  github_tokens: string
+  github_api_base_url: string
+  github_hunter_enabled: boolean
   validate_concurrency: number
   prober_concurrency: number
 }
@@ -157,6 +170,15 @@ export interface ShodanCheckResponse {
   consumes_quota: boolean
 }
 
+export interface GithubCheckResponse {
+  status: "ok" | "invalid" | "disabled"
+  message: string
+  core_remaining: number | null
+  search_remaining: number | null
+  code_search_remaining: number | null
+  n_tokens: number
+}
+
 /** Credential sub-object of a scan result record (models.py Credential). */
 export interface Credential {
   apikey: string
@@ -175,10 +197,14 @@ export interface Credential {
 
 export interface ProviderInfo {
   provider: string
+  validation_provider?: string
   category: string
   models_available: string[]
   models_verified: string[]
   balance_provider: string
+  credential_issuer?: string
+  issuer_evidence?: string
+  served_model_families?: string[]
 }
 
 /**
@@ -481,8 +507,15 @@ export const api = {
   },
 
   // Scan
-  scanStart: (source: ScanSource, mode: ScanMode) =>
-    request<ScanStatusResponse>("/scan/start", { method: "POST", body: { source, mode } }),
+  scanStart: (
+    source: ScanSource,
+    mode: ScanMode,
+    githubPackIds: readonly GitHubPackId[] = [],
+  ) =>
+    request<ScanStatusResponse>("/scan/start", {
+      method: "POST",
+      body: { source, mode, github_pack_ids: githubPackIds },
+    }),
   scanStop: () => request<ScanStatusResponse>("/scan/stop", { method: "POST" }),
   scanStatus: (signal?: AbortSignal) => request<ScanStatusResponse>("/scan/status", { signal }),
   scanLogs: (since = 0) => request<ScanLogsResponse>(`/scan/logs?since=${since}`),
@@ -497,6 +530,7 @@ export const api = {
     request<SettingsUpdateResponse>("/settings", { method: "PUT", body }),
   checkFofa: () => request<FofaCheckResponse>("/settings/check/fofa", { method: "POST" }),
   checkShodan: () => request<ShodanCheckResponse>("/settings/check/shodan", { method: "POST" }),
+  checkGithub: () => request<GithubCheckResponse>("/settings/check/github", { method: "POST" }),
 
   // System
   systemRestart: () => request<{ restarting: boolean }>("/system/restart", { method: "POST" }),

@@ -21,12 +21,26 @@ from aipocket.core.key_patterns import KEY_PATTERNS, is_noise
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.I)
 _SECRET_NAME_RE = re.compile(r"(?:api[_-]?key|token|secret|private[_-]?key)$", re.I)
 _ENDPOINT_NAME_RE = re.compile(r"(?:base[_-]?url|api[_-]?url|endpoint|api[_-]?base)$", re.I)
+_GLM_DEFAULT = "https://open.bigmodel.cn/api/paas/v4"
 _DEFAULTS = {
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
     "google": "https://generativelanguage.googleapis.com",
     "vertex": "https://aiplatform.googleapis.com",
+    "glm": _GLM_DEFAULT,
+    "zhipu": _GLM_DEFAULT,
+    "bigmodel": _GLM_DEFAULT,
+    "kimi": "https://api.moonshot.cn/v1",
+    "moonshot": "https://api.moonshot.cn/v1",
+    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "cohere": "https://api.cohere.com/v1",
+    "replicate": "https://api.replicate.com/v1",
+    "together": "https://api.together.xyz/v1",
+    "fireworks": "https://api.fireworks.ai/inference/v1",
 }
+# Dual-segment GLM exclusive shape (same as KEY_PATTERNS "glm").
+_GLM_KEY_RE = re.compile(r"^[a-f0-9]{32}\.[A-Za-z0-9]{16}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,13 +159,37 @@ def _provider(entry: _Entry) -> str:
     text = "_".join((*entry.path, entry.name)).lower()
     if "azure" in text and "openai" in text:
         return "azure_openai"
-    for provider in ("openai", "anthropic", "google", "vertex"):
-        if provider in text:
+    # Variable / path tokens first so sk-* does not override stronger GLM/etc.
+    # evidence (names containing glm/zhipu/bigmodel → provider_hint glm).
+    _NAME_HINTS: tuple[tuple[str, str], ...] = (
+        ("zhipu", "glm"),
+        ("bigmodel", "glm"),
+        ("glm", "glm"),
+        ("moonshot", "kimi"),
+        ("kimi", "kimi"),
+        ("dashscope", "qwen"),
+        ("qwen", "qwen"),
+        ("cohere", "cohere"),
+        ("replicate", "replicate"),
+        ("together", "together"),
+        ("fireworks", "fireworks"),
+        ("openai", "openai"),
+        ("anthropic", "anthropic"),
+        ("google", "google"),
+        ("vertex", "vertex"),
+    )
+    for token, provider in _NAME_HINTS:
+        if token in text:
             return provider
+    if entry.value.startswith("r8_"):
+        return "replicate"
     if entry.value.startswith("sk-ant-"):
         return "anthropic"
     if entry.value.startswith("AIza"):
         return "google"
+    if _GLM_KEY_RE.fullmatch(entry.value.strip()):
+        return "glm"
+    # sk-* alone is a generic OpenAI-compatible hint — weaker than name evidence.
     if entry.value.startswith("sk-"):
         return "openai"
     return "unknown"
@@ -172,9 +210,18 @@ def _bundle_for(
         candidates = adjacent
         pairing = "adjacency"
     provider = _provider(secret)
-    if not candidates and provider in _DEFAULTS:
-        candidates = [_Entry((), "default", _DEFAULTS[provider], secret.order)]
+    default_url = _DEFAULTS.get(provider)
+    if not candidates and default_url:
+        candidates = [_Entry((), "default", default_url, secret.order)]
         pairing = "default"
+        # Normalize alias hints (zhipu/bigmodel → glm) for downstream routing.
+        if provider in {"zhipu", "bigmodel", "moonshot", "dashscope"}:
+            provider = {
+                "zhipu": "glm",
+                "bigmodel": "glm",
+                "moonshot": "kimi",
+                "dashscope": "qwen",
+            }[provider]
     urls = tuple(dict.fromkeys(item.value.rstrip("/") for item in candidates))
     confidence: Confidence = (
         "ambiguous"

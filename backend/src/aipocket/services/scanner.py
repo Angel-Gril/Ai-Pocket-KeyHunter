@@ -18,7 +18,10 @@ from aipocket.core.metrics import (
 )
 from aipocket.core.models import Credential, ScanMode, ScanRunResult, ValidationResult
 from aipocket.core.observations import ExtractionMethod, ObservationRegistry
+from aipocket.core.request_ledger import RequestAttribution, RequestLedger, current_ledger
+from aipocket.core.scan_policy import ScanPolicy, policy_from_mode
 from aipocket.core.targets import DiscoveryTarget, canonicalize_hits
+from aipocket.discovery import SourceBudgets, SourceRegistry, merge_fetch_results
 
 from .dedup import DedupStore, get_dedup_store
 from .extractor import extract_credentials
@@ -76,6 +79,68 @@ class QueryBudgets:
     shodan: int | None
 
 
+_REQUIRED_LEDGER_STAGES = frozenset(
+    {"discovery", "artifact_fetch", "probe", "validation", "noauth", "balance", "gpt"}
+)
+_REQUIRED_HTTP_INSTRUMENTATION_VERSION = 1
+
+
+def _complete_ledger(ledger: RequestLedger | None) -> tuple[int, bool, str]:
+    if ledger is None:
+        return 0, False, "ledger_unavailable"
+    if not settings.pg_enabled:
+        ledger.mark_incomplete("pg_disabled")
+    from .http_transport import HTTP_INSTRUMENTATION_VERSION
+
+    if HTTP_INSTRUMENTATION_VERSION < _REQUIRED_HTTP_INSTRUMENTATION_VERSION:
+        ledger.mark_incomplete("http_instrumentation_incomplete")
+    if settings.pg_enabled and ledger.on_flush is None:
+        ledger.mark_incomplete("ledger_flush_unavailable")
+    ledger.drain()
+    totals = ledger.totals()
+    unknown_stages = set(totals.by_stage) - _REQUIRED_LEDGER_STAGES
+    if unknown_stages:
+        ledger.mark_incomplete("unknown_instrumentation_stage")
+    complete = ledger.is_complete and settings.pg_enabled
+    reason = ledger.incomplete_reason or ("" if complete else "ledger_incomplete")
+    if ledger.flush_failed:
+        complete = False
+        reason = ledger.flush_error or "ledger_flush_failed"
+    return totals.total, complete, reason
+
+
+def _snapshot_query_metrics(
+    collector: QueryMetricsCollector,
+    ledger: RequestLedger | None,
+    *,
+    ledger_complete: bool,
+):
+    if ledger is not None:
+        collector.apply_ledger(ledger.totals().by_query)
+    return collector.snapshot(attribution_version=3 if ledger_complete else 2)
+
+
+def _credential_attribution(
+    observations: ObservationRegistry,
+    credentials: list[Credential],
+    query_metadata: dict[tuple[str, str], tuple[str, str, str]],
+) -> dict[int, RequestAttribution]:
+    attribution: dict[int, RequestAttribution] = {}
+    for credential in credentials:
+        observation = observations.get(credential)
+        if observation is None:
+            continue
+        source, query = observation.primary_provenance
+        query_id, lane, pack_id = query_metadata.get((source, query), (query, "", ""))
+        attribution[id(credential)] = RequestAttribution(
+            source=source,
+            query_id=query_id,
+            pack_id=pack_id,
+            lane=lane,
+        )
+    return attribution
+
+
 async def run_scan(
     query_budgets: QueryBudgets | None = None,
     run_dir: Path | None = None,
@@ -83,39 +148,59 @@ async def run_scan(
     mode: ScanMode = "incremental",
     skip_direct: bool = False,
     sources: set[str] | None = None,
+    github_pack_ids: tuple[str, ...] = (),
+    policy: ScanPolicy | None = None,
 ) -> ScanRunResult:
     started = datetime.now(UTC).isoformat()
+    scan_policy = policy or policy_from_mode(mode)
 
     # Stamp the run dir so GPT debug/failed-batch dumps land inside it.
     from . import analyzer as _analyzer
 
     _analyzer.set_run_dir(run_dir)
 
-    # Propagate the run_id to deep write paths (high_value_writer.try_save) via a
-    # ContextVar — set here, read there — instead of threading it through every
-    # signature. The value is run_dir.name (the run_YYYY_… string), matching the
-    # `runs.run_id` primary key.
     from aipocket.core.db import current_run_id
 
-    run_id = run_dir.name if run_dir else None
-    token = current_run_id.set(run_id)
+    run_id = run_dir.name if run_dir else f"ephemeral_{started}"
+    run_token = current_run_id.set(run_id if run_dir or settings.pg_enabled else None)
+    parent_run_created = False
+    ledger_token = None
+    dedup: DedupStore | None = None
 
-    # Cross-run dedup store (Redis-backed; degrades to no-op if unavailable).
-    dedup = await get_dedup_store()
-
-    budgets = (
-        QueryBudgets(fofa=None, shodan=None)
-        if mode == "full"
-        else query_budgets
-        or QueryBudgets(
-            fofa=settings.fofa_query_budget,
-            shodan=settings.shodan_query_budget,
-        )
-    )
-    from .scan_lock import acquire_scan_lease
-
-    lease = await acquire_scan_lease()
     try:
+        # The request_ledger table has a foreign key to runs. Create the parent
+        # before constructing a ledger with an active flush callback.
+        if settings.pg_enabled:
+            from .writer import create_run_pg
+
+            await asyncio.to_thread(create_run_pg, run_id, started, mode)
+            parent_run_created = True
+
+        def _flush_ledger(batch: list) -> None:
+            from .writer import persist_ledger_batch_pg
+
+            persist_ledger_batch_pg(batch)
+
+        ledger = RequestLedger(
+            run_id=run_id,
+            on_flush=_flush_ledger if parent_run_created else None,
+        )
+        ledger_token = current_ledger.set(ledger)
+
+        # Cross-run dedup store (Redis-backed; degrades to no-op if unavailable).
+        dedup = await get_dedup_store()
+        budgets = (
+            QueryBudgets(fofa=None, shodan=None)
+            if scan_policy.discovery_scope == "full"
+            else query_budgets
+            or QueryBudgets(
+                fofa=settings.fofa_query_budget,
+                shodan=settings.shodan_query_budget,
+            )
+        )
+        from .scan_lock import acquire_scan_lease
+
+        lease = await acquire_scan_lease()
         async with lease:
             return await lease.run(
                 _run_scan_inner(
@@ -126,11 +211,30 @@ async def run_scan(
                     dedup=dedup,
                     mode=mode,
                     sources=sources,
+                    github_pack_ids=github_pack_ids,
+                    policy=scan_policy,
+                    ledger=ledger,
                 )
             )
+    except BaseException as exc:
+        if parent_run_created:
+            from .writer import mark_run_interrupted_pg
+
+            try:
+                await asyncio.to_thread(
+                    mark_run_interrupted_pg,
+                    run_id,
+                    f"{type(exc).__name__}: scan aborted",
+                )
+            except Exception:  # noqa: BLE001 - preserve the original scan failure
+                log.exception("Failed to mark interrupted run %s", run_id)
+        raise
     finally:
-        await dedup.close()
-        current_run_id.reset(token)
+        if dedup is not None:
+            await dedup.close()
+        if ledger_token is not None:
+            current_ledger.reset(ledger_token)
+        current_run_id.reset(run_token)
 
 
 async def _run_scan_inner(
@@ -142,80 +246,61 @@ async def _run_scan_inner(
     dedup: DedupStore,
     mode: ScanMode,
     sources: set[str] | None = None,
+    github_pack_ids: tuple[str, ...] = (),
+    policy: ScanPolicy | None = None,
+    ledger: RequestLedger | None = None,
 ) -> ScanRunResult:
-
-    all_hits: list[dict] = []
-    queries_used: list[str] = []
-    sources_used: list[str] = []
-    hits_by_source: dict[str, int] = {}
+    scan_policy = policy or policy_from_mode(mode)
     query_metrics = QueryMetricsCollector()
 
     # ------------------------------------------------------------------
-    # Source fetching — run FOFA and Shodan in PARALLEL via threads
-    # (both use synchronous httpx clients internally).
-    #
-    # We submit both to the pool, then AWAIT each via run_in_executor
-    # instead of calling future.result() synchronously. future.result()
-    # blocks the event-loop thread for the entire fetch (minutes), which
-    # freezes every async endpoint — /api/scan/stop won't respond and the
-    # SSE/polling log streams stall, even though logs keep flowing to the
-    # container's stdout. Awaiting keeps the loop schedulable.
+    # Source Registry — FOFA/Shodan host hits + GitHub credential observations.
+    query_metadata: dict[tuple[str, str], tuple[str, str, str]] = {}
+    # Host hits go through canonicalize_hits; credential observations do not.
     # ------------------------------------------------------------------
-    import concurrent.futures
-    import functools
+    registry = SourceRegistry.default()
+    resolved = registry.resolve(requested=sources, settings=settings)
+    source_budgets = SourceBudgets(
+        fofa=query_budgets.fofa,
+        shodan=query_budgets.shodan,
+        github_commit=settings.github_commit_query_budget,
+        github_code=settings.github_code_query_budget,
+    )
+    fetch_results = await registry.fetch_all(
+        resolved,
+        budgets=source_budgets,
+        mode=mode,
+        policy=scan_policy,
+        skip_direct=skip_direct,
+        strict_sources=frozenset(sources or ()),
+        pack_ids=github_pack_ids,
+    )
+    (
+        all_hits,
+        cred_observations,
+        sources_used,
+        hits_by_source,
+        queries_used,
+        all_usage,
+    ) = merge_fetch_results(fetch_results)
 
-    fofa_hits: list[dict] = []
-    shodan_hits: list[dict] = []
-
-    # `sources` (when given) restricts which discovery backends run this scan —
-    # e.g. the web UI's single-source mode. None means "every configured source".
-    want_fofa = sources is None or "fofa" in sources
-    want_shodan = sources is None or "shodan" in sources
-
-    loop = asyncio.get_running_loop()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        # run_in_executor returns an asyncio.Future (awaitable, loop-aware),
-        # not a concurrent.futures.Future — so the loop stays schedulable while
-        # the fetch threads run.
-        fofa_future: asyncio.Future | None = None
-        shodan_future: asyncio.Future | None = None
-
-        if want_fofa and settings.keys:
-            sources_used.append("fofa")
-            fofa_future = loop.run_in_executor(
-                pool, functools.partial(_fetch_fofa, query_budgets.fofa, skip_direct=skip_direct)
+    for fr in fetch_results:
+        for usage in fr.query_usage:
+            query_metadata[(fr.source, usage.query)] = (
+                usage.query_id or usage.query,
+                usage.lane,
+                usage.pack_id,
             )
-        elif want_fofa:
-            log.info("FOFA keys not configured — skipping FOFA source")
-
-        if want_shodan and settings.shodan_key_list:
-            sources_used.append("shodan")
-            shodan_future = loop.run_in_executor(
-                pool,
-                functools.partial(_fetch_shodan, query_budgets.shodan, skip_direct=skip_direct),
+            query_metrics.increment(
+                fr.source,
+                usage.query,
+                query_id=usage.query_id or usage.query,
+                lane=usage.lane,
+                pack_id=usage.pack_id,
+                query_credits=usage.credits,
             )
-        elif want_shodan:
-            log.info("Shodan keys not configured — skipping Shodan source")
 
-        for name, future in (("fofa", fofa_future), ("shodan", shodan_future)):
-            if future is None:
-                continue
-            try:
-                hits, used_queries = await future
-                for usage in used_queries:
-                    query_metrics.increment(name, usage.query, query_credits=usage.credits)
-                for h in hits:
-                    if isinstance(h, dict):
-                        h.setdefault("_source", name)
-                if name == "fofa":
-                    fofa_hits = hits
-                else:
-                    shodan_hits = hits
-                queries_used.extend(usage.query for usage in used_queries)
-            except Exception as e:
-                log.error("Source %s failed: %s", name, e)
-
-    all_hits = fofa_hits + shodan_hits
+    # ONLY host hits enter canonicalize_hits — never GitHub credential payloads.
     targets = canonicalize_hits(all_hits)
     for hit in all_hits:
         source = str(hit.get("_source", ""))
@@ -225,18 +310,28 @@ async def _run_scan_inner(
     for target in targets:
         for source, query in target.provenance_pairs:
             query_metrics.increment(source, query, unique_targets=1)
-    hits_by_source["fofa"] = len(fofa_hits)
-    hits_by_source["shodan"] = len(shodan_hits)
-
     if not sources_used:
+        if sources == {"github"}:
+            source_errors = [error for result in fetch_results for error in result.errors]
+            detail = (
+                source_errors[0]
+                if source_errors
+                else (
+                    "GitHub source requested but not configured. "
+                    "Set GITHUB_TOKENS and DATABASE_URL in .env"
+                )
+            )
+            raise RuntimeError(detail)
         raise RuntimeError(
-            "No discovery source configured. Set FOFA_KEYS and/or SHODAN_KEYS in .env"
+            "No discovery source configured. Set FOFA_KEYS and/or SHODAN_KEYS "
+            "(and optionally GITHUB_TOKENS + DATABASE_URL) in .env"
         )
 
     log.info(
-        "Discovery: raw_hits=%d unique_targets=%d (sources: %s)",
+        "Discovery: raw_hits=%d unique_targets=%d credential_obs=%d (sources: %s)",
         len(all_hits),
         len(targets),
+        len(cred_observations),
         ", ".join(sources_used),
     )
 
@@ -285,6 +380,21 @@ async def _run_scan_inner(
     seen = {_credential_identity(c) for c in creds}
     log.info("Extracted %d candidate credentials (regex)", len(creds))
 
+    # GitHub credential lane: observations already carry CredentialBundle.
+    # Never route these through host prober / GPT page extract.
+    if cred_observations:
+        github_creds = [obs.credential for obs in cred_observations]
+        for obs in cred_observations:
+            provenance = (("github", obs.query_id or obs.pack_id or "github"),)
+            observations.observe(obs.credential, ExtractionMethod.REGEX, provenance)
+        seen = _merge_credentials(creds, github_creds, seen)
+        record_credentials("candidates", github_creds)
+        log.info(
+            "GitHub credential observations: +%d (total candidates=%d)",
+            len(github_creds),
+            len(creds),
+        )
+
     # ------------------------------------------------------------------
     # Early credential filtering — reject known bad formats BEFORE
     # wasting HTTP calls on validation. This catches:
@@ -325,8 +435,9 @@ async def _run_scan_inner(
         )
 
         # Cross-run dedup: skip hosts already probed in a previous run.
+        # Full discovery still uses TTL probe cache (verification_policy=ttl).
         before_probe = len(ordered_targets)
-        if mode == "incremental":
+        if not scan_policy.force_revalidate:
             ordered_targets = await dedup.filter_unseen_targets("probe", ordered_targets)
         if before_probe != len(ordered_targets):
             log.info(
@@ -371,7 +482,7 @@ async def _run_scan_inner(
                 continue
             if outcome.request_count > 0:
                 await dedup.mark_target("probe", target)
-            elif mode == "full":
+            elif scan_policy.force_revalidate:
                 await dedup.clear_target("probe", target)
         log.info(
             "Prober outcomes: attempted=%d rejected_by_evidence=%d skipped=%d failed=%d",
@@ -416,9 +527,10 @@ async def _run_scan_inner(
     from .analyzer import extract_with_gpt
 
     before_gpt = len(_prioritize_targets_for_gpt(targets))
+    # Full discovery still respects GPT host TTL cache unless verification is fresh.
     sampled_targets = (
         await _select_gpt_targets(targets, dedup)
-        if mode == "incremental"
+        if not scan_policy.force_revalidate
         else _prioritize_targets_for_gpt(targets)[:5000]
     )
     sampled = []
@@ -449,7 +561,10 @@ async def _run_scan_inner(
         if target is not None:
             await dedup.mark_target("gpt", target)
     for entry_id in gpt_report.failed_entry_ids:
-        if mode == "full" and (target := target_by_entry_id.get(entry_id)) is not None:
+        if (
+            scan_policy.force_revalidate
+            and (target := target_by_entry_id.get(entry_id)) is not None
+        ):
             await dedup.clear_target("gpt", target)
     gpt_creds = list(gpt_report.credentials)
     if gpt_creds:
@@ -462,6 +577,8 @@ async def _run_scan_inner(
     if not creds:
         log.info("No credentials found — writing empty scan results")
         finished = datetime.now(UTC).isoformat()
+        total_http, ledger_complete, ledger_reason = _complete_ledger(ledger)
+        metrics_version = 3 if ledger_complete else 2
         empty_meta = {
             "started_at": started,
             "finished_at": finished,
@@ -474,27 +591,30 @@ async def _run_scan_inner(
             "total_credentials": 0,
             "candidates": 0,
             "active_requests": 0,
+            "total_active_http_requests": total_http,
+            "ledger_complete": ledger_complete,
+            "ledger_incomplete_reason": ledger_reason,
             "final_verified": 0,
             "suspicious": 0,
             "high_value_final": 0,
-            "metrics_version": 2,
+            "metrics_version": metrics_version,
             "scan_mode": mode,
             "queries_used": queries_used,
         }
         if run_dir:
             write_scan_metadata(empty_meta, run_dir)
             write_valid_results([], run_dir)
-            if settings.pg_enabled:
-                from .writer import persist_run_pg
+        if settings.pg_enabled:
+            from .writer import persist_run_pg
 
-                await asyncio.to_thread(
-                    persist_run_pg,
-                    run_dir.name,
-                    empty_meta,
-                    [],
-                    [],
-                    query_metrics.snapshot(),
-                )
+            await asyncio.to_thread(
+                persist_run_pg,
+                ledger.run_id if ledger is not None else run_dir.name if run_dir else "",
+                empty_meta,
+                [],
+                [],
+                _snapshot_query_metrics(query_metrics, ledger, ledger_complete=ledger_complete),
+            )
         return ScanRunResult(
             started_at=started,
             finished_at=finished,
@@ -505,6 +625,9 @@ async def _run_scan_inner(
             unique_targets=len(targets),
             total_credentials=0,
             total_valid=0,
+            total_active_http_requests=total_http,
+            ledger_complete=ledger_complete,
+            ledger_incomplete_reason=ledger_reason,
             queries_used=queries_used,
             results=[],
             scan_mode=mode,
@@ -512,12 +635,13 @@ async def _run_scan_inner(
         )
 
     # Cross-run dedup: reuse valid results, skip cached failure outcomes, and
-    # validate every remaining canonical credential freshly.
+    # validate remaining credentials. Full discovery uses TTL verification by
+    # default (not force-fresh); only verification_policy=fresh bypasses cache.
     cached_results: list[ValidationResult] = []
     to_validate: list[Credential] = []
     failure_counts = {"rejected": 0, "transient": 0}
     for credential in creds:
-        if mode == "full":
+        if scan_policy.force_revalidate:
             to_validate.append(credential)
             continue
         hit = await dedup.get_cached_valid(credential)
@@ -544,7 +668,14 @@ async def _run_scan_inner(
         len(to_validate),
         settings.validate_concurrency,
     )
-    fresh_results: list[ValidationResult] = await validate_all(to_validate) if to_validate else []
+    fresh_results: list[ValidationResult] = (
+        await validate_all(
+            to_validate,
+            attribution=_credential_attribution(observations, to_validate, query_metadata),
+        )
+        if to_validate
+        else []
+    )
     results: list[ValidationResult] = cached_results + fresh_results
     record_credentials("auth_confirmed", [result.credential for result in results if result.valid])
 
@@ -562,14 +693,30 @@ async def _run_scan_inner(
             "Probing %d host(s) with a forged key to detect no-auth honeypots...",
             distinct_hosts,
         )
-        no_auth_urls, suspicious_urls = await verify_no_auth(results)
+        no_auth_urls, suspicious_urls = await verify_no_auth(
+            results,
+            attribution=_credential_attribution(
+                observations,
+                [result.credential for result in results],
+                query_metadata,
+            ),
+        )
 
     # GPT recheck — disabled by default since honeypot filter catches the same
     # cases faster. Enable with GPT_RECHECK=true for extra verification.
     if settings.gpt_recheck:
         from .analyzer import recheck_all_with_gpt
 
-        results = list(await recheck_all_with_gpt(results))
+        results = list(
+            await recheck_all_with_gpt(
+                results,
+                attribution=_credential_attribution(
+                    observations,
+                    [result.credential for result in results],
+                    query_metadata,
+                ),
+            )
+        )
 
     from .finalizer import commit_final_results, finalize_results
 
@@ -644,22 +791,29 @@ async def _run_scan_inner(
         from .balance import enrich_results
 
         log.info("Querying balance for %d valid credentials...", len(valid))
-        # Enrich only non-suspicious valid results. enrich_results mutates each
-        # ValidationResult in place and returns the same objects, so the changes
-        # are visible in `results` (and therefore `valid`/`suspicious`) directly.
         enrichable = [r for r in results if r.valid and not r.suspicious]
-        await enrich_results(enrichable, dedup=dedup, use_cache=mode == "incremental")
+        await enrich_results(
+            enrichable,
+            dedup=dedup,
+            use_cache=not scan_policy.force_balance,
+            attribution=_credential_attribution(
+                observations,
+                [r.credential for r in enrichable],
+                query_metadata,
+            ),
+        )
         log.info("Balance enrichment done.")
 
-    # Cache + persist high-value AFTER balance enrichment so the saved record
-    # carries balance/tier evidence (not the pre-enrichment snapshot).
+    # Cache + persist high-value AFTER balance enrichment so saved records carry balance evidence.
     commit_report = await commit_final_results(valid, dedup=dedup)
 
-    # Write valid_*.jsonl + suspicious_*.jsonl after honeypot + balance enrichment
     if run_dir:
         write_valid_results(valid, run_dir)
         if suspicious:
             write_suspicious_results(suspicious, run_dir)
+
+    total_http, ledger_complete, ledger_incomplete_reason = _complete_ledger(ledger)
+    metrics_version = 3 if ledger_complete else 2
 
     finished = datetime.now(UTC).isoformat()
     run_meta = {
@@ -672,10 +826,13 @@ async def _run_scan_inner(
         "unique_targets": len(targets),
         "candidates": len(creds),
         "active_requests": len(to_validate),
+        "total_active_http_requests": total_http,
+        "ledger_complete": ledger_complete,
+        "ledger_incomplete_reason": ledger_incomplete_reason,
         "final_verified": len(valid),
         "suspicious": len(suspicious),
         "high_value_final": commit_report.high_value_final,
-        "metrics_version": 2,
+        "metrics_version": metrics_version,
         "scan_mode": mode,
         "total_hosts": len(targets),
         "total_credentials": len(creds),
@@ -692,16 +849,16 @@ async def _run_scan_inner(
     # Offloaded to a worker thread: it's a synchronous write of (potentially)
     # hundreds of rows, and running it on the event loop blocks every other
     # async endpoint for the whole transaction.
-    if run_dir and settings.pg_enabled:
+    if settings.pg_enabled:
         from .writer import persist_run_pg
 
         await asyncio.to_thread(
             persist_run_pg,
-            run_dir.name,
+            ledger.run_id if ledger is not None else run_dir.name if run_dir else "",
             run_meta,
             valid,
             suspicious,
-            query_metrics.snapshot(),
+            _snapshot_query_metrics(query_metrics, ledger, ledger_complete=ledger_complete),
             validation_outcomes,
             observation_counts,
         )
@@ -716,6 +873,9 @@ async def _run_scan_inner(
         unique_targets=len(targets),
         candidates=len(creds),
         active_requests=len(to_validate),
+        total_active_http_requests=total_http,
+        ledger_complete=ledger_complete,
+        ledger_incomplete_reason=ledger_incomplete_reason,
         final_verified=len(valid),
         suspicious=len(suspicious),
         high_value_final=commit_report.high_value_final,
@@ -746,6 +906,7 @@ def _fetch_fofa(
         PlannerConfig(
             max_queries=max_queries,
             exploration_ratio=settings.query_exploration_ratio,
+            metrics_version=settings.planner_metrics_version,
         ),
     )
     selected = {candidate.query for candidate in planned}
@@ -829,6 +990,7 @@ def _fetch_shodan(
             PlannerConfig(
                 max_queries=max_queries,
                 exploration_ratio=settings.query_exploration_ratio,
+                metrics_version=settings.planner_metrics_version,
             ),
         )
         selected = {candidate.query for candidate in planned}

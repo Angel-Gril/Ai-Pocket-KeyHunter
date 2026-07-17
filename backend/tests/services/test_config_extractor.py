@@ -204,3 +204,56 @@ def test_vertex_service_account_extracts_location_without_serializing_private_ke
         "service_account_email": "svc@sample-project.iam.gserviceaccount.com",
     }
     assert "private-material" not in bundle.model_dump_json()
+
+
+GLM_KEY = "f7638a0d932046079d9900bda54cdde9.79EtThsVS0IEdssm"
+GLM_OFFICIAL = "https://open.bigmodel.cn/api/paas/v4"
+
+
+@pytest.mark.parametrize(
+    "var_name",
+    ("GLM_API_KEY", "ZHIPUAI_API_KEY", "BIGMODEL_API_KEY", "ZHIPU_API_KEY"),
+)
+def test_glm_variable_prefix_hints_and_default_endpoint(var_name: str) -> None:
+    bundles = extract_config_bundles(f"{var_name}={GLM_KEY}", format_hint="env")
+
+    assert len(bundles) == 1
+    assert bundles[0].provider_hint == "glm"
+    assert bundles[0].endpoint_candidates == (GLM_OFFICIAL,)
+
+
+def test_glm_variable_not_overridden_by_sk_shape() -> None:
+    """sk-* alone must not override stronger glm variable evidence."""
+    sk = "sk-canarynotopenai1234567890abcdef"
+    content = f"GLM_API_KEY={sk}\nGLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4"
+    bundles = extract_config_bundles(content, format_hint="env")
+
+    assert bundles[0].provider_hint == "glm"
+    assert bundles[0].endpoint_candidates == (GLM_OFFICIAL,)
+
+
+def test_glm_dual_segment_key_shape_hints_without_variable() -> None:
+    content = f"API_KEY={GLM_KEY}\nBASE_URL=https://open.bigmodel.cn/api/paas/v4"
+    bundles = extract_config_bundles(content, format_hint="env")
+
+    assert bundles[0].provider_hint == "glm"
+
+
+def test_additional_provider_variables_use_official_defaults() -> None:
+    cases = (
+        ("COHERE_API_KEY", "cohere", "https://api.cohere.com/v1"),
+        ("REPLICATE_API_TOKEN", "replicate", "https://api.replicate.com/v1"),
+        ("TOGETHER_API_KEY", "together", "https://api.together.xyz/v1"),
+        (
+            "FIREWORKS_API_KEY",
+            "fireworks",
+            "https://api.fireworks.ai/inference/v1",
+        ),
+    )
+    for variable, provider, endpoint in cases:
+        bundle = extract_config_bundles(
+            f"{variable}=generic-token-12345678901234567890",
+            format_hint="env",
+        )[0]
+        assert bundle.provider_hint == provider
+        assert bundle.endpoint_candidates == (endpoint,)
