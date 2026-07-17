@@ -418,11 +418,14 @@ export default function CvePage() {
     mutationFn: api.cveAdd,
     onSuccess: (res) => {
       const id = str(res.cve.id)
-      toast.success(
-        res.created
-          ? `已添加 ${id} · 库内共 ${res.total} 条`
-          : `已更新 ${id} · 库内共 ${res.total} 条`,
-      )
+      if (res.created) {
+        toast.success(`已添加 ${id} · 库内共 ${res.total} 条`)
+      } else {
+        // Same id already stored — skip write entirely (no DB / file update).
+        toast.message(`「${id}」已存在`, {
+          description: `未写入数据库，库内仍为 ${res.total} 条`,
+        })
+      }
       setAddOpen(false)
       void queryClient.invalidateQueries({ queryKey: ["cve"] })
     },

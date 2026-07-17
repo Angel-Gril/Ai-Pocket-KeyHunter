@@ -298,10 +298,11 @@ async def add_manual_cve(
     cvss: float = 0.0,
     huntable: str = "",
 ) -> tuple[dict[str, Any], bool, int]:
-    """Parse/build a CVE and merge into the store.
+    """Parse/build a CVE and insert into the store if the id is new.
 
-    Returns ``(record, created, total)`` where ``created`` is True when the id
-    was new, False when an existing row was updated.
+    Returns ``(record, created, total)``. When the id already exists,
+    ``created`` is False, the **existing** row is returned, and **nothing**
+    is written to PG / JSONL (no overwrite).
     """
     if not url.strip() and not cve_id.strip():
         raise ValueError("请至少填写 URL 或 CVE ID")
@@ -319,16 +320,23 @@ async def add_manual_cve(
     from aipocket.services.queries import load_cves
 
     existing = load_cves()
-    existed = any(c.get("id") == record["id"] for c in existing)
+    by_id = {c.get("id"): c for c in existing if c.get("id")}
+    total = len(by_id)
+    current = by_id.get(record["id"])
+    if current is not None:
+        log.info(
+            "Manual CVE skipped (already exists): %s (total=%d)",
+            record["id"],
+            total,
+        )
+        return current, False, total
+
     merged, _added = merge_cves(existing, [record])
-    # merge_cves ``added`` only counts brand-new ids; recompute for clarity
-    created = not existed
     total = len(merged)
     log.info(
-        "Manual CVE %s: %s (product=%s, total=%d)",
-        "added" if created else "updated",
+        "Manual CVE added: %s (product=%s, total=%d)",
         record["id"],
         record.get("product"),
         total,
     )
-    return record, created, total
+    return record, True, total

@@ -134,6 +134,42 @@ async def test_add_manual_persists_via_merge_and_survives_sync(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_add_duplicate_id_skips_db_write(monkeypatch, tmp_path):
+    target = tmp_path / "cves.json"
+    existing = [
+        {
+            "id": "CVE-2026-11111",
+            "product": "litellm",
+            "type": "信息泄露",
+            "description": "original",
+            "cvss": 5.0,
+            "huntable": "中",
+            "date": "2026-01-01",
+            "source_url": "https://example.com/original",
+        }
+    ]
+    target.write_text(json.dumps(existing), encoding="utf-8")
+    before = target.read_text(encoding="utf-8")
+    monkeypatch.setattr("aipocket.clients.tavily.CVE_PATH", target, raising=False)
+    monkeypatch.setattr("aipocket.services.queries.CVE_PATH", target, raising=False)
+    monkeypatch.setattr("aipocket.core.config.settings.database_url", "")
+    monkeypatch.setattr("aipocket.core.config.settings.pg_dual_write", False)
+
+    record, created, total = await add_manual_cve(
+        cve_id="CVE-2026-11111",
+        product="dify",
+        cve_type="RCE",
+        description="should not overwrite",
+        url="",
+    )
+    assert created is False
+    assert total == 1
+    assert record["description"] == "original"
+    assert record["product"] == "litellm"
+    assert target.read_text(encoding="utf-8") == before  # file untouched
+
+
+@pytest.mark.asyncio
 async def test_invalid_url_rejected():
     with pytest.raises(ValueError, match="http"):
         await build_cve_from_input(url="ftp://bad.example/cve")

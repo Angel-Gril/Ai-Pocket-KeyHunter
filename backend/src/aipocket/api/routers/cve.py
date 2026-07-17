@@ -43,8 +43,9 @@ async def sync_cve() -> CveSyncResponse:
 async def add_cve(body: CveAddRequest) -> CveAddResponse:
     """Manually add a CVE from a URL and/or form fields.
 
-    Records are persisted via the same merge path as Tavily sync (PG + optional
-    JSONL), so they remain after the next 「同步 CVE」.
+    New ids are persisted via the same merge path as Tavily sync (PG + optional
+    JSONL), so they remain after the next 「同步 CVE」. If the id already
+    exists, the store is left unchanged and ``created=false`` is returned.
     """
     from aipocket.services.cve_manual import add_manual_cve
 
