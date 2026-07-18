@@ -287,23 +287,29 @@ export function ScanConsole({
 
   const resolvedGithubPackIds = useMemo((): GitHubPackId[] => {
     if (!includesGitHub) return []
-    if (githubPacks.length === 0 || githubPacks.includes("all")) return ["all"]
+    if (githubPacks.includes("all")) return ["all"]
+    if (githubPacks.length === 0) return []
     // Dedup while preserving order.
     const seen = new Set<string>()
     const out: GitHubPackId[] = []
     for (const id of githubPacks) {
-      if (seen.has(id)) continue
+      if (seen.has(id) || id === "all") continue
       seen.add(id)
       out.push(id)
     }
-    return out.length > 0 ? out : ["all"]
+    // All individual packs selected → normalize to "all".
+    if (out.length === ALL_PACK_IDS.length && ALL_PACK_IDS.every((id) => seen.has(id))) {
+      return ["all"]
+    }
+    return out
   }, [includesGitHub, githubPacks])
 
   const toggleGithubPack = useCallback((packId: Exclude<GitHubPackId, "all">) => {
     setGithubPacks((prev) => {
       // Expanding "all" into the concrete list so unchecking one pack works.
-      const base: GitHubPackId[] =
-        prev.includes("all") || prev.length === 0 ? [...ALL_PACK_IDS] : prev.filter((p) => p !== "all")
+      const base: GitHubPackId[] = prev.includes("all")
+        ? [...ALL_PACK_IDS]
+        : prev.filter((p): p is Exclude<GitHubPackId, "all"> => p !== "all")
       if (base.includes(packId)) {
         return base.filter((p) => p !== packId)
       }
@@ -311,12 +317,23 @@ export function ScanConsole({
     })
   }, [])
 
-  const selectAllGithubPacks = useCallback(() => {
-    setGithubPacks(["all"])
+  /** Toggle select-all: second click clears every pack. */
+  const toggleAllGithubPacks = useCallback(() => {
+    setGithubPacks((prev) => {
+      const isAll =
+        prev.includes("all") ||
+        (prev.length === ALL_PACK_IDS.length && ALL_PACK_IDS.every((id) => prev.includes(id)))
+      return isAll ? [] : ["all"]
+    })
   }, [])
 
   const startMutation = useMutation({
-    mutationFn: () => api.scanStart(launchSource, mode, resolvedGithubPackIds),
+    mutationFn: () => {
+      if (includesGitHub && resolvedGithubPackIds.length === 0) {
+        return Promise.reject(new Error("请至少选择一个 GitHub Provider 包"))
+      }
+      return api.scanStart(launchSource, mode, resolvedGithubPackIds)
+    },
     onSuccess: applyStatus,
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
@@ -361,22 +378,39 @@ export function ScanConsole({
   }, [phaseFromLogs, status?.phase, running, state])
 
   const activeSource = running ? ((status?.source as ScanSource | undefined) ?? launchSource) : launchSource
+  // While editing, drive UI from local githubPacks so empty ≠ "all".
+  // While running, prefer server-reported pack ids.
   const activeGithubPackIds = running
     ? (status?.github_pack_ids?.length ? status.github_pack_ids : resolvedGithubPackIds)
     : resolvedGithubPackIds
-  const allPacksSelected =
-    activeGithubPackIds.includes("all") ||
-    (activeGithubPackIds.length === ALL_PACK_IDS.length &&
-      ALL_PACK_IDS.every((id) => activeGithubPackIds.includes(id)))
-  const activeGithubPackLabel = useMemo(() => {
-    if (allPacksSelected || activeGithubPackIds.length === 0) return "全部 Provider"
-    const labels = GITHUB_PACK_OPTIONS.filter((p) => activeGithubPackIds.includes(p.value)).map(
-      (p) => p.label,
+  const allPacksSelected = useMemo(() => {
+    if (running) {
+      return (
+        activeGithubPackIds.includes("all") ||
+        (activeGithubPackIds.length === ALL_PACK_IDS.length &&
+          ALL_PACK_IDS.every((id) => activeGithubPackIds.includes(id)))
+      )
+    }
+    return (
+      githubPacks.includes("all") ||
+      (githubPacks.length === ALL_PACK_IDS.length &&
+        ALL_PACK_IDS.every((id) => githubPacks.includes(id)))
     )
-    if (labels.length === 0) return "全部 Provider"
+  }, [running, activeGithubPackIds, githubPacks])
+  const selectedPackCount = allPacksSelected
+    ? ALL_PACK_IDS.length
+    : running
+      ? activeGithubPackIds.filter((id) => id !== "all").length
+      : githubPacks.filter((id) => id !== "all").length
+  const activeGithubPackLabel = useMemo(() => {
+    if (allPacksSelected) return "全部 Provider"
+    if (selectedPackCount === 0) return "请选择 Provider"
+    const sourceIds = running ? activeGithubPackIds : githubPacks
+    const labels = GITHUB_PACK_OPTIONS.filter((p) => sourceIds.includes(p.value)).map((p) => p.label)
+    if (labels.length === 0) return "请选择 Provider"
     if (labels.length <= 3) return labels.join("、")
     return `${labels.slice(0, 2).join("、")} 等 ${labels.length} 个`
-  }, [activeGithubPackIds, allPacksSelected])
+  }, [allPacksSelected, selectedPackCount, running, activeGithubPackIds, githubPacks])
   const stopping = state === "stopping"
   const locked = Boolean(fixedSource)
 
@@ -510,7 +544,7 @@ export function ScanConsole({
                       type="button"
                       role="option"
                       aria-selected={allPacksSelected}
-                      onClick={selectAllGithubPacks}
+                      onClick={toggleAllGithubPacks}
                       className={cn(
                         "flex w-full items-center gap-2.5 rounded-sm px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-surface-inset",
                         allPacksSelected
@@ -557,8 +591,7 @@ export function ScanConsole({
                     })}
                   </div>
                   <div className="border-t border-border-primary px-2.5 py-1.5 font-mono text-[11px] text-text-muted">
-                    已选 {allPacksSelected ? ALL_PACK_IDS.length : githubPacks.filter((p) => p !== "all").length} /{" "}
-                    {ALL_PACK_IDS.length}
+                    已选 {selectedPackCount} / {ALL_PACK_IDS.length}
                   </div>
                 </div>
               ) : null}
