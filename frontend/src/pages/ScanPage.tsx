@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
+  Check,
+  ChevronDown,
   CircleCheck,
   Gem,
   GitBranch,
@@ -142,17 +144,38 @@ export function ScanConsole({
   const [mode, setMode] = useState<ScanMode>("incremental")
   /** Multi-select provider packs. Empty + "all" shortcut both mean every pack. */
   const [githubPacks, setGithubPacks] = useState<GitHubPackId[]>(["deepseek", "glm", "kimi"])
+  const [packDropdownOpen, setPackDropdownOpen] = useState(false)
   const [lines, setLines] = useState<ScanLogLine[]>([])
   /** Live phase derived from log SSE (faster than status poll). */
   const [phaseFromLogs, setPhaseFromLogs] = useState("")
 
   const lastSeqRef = useRef(0)
   const logViewRef = useRef<HTMLDivElement>(null)
+  const packDropdownRef = useRef<HTMLDivElement>(null)
 
   // Keep locked source in sync if prop changes.
   useEffect(() => {
     if (fixedSource) setSource(fixedSource)
   }, [fixedSource])
+
+  // Close provider multi-select on outside click / Escape.
+  useEffect(() => {
+    if (!packDropdownOpen) return
+    const onPointerDown = (e: MouseEvent) => {
+      if (packDropdownRef.current && !packDropdownRef.current.contains(e.target as Node)) {
+        setPackDropdownOpen(false)
+      }
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPackDropdownOpen(false)
+    }
+    document.addEventListener("mousedown", onPointerDown)
+    document.addEventListener("keydown", onKeyDown)
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown)
+      document.removeEventListener("keydown", onKeyDown)
+    }
+  }, [packDropdownOpen])
 
   const statusQuery = useQuery({
     queryKey: ["scan-status"],
@@ -165,6 +188,11 @@ export function ScanConsole({
   const running = isActive(state)
   const runId = status?.run_id ?? null
   const progress = status?.progress
+
+  // Don't leave the menu open while a scan is running.
+  useEffect(() => {
+    if (running) setPackDropdownOpen(false)
+  }, [running])
 
   const applyStatus = useCallback(
     (next: ScanStatusResponse) => queryClient.setQueryData(["scan-status"], next),
@@ -336,17 +364,19 @@ export function ScanConsole({
   const activeGithubPackIds = running
     ? (status?.github_pack_ids?.length ? status.github_pack_ids : resolvedGithubPackIds)
     : resolvedGithubPackIds
-  const activeGithubPackLabel = useMemo(() => {
-    if (activeGithubPackIds.includes("all") || activeGithubPackIds.length === 0) {
-      return "全部 Provider"
-    }
-    if (activeGithubPackIds.length === ALL_PACK_IDS.length) return "全部 Provider"
-    return activeGithubPackIds.join(", ")
-  }, [activeGithubPackIds])
   const allPacksSelected =
     activeGithubPackIds.includes("all") ||
     (activeGithubPackIds.length === ALL_PACK_IDS.length &&
       ALL_PACK_IDS.every((id) => activeGithubPackIds.includes(id)))
+  const activeGithubPackLabel = useMemo(() => {
+    if (allPacksSelected || activeGithubPackIds.length === 0) return "全部 Provider"
+    const labels = GITHUB_PACK_OPTIONS.filter((p) => activeGithubPackIds.includes(p.value)).map(
+      (p) => p.label,
+    )
+    if (labels.length === 0) return "全部 Provider"
+    if (labels.length <= 3) return labels.join("、")
+    return `${labels.slice(0, 2).join("、")} 等 ${labels.length} 个`
+  }, [activeGithubPackIds, allPacksSelected])
   const stopping = state === "stopping"
   const locked = Boolean(fixedSource)
 
@@ -444,65 +474,104 @@ export function ScanConsole({
         )}
 
         {activeSource === "github" || activeSource === "all" ? (
-          <div className="flex flex-col gap-2.5">
-            <div className="flex flex-wrap items-center gap-3.5">
-              <span className="font-mono text-xs text-text-muted">GitHub Provider 包</span>
+          <div className="flex flex-wrap items-center gap-3.5">
+            <span className="font-mono text-xs text-text-muted">GitHub Provider 包</span>
+            <div ref={packDropdownRef} className="relative">
               <button
                 type="button"
                 disabled={running}
-                onClick={selectAllGithubPacks}
+                aria-haspopup="listbox"
+                aria-expanded={packDropdownOpen}
+                onClick={() => setPackDropdownOpen((o) => !o)}
                 className={cn(
-                  "rounded-[4px] border px-3 py-[7px] font-mono text-[12px] transition-colors",
-                  allPacksSelected
+                  "inline-flex h-9 min-w-[220px] max-w-[360px] items-center justify-between gap-2 rounded-[4px] border px-3 text-[13px] transition-colors",
+                  packDropdownOpen || (!running && !allPacksSelected && githubPacks.length > 0)
                     ? "border-accent bg-accent-dim font-semibold text-accent"
                     : "border-border-primary bg-surface-raised text-text-secondary hover:text-text-primary",
                   running && "cursor-not-allowed opacity-50",
                 )}
               >
-                全部 Provider
+                <span className="truncate">{activeGithubPackLabel}</span>
+                <ChevronDown
+                  className={cn(
+                    "size-4 shrink-0 opacity-60 transition-transform",
+                    packDropdownOpen && "rotate-180",
+                  )}
+                />
               </button>
-              {running ? (
-                <span className="font-mono text-[11px] text-text-muted">
-                  运行中：{activeGithubPackLabel}
-                </span>
-              ) : (
-                <span className="font-mono text-[11px] text-text-muted">
-                  可多选任意子集；按选择顺序依次狩猎，预算按 pack 分片。建议先跑 1～3 个包避免限流。
-                </span>
-              )}
+              {packDropdownOpen && !running ? (
+                <div
+                  role="listbox"
+                  aria-multiselectable
+                  className="absolute top-[calc(100%+4px)] left-0 z-50 w-[280px] overflow-hidden rounded-md border border-border-primary bg-surface-raised shadow-lg"
+                >
+                  <div className="max-h-[320px] overflow-y-auto p-1">
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={allPacksSelected}
+                      onClick={selectAllGithubPacks}
+                      className={cn(
+                        "flex w-full items-center gap-2.5 rounded-sm px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-surface-inset",
+                        allPacksSelected
+                          ? "font-semibold text-accent"
+                          : "text-text-secondary",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "flex size-4 shrink-0 items-center justify-center rounded-[4px] border",
+                          allPacksSelected
+                            ? "border-accent bg-accent text-accent-text"
+                            : "border-border-primary bg-surface-base",
+                        )}
+                      >
+                        {allPacksSelected ? <Check className="size-3" /> : null}
+                      </span>
+                      全部 Provider
+                    </button>
+                    <div className="my-1 h-px bg-border-primary" />
+                    {GITHUB_PACK_OPTIONS.map((pack) => {
+                      const checked = allPacksSelected || githubPacks.includes(pack.value)
+                      return (
+                        <button
+                          key={pack.value}
+                          type="button"
+                          role="option"
+                          aria-selected={checked}
+                          onClick={() => toggleGithubPack(pack.value)}
+                          className={cn(
+                            "flex w-full items-center gap-2.5 rounded-sm px-2.5 py-2 text-left text-[13px] transition-colors hover:bg-surface-inset",
+                            checked ? "font-medium text-accent" : "text-text-secondary",
+                          )}
+                        >
+                          <Checkbox
+                            checked={checked}
+                            tabIndex={-1}
+                            className="pointer-events-none"
+                            aria-hidden
+                          />
+                          {pack.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <div className="border-t border-border-primary px-2.5 py-1.5 font-mono text-[11px] text-text-muted">
+                    已选 {allPacksSelected ? ALL_PACK_IDS.length : githubPacks.filter((p) => p !== "all").length} /{" "}
+                    {ALL_PACK_IDS.length}
+                  </div>
+                </div>
+              ) : null}
             </div>
-            <div className="flex flex-wrap gap-2">
-              {GITHUB_PACK_OPTIONS.map((pack) => {
-                const checked =
-                  !running &&
-                  (allPacksSelected || githubPacks.includes(pack.value))
-                const showChecked = running
-                  ? allPacksSelected || activeGithubPackIds.includes(pack.value)
-                  : checked
-                return (
-                  <label
-                    key={pack.value}
-                    className={cn(
-                      "inline-flex items-center gap-2 rounded-[4px] border px-3 py-[7px] font-mono text-[12px] transition-colors",
-                      showChecked
-                        ? "border-accent bg-accent-dim text-accent"
-                        : "border-border-primary bg-surface-raised text-text-secondary",
-                      running ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:text-text-primary",
-                    )}
-                  >
-                    <Checkbox
-                      checked={showChecked}
-                      disabled={running}
-                      onCheckedChange={() => {
-                        if (!running) toggleGithubPack(pack.value)
-                      }}
-                      aria-label={`选择 ${pack.label}`}
-                    />
-                    {pack.label}
-                  </label>
-                )
-              })}
-            </div>
+            {running ? (
+              <span className="font-mono text-[11px] text-text-muted">
+                运行中不可修改
+              </span>
+            ) : (
+              <span className="font-mono text-[11px] text-text-muted">
+                可多选任意子集；按选择顺序依次狩猎，预算按 pack 分片。建议先跑 1～3 个包避免限流。
+              </span>
+            )}
           </div>
         ) : null}
 
