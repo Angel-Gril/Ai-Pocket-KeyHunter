@@ -4,10 +4,15 @@ from __future__ import annotations
 
 # Side-effect imports register each pack into the global registry.
 from aipocket.discovery.packs import (  # noqa: F401
+    anthropic,
+    azure_openai,
     cohere,
+    deepseek,
     fireworks,
     glm,
     kimi,
+    minimax,
+    openai,
     qwen,
     replicate,
     together,

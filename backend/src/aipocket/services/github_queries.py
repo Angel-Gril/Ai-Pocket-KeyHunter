@@ -72,18 +72,18 @@ class GitHubQueryShard:
     seed_origin: str = ""
 
     def build_q(self) -> str:
-        """Render the GitHub search ``q`` parameter (or empty for history lane)."""
+        """Render the GitHub search ``q`` parameter (or empty for history lane).
+
+        Multi-word anchors are emitted **unquoted** so GitHub treats them as
+        AND of tokens — matching GH Stream Hunter (``sk- cohere_api_key``,
+        ``.env DEEPSEEK_BASE_URL``). Packs that want phrase search must wrap
+        the anchor in double quotes themselves.
+        """
         if self.lane == "seeded_file_history":
             return ""
         parts: list[str] = []
         if self.anchor:
-            # Quote multi-word anchors for phrase search.
-            if " " in self.anchor and not (
-                self.anchor.startswith('"') and self.anchor.endswith('"')
-            ):
-                parts.append(f'"{self.anchor}"')
-            else:
-                parts.append(self.anchor)
+            parts.append(self.anchor)
         parts.extend(self.qualifiers)
         if self.lane == "commit_message" and not any(
             qualifier.strip().lower() in {"is:public", "is:private"}

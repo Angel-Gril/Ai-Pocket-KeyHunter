@@ -166,3 +166,15 @@ def test_default_window_overlap():
     assert end == now
     # watermark - 15 min
     assert start == datetime(2026, 7, 16, 9, 45, tzinfo=UTC)
+
+
+def test_default_window_without_watermark_uses_lookback():
+    now = datetime(2026, 7, 16, 12, 0, tzinfo=UTC)
+    start, end = default_window(
+        lookback_hours=720,
+        overlap_minutes=15,
+        watermark="",
+        now=now,
+    )
+    assert end == now
+    assert start == datetime(2026, 6, 16, 12, 0, tzinfo=UTC)

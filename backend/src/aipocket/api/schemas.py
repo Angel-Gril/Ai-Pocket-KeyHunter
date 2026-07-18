@@ -14,7 +14,21 @@ from pydantic import BaseModel, Field
 
 ScanSource = Literal["fofa", "shodan", "github", "all"]
 ScanMode = Literal["full", "incremental"]
-GitHubPackId = Literal["all", "glm", "kimi", "qwen", "cohere", "replicate", "together", "fireworks"]
+GitHubPackId = Literal[
+    "all",
+    "glm",
+    "kimi",
+    "qwen",
+    "cohere",
+    "replicate",
+    "together",
+    "fireworks",
+    "deepseek",
+    "openai",
+    "anthropic",
+    "azure_openai",
+    "minimax",
+]
 ExportFormat = Literal["json", "csv"]
 ExportDataset = Literal["selected", "run", "high-value", "all"]
 
@@ -114,7 +128,7 @@ class ExportRequest(BaseModel):
 class ScanStartRequest(BaseModel):
     source: ScanSource = "all"
     mode: ScanMode = "incremental"
-    github_pack_ids: list[GitHubPackId] = Field(default_factory=list, max_length=8)
+    github_pack_ids: list[GitHubPackId] = Field(default_factory=list, max_length=16)
 
 
 class ScanProgress(BaseModel):

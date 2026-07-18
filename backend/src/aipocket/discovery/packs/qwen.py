@@ -1,4 +1,8 @@
-"""Qwen / DashScope discovery pack (declarative only)."""
+"""Qwen / DashScope discovery pack (declarative only).
+
+GH Stream Hunter v10 R3: qwen_api_key / QWEN_API_KEY /
+  .env qwen_api_key / sk- qwen_api_key.
+"""
 
 from __future__ import annotations
 
@@ -9,17 +13,26 @@ QWEN_OFFICIAL_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 QWEN_PACK = ProviderDiscoveryPack(
     pack_id="qwen",
-    version="1",
+    version="2",
     commit_message_anchors=(
-        "qwen api key",
-        "dashscope",
-        "tongyi",
-        "rotate qwen",
-        "remove leaked key",
+        # --- gh_stream_v10_r3 ---
+        "qwen_api_key",
+        "QWEN_API_KEY",
+        ".env qwen_api_key",
+        "sk- qwen_api_key",
+        # --- supersets ---
+        "DASHSCOPE_API_KEY",
+        "DASHSCOPE_API_BASE",
+        "QWEN_BASE_URL",
+        "dashscope.aliyuncs.com",
+        ".env DASHSCOPE_API_KEY",
+        ".env QWEN_API_KEY",
+        "sk- DASHSCOPE_API_KEY",
     ),
     code_content_anchors=(
         "DASHSCOPE_API_KEY",
         "QWEN_API_KEY",
+        "qwen_api_key",
         "dashscope.aliyuncs.com",
         "compatible-mode/v1",
     ),

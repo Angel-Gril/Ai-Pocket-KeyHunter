@@ -158,11 +158,16 @@ class Settings(BaseSettings):
     github_tokens: str = ""
     github_api_base_url: str = "https://api.github.com"
     github_api_version: str = "2022-11-28"
-    github_commit_query_budget: int = 6
-    github_code_query_budget: int = 6
+    # Commit lane: enough for GH Stream Hunter R3 terms + supersets per pack.
+    github_commit_query_budget: int = 12
+    github_code_query_budget: int = 8
     github_search_page_size: int = 100
     github_max_pages_per_shard: int = 5
+    # Incremental lookback when no checkpoint watermark exists.
     github_lookback_hours: int = 24
+    # Full scan without GITHUB_BACKFILL_FROM: hours of history to cover (default 30d).
+    github_full_lookback_hours: int = 720
+    # Absolute backfill start (ISO date/datetime). When set, mode=full uses this as window start.
     github_backfill_from: str = ""
     github_overlap_minutes: int = 15
     github_request_timeout: float = 20.0
@@ -172,6 +177,8 @@ class Settings(BaseSettings):
     github_blob_fallback_budget: int = 100
     github_file_history_enabled: bool = True
     github_file_history_commit_limit: int = 100
+    # Max seconds to wait for a single rate-limited resource before skipping the lane.
+    github_rate_limit_max_wait_seconds: float = 90.0
 
     @field_validator("fofa_keys", "shodan_keys", "github_tokens")
     @classmethod

@@ -16,13 +16,7 @@ import {
   Terminal,
 } from "lucide-react"
 import { toast } from "sonner"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
 
 import {
   api,
@@ -46,16 +40,23 @@ const SOURCES: { value: ScanSource; label: string; icon: typeof Globe }[] = [
   { value: "github", label: "GitHub", icon: GitBranch },
 ]
 
-const GITHUB_PACKS: readonly { value: GitHubPackId; label: string }[] = [
+/** Individual provider packs (excludes the "all" shortcut). */
+const GITHUB_PACK_OPTIONS: readonly { value: Exclude<GitHubPackId, "all">; label: string }[] = [
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "openai", label: "OpenAI" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "azure_openai", label: "Azure OpenAI" },
   { value: "glm", label: "GLM" },
   { value: "kimi", label: "Kimi" },
   { value: "qwen", label: "Qwen" },
+  { value: "minimax", label: "MiniMax" },
   { value: "cohere", label: "Cohere" },
   { value: "replicate", label: "Replicate" },
   { value: "together", label: "Together" },
   { value: "fireworks", label: "Fireworks" },
-  { value: "all", label: "全部 Provider" },
 ]
+
+const ALL_PACK_IDS = GITHUB_PACK_OPTIONS.map((p) => p.value)
 
 function isActive(state: string | undefined): boolean {
   return state === "running" || state === "stopping"
@@ -139,7 +140,8 @@ export function ScanConsole({
   const queryClient = useQueryClient()
   const [source, setSource] = useState<ScanSource>(fixedSource ?? "all")
   const [mode, setMode] = useState<ScanMode>("incremental")
-  const [githubPack, setGithubPack] = useState<GitHubPackId>("glm")
+  /** Multi-select provider packs. Empty + "all" shortcut both mean every pack. */
+  const [githubPacks, setGithubPacks] = useState<GitHubPackId[]>(["deepseek", "glm", "kimi"])
   const [lines, setLines] = useState<ScanLogLine[]>([])
   /** Live phase derived from log SSE (faster than status poll). */
   const [phaseFromLogs, setPhaseFromLogs] = useState("")
@@ -255,8 +257,38 @@ export function ScanConsole({
   const launchSource = fixedSource ?? source
   const includesGitHub = launchSource === "github" || launchSource === "all"
 
+  const resolvedGithubPackIds = useMemo((): GitHubPackId[] => {
+    if (!includesGitHub) return []
+    if (githubPacks.length === 0 || githubPacks.includes("all")) return ["all"]
+    // Dedup while preserving order.
+    const seen = new Set<string>()
+    const out: GitHubPackId[] = []
+    for (const id of githubPacks) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push(id)
+    }
+    return out.length > 0 ? out : ["all"]
+  }, [includesGitHub, githubPacks])
+
+  const toggleGithubPack = useCallback((packId: Exclude<GitHubPackId, "all">) => {
+    setGithubPacks((prev) => {
+      // Expanding "all" into the concrete list so unchecking one pack works.
+      const base: GitHubPackId[] =
+        prev.includes("all") || prev.length === 0 ? [...ALL_PACK_IDS] : prev.filter((p) => p !== "all")
+      if (base.includes(packId)) {
+        return base.filter((p) => p !== packId)
+      }
+      return [...base, packId]
+    })
+  }, [])
+
+  const selectAllGithubPacks = useCallback(() => {
+    setGithubPacks(["all"])
+  }, [])
+
   const startMutation = useMutation({
-    mutationFn: () => api.scanStart(launchSource, mode, includesGitHub ? [githubPack] : []),
+    mutationFn: () => api.scanStart(launchSource, mode, resolvedGithubPackIds),
     onSuccess: applyStatus,
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
@@ -301,9 +333,20 @@ export function ScanConsole({
   }, [phaseFromLogs, status?.phase, running, state])
 
   const activeSource = running ? ((status?.source as ScanSource | undefined) ?? launchSource) : launchSource
-  const activeGithubPack = running
-    ? (status?.github_pack_ids?.[0] ?? githubPack)
-    : githubPack
+  const activeGithubPackIds = running
+    ? (status?.github_pack_ids?.length ? status.github_pack_ids : resolvedGithubPackIds)
+    : resolvedGithubPackIds
+  const activeGithubPackLabel = useMemo(() => {
+    if (activeGithubPackIds.includes("all") || activeGithubPackIds.length === 0) {
+      return "全部 Provider"
+    }
+    if (activeGithubPackIds.length === ALL_PACK_IDS.length) return "全部 Provider"
+    return activeGithubPackIds.join(", ")
+  }, [activeGithubPackIds])
+  const allPacksSelected =
+    activeGithubPackIds.includes("all") ||
+    (activeGithubPackIds.length === ALL_PACK_IDS.length &&
+      ALL_PACK_IDS.every((id) => activeGithubPackIds.includes(id)))
   const stopping = state === "stopping"
   const locked = Boolean(fixedSource)
 
@@ -401,30 +444,65 @@ export function ScanConsole({
         )}
 
         {activeSource === "github" || activeSource === "all" ? (
-          <div className="flex items-center gap-3.5">
-            <span className="font-mono text-xs text-text-muted">GitHub Provider 包</span>
-            <Select
-              value={activeGithubPack}
-              onValueChange={(value) => setGithubPack(value as GitHubPackId)}
-              disabled={running}
-            >
-              <SelectTrigger
-                className="w-[190px] border-border-primary bg-surface-raised font-mono text-xs text-text-primary"
-                aria-label="选择 GitHub Provider 包"
+          <div className="flex flex-col gap-2.5">
+            <div className="flex flex-wrap items-center gap-3.5">
+              <span className="font-mono text-xs text-text-muted">GitHub Provider 包</span>
+              <button
+                type="button"
+                disabled={running}
+                onClick={selectAllGithubPacks}
+                className={cn(
+                  "rounded-[4px] border px-3 py-[7px] font-mono text-[12px] transition-colors",
+                  allPacksSelected
+                    ? "border-accent bg-accent-dim font-semibold text-accent"
+                    : "border-border-primary bg-surface-raised text-text-secondary hover:text-text-primary",
+                  running && "cursor-not-allowed opacity-50",
+                )}
               >
-                <SelectValue placeholder="选择 Provider" />
-              </SelectTrigger>
-              <SelectContent align="start" position="popper">
-                {GITHUB_PACKS.map((pack) => (
-                  <SelectItem key={pack.value} value={pack.value} className="font-mono text-xs">
+                全部 Provider
+              </button>
+              {running ? (
+                <span className="font-mono text-[11px] text-text-muted">
+                  运行中：{activeGithubPackLabel}
+                </span>
+              ) : (
+                <span className="font-mono text-[11px] text-text-muted">
+                  可多选任意子集；按选择顺序依次狩猎，预算按 pack 分片。建议先跑 1～3 个包避免限流。
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {GITHUB_PACK_OPTIONS.map((pack) => {
+                const checked =
+                  !running &&
+                  (allPacksSelected || githubPacks.includes(pack.value))
+                const showChecked = running
+                  ? allPacksSelected || activeGithubPackIds.includes(pack.value)
+                  : checked
+                return (
+                  <label
+                    key={pack.value}
+                    className={cn(
+                      "inline-flex items-center gap-2 rounded-[4px] border px-3 py-[7px] font-mono text-[12px] transition-colors",
+                      showChecked
+                        ? "border-accent bg-accent-dim text-accent"
+                        : "border-border-primary bg-surface-raised text-text-secondary",
+                      running ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:text-text-primary",
+                    )}
+                  >
+                    <Checkbox
+                      checked={showChecked}
+                      disabled={running}
+                      onCheckedChange={() => {
+                        if (!running) toggleGithubPack(pack.value)
+                      }}
+                      aria-label={`选择 ${pack.label}`}
+                    />
                     {pack.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <span className="font-mono text-[11px] text-text-muted">
-              单包控制查询预算；“全部 Provider”会依次运行所有已注册包
-            </span>
+                  </label>
+                )
+              })}
+            </div>
           </div>
         ) : null}
 

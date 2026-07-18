@@ -192,6 +192,113 @@ class GitHubClient:
                     self.pool.update_from_headers(token, fake)
         return data if isinstance(data, dict) else {}
 
+    async def bootstrap_quota(self) -> dict[str, Any]:
+        """Probe every token via GET /user + /rate_limit (does not use search quota).
+
+        Returns a secret-safe summary:
+        - unique GitHub logins (same-account PATs share search/core limits)
+        - per-resource remaining totals
+        """
+        assert self._client is not None
+        cfg = self.settings or default_settings
+        api_version = cfg.github_api_version or _DEFAULT_API_VERSION
+        logins: dict[str, str] = {}  # token -> login
+        for token in self.tokens:
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": _ACCEPT,
+                "X-GitHub-Api-Version": api_version,
+                "User-Agent": _USER_AGENT,
+            }
+            try:
+                user_resp = await self._client.get("/user", headers=headers)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("bootstrap /user failed for %s…: %s", token[:6], type(exc).__name__)
+                continue
+            if user_resp.status_code == 401:
+                self.pool.mark_dead(token, "auth 401 during bootstrap")
+                continue
+            if user_resp.status_code >= 400:
+                log.warning(
+                    "bootstrap /user HTTP %s for %s…",
+                    user_resp.status_code,
+                    token[:6],
+                )
+                continue
+            login = ""
+            try:
+                login = str((user_resp.json() or {}).get("login") or "")
+            except Exception:  # noqa: BLE001
+                login = ""
+            if login:
+                logins[token] = login
+
+            try:
+                rl_resp = await self._client.get("/rate_limit", headers=headers)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "bootstrap /rate_limit failed for %s…: %s", token[:6], type(exc).__name__
+                )
+                continue
+            if rl_resp.status_code >= 400:
+                continue
+            try:
+                data = rl_resp.json() or {}
+            except Exception:  # noqa: BLE001
+                continue
+            resources = data.get("resources") if isinstance(data, dict) else None
+            if not isinstance(resources, dict):
+                continue
+            for name in ("core", "search", "code_search"):
+                block = resources.get(name) or {}
+                if not isinstance(block, dict):
+                    continue
+                fake = {
+                    "x-ratelimit-resource": name,
+                    "x-ratelimit-remaining": str(block.get("remaining", 0)),
+                    "x-ratelimit-reset": str(block.get("reset", 0)),
+                }
+                self.pool.update_from_headers(token, fake)
+
+        unique_logins = sorted(set(logins.values()))
+        # Effective capacity = unique users, not token count (shared quota).
+        if logins and len(unique_logins) < len(logins):
+            log.warning(
+                "GitHub PATs map to fewer accounts than tokens: tokens=%d accounts=%d logins=%s "
+                "— search/core rate limits are per-user; duplicate accounts do not multiply quota",
+                len(logins),
+                len(unique_logins),
+                ",".join(unique_logins),
+            )
+        else:
+            log.info(
+                "GitHub token bootstrap · tokens=%d live_accounts=%d logins=%s",
+                len(self.tokens),
+                len(unique_logins),
+                ",".join(unique_logins) or "-",
+            )
+        # Aggregate remaining across live tokens (upper bound if accounts distinct).
+        search_rem = sum(self.pool.remaining(t, "search") for t in self.pool.live_tokens())
+        code_rem = sum(self.pool.remaining(t, "code_search") for t in self.pool.live_tokens())
+        core_rem = sum(self.pool.remaining(t, "core") for t in self.pool.live_tokens())
+        summary = {
+            "tokens": len(self.tokens),
+            "live_tokens": len(self.pool.live_tokens()),
+            "accounts": len(unique_logins),
+            "logins": unique_logins,
+            "search_remaining": search_rem,
+            "code_search_remaining": code_rem,
+            "core_remaining": core_rem,
+        }
+        log.info(
+            "GitHub quota snapshot · accounts=%d search=%d code_search=%d core=%d",
+            summary["accounts"],
+            search_rem,
+            code_rem,
+            core_rem,
+        )
+        return summary
+
     async def search_commits(
         self,
         q: str,
@@ -474,15 +581,22 @@ class GitHubClient:
                     headers=resp.headers,
                     secondary=secondary,
                 )
+                live = len(self.pool.live_tokens())
+                alt = self.pool.pick(resource)
                 log.warning(
-                    "GitHub rate limited (%s) resource=%s wait=%.1fs secondary=%s",
+                    "GitHub rate limited (%s) resource=%s wait=%.1fs secondary=%s "
+                    "live_tokens=%d alternate_ready=%s",
                     resp.status_code,
                     resource,
                     wait,
                     secondary,
+                    live,
+                    "yes" if alt else "no",
                 )
                 # Try another ready token immediately. If every token is cooling,
-                # the next loop returns a typed deferred result instead of retrying early.
+                # raise so callers can pause the lane instead of spinning.
+                if alt is None:
+                    raise GitHubRateLimitedError(wait)
                 last_error = GitHubRateLimitedError(wait)
                 continue
 

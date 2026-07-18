@@ -1,4 +1,8 @@
-"""Replicate discovery pack (declarative only)."""
+"""Replicate discovery pack (declarative only).
+
+GH Stream Hunter v10 R3: replicate_api_key / REPLICATE_API_KEY /
+  .env replicate_api_key / sk- replicate_api_key.
+"""
 
 from __future__ import annotations
 
@@ -9,16 +13,23 @@ REPLICATE_OFFICIAL_ENDPOINT = "https://api.replicate.com/v1"
 
 REPLICATE_PACK = ProviderDiscoveryPack(
     pack_id="replicate",
-    version="1",
+    version="2",
     commit_message_anchors=(
-        "replicate api key",
-        "replicate token",
-        "rotate replicate",
-        "remove leaked key",
+        # --- gh_stream_v10_r3 ---
+        "replicate_api_key",
+        "REPLICATE_API_KEY",
+        ".env replicate_api_key",
+        "sk- replicate_api_key",
+        # --- supersets ---
+        "REPLICATE_API_TOKEN",
+        "api.replicate.com",
+        ".env REPLICATE_API_TOKEN",
+        ".env REPLICATE_API_KEY",
     ),
     code_content_anchors=(
         "REPLICATE_API_TOKEN",
         "REPLICATE_API_KEY",
+        "replicate_api_key",
         "api.replicate.com",
         "r8_",
     ),

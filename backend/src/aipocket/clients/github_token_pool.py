@@ -191,11 +191,19 @@ class GitHubTokenPool:
         return wait
 
     def pick(self, resource: RateResource | str) -> str | None:
-        """Pick a ready live token; never return a cooling or exhausted token."""
+        """Pick a ready live token; never return a cooling or exhausted token.
+
+        Selection policy (per resource, independent of other resources):
+        1. Drop dead / global-cooldown / resource-cooldown / remaining<=0 tokens.
+        2. Prefer highest remaining quota for *this* resource.
+        3. Round-robin among tokens that share the same top remaining value so
+           multi-PAT pools spread load instead of sticky-selecting token[0].
+        """
         res = _as_github_resource(resource)
         now = time.monotonic()
         wall = time.time()
 
+        # Revive tokens whose reset clock has passed.
         for token in self.live_tokens():
             rem = self._remaining.get(token, {}).get(res, 0)
             if rem <= 0:
@@ -204,9 +212,30 @@ class GitHubTokenPool:
                     self._remaining.setdefault(token, dict(_DEFAULT_REMAINING))[res] = max(
                         1, _DEFAULT_REMAINING[res]
                     )
+                    # Clear stale resource cooldown once reset has elapsed.
+                    cd = self._cooldown_until.get(token)
+                    if cd is not None and cd.get(res, 0.0) <= now:
+                        cd[res] = 0.0
 
         ready = self._ready_tokens(res, now)
         return self._select(res, ready) if ready else None
+
+    def snapshot(self) -> dict[str, dict[str, int | float | bool]]:
+        """Debug/ops view: remaining + cooldown per token/resource (no secrets)."""
+        now = time.monotonic()
+        out: dict[str, dict[str, int | float | bool]] = {}
+        for token in self.tokens:
+            label = f"{token[:6]}…"
+            out[label] = {
+                "dead": token in self._dead,
+                "global_cd_s": max(0.0, self._global_cooldown_until.get(token, 0.0) - now),
+            }
+            for res in GITHUB_RESOURCES:
+                out[label][f"{res}_remaining"] = self._remaining.get(token, {}).get(res, 0)
+                out[label][f"{res}_cd_s"] = max(
+                    0.0, self._cooldown_until.get(token, {}).get(res, 0.0) - now
+                )
+        return out
 
     def retry_after(self, resource: RateResource | str) -> float | None:
         """Seconds until the earliest live token is usable, or None when all are dead."""

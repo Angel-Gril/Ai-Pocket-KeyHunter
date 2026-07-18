@@ -83,4 +83,31 @@ def test_expected_pack_set() -> None:
         "replicate",
         "together",
         "fireworks",
+        "deepseek",
+        "openai",
+        "anthropic",
+        "azure_openai",
+        "minimax",
     } <= ids
+
+
+def test_commit_anchors_are_env_literals_not_phrases() -> None:
+    """Spoken phrases yield near-zero commit_message hits; ENV names match leaks."""
+    low_signal = (
+        "rotate ",
+        "remove leaked",
+        "leaked key",
+    )
+    for pack in list_packs():
+        for anchor in pack.commit_message_anchors:
+            lower = anchor.lower()
+            # Multi-term AND queries from R3 (".env X", "sk- X") are intentional.
+            if lower.startswith(".env ") or lower.startswith("sk- "):
+                continue
+            # Allow domain-style anchors (api.x.com) and ENV/snake identifiers.
+            if "." in anchor or "_" in anchor or anchor.isupper() or anchor.islower():
+                continue
+            for phrase in low_signal:
+                assert phrase not in lower, (
+                    f"{pack.pack_id} commit anchor looks like spoken phrase: {anchor!r}"
+                )

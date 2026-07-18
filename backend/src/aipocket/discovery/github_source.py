@@ -38,6 +38,7 @@ from aipocket.services.github_checkpoint import (
     load_checkpoint,
     watermark_now,
 )
+from aipocket.services.github_noise import is_noise_artifact_path
 from aipocket.services.github_queries import (
     GitHubPackView,
     GitHubQueryShard,
@@ -73,11 +74,12 @@ def _default_glm_pack() -> GitHubPackView:
     return GitHubPackView(
         pack_id="glm",
         commit_message_anchors=(
-            "glm api key",
-            "zhipu",
-            "bigmodel",
-            "rotate glm",
-            "remove leaked key",
+            "GLM_API_KEY",
+            "ZHIPUAI_API_KEY",
+            "BIGMODEL_API_KEY",
+            "ZHIPU_API_KEY",
+            "open.bigmodel.cn",
+            "api.zhipuai.cn",
         ),
         code_content_anchors=(
             "GLM_API_KEY",
@@ -207,11 +209,30 @@ class GitHubSource:
         usage: list[QueryUsage] = []
         checkpoints: list[CheckpointUpdate] = []
         errors: list[str] = []
-        seeds: list[dict[str, Any]] = []
 
         pack_ids = [p.pack_id for p in packs]
         report_phase(f"GitHub 狩猎 · packs={','.join(pack_ids)}")
         try:
+            # Seed per-token remaining + warn when multiple PATs share one account.
+            if own_client and hasattr(client, "bootstrap_quota"):
+                try:
+                    quota = await client.bootstrap_quota()
+                    accts = int(quota.get("accounts") or 0)
+                    toks = int(quota.get("tokens") or 0)
+                    if accts and toks and accts < toks:
+                        report_phase(
+                            f"GitHub · 警告：{toks} 个 token 仅 {accts} 个账号，search 配额不叠加"
+                        )
+                    else:
+                        report_phase(
+                            f"GitHub · 配额就绪 · accounts={accts} "
+                            f"search={quota.get('search_remaining')} "
+                            f"code={quota.get('code_search_remaining')} "
+                            f"core={quota.get('core_remaining')}"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("GitHub bootstrap_quota failed: %s", type(exc).__name__)
+
             # Claim pending work before new search shards.
             pending = claim_pending(limit=200)
             if pending:
@@ -237,6 +258,9 @@ class GitHubSource:
                 code_budget = self._settings.github_code_query_budget
 
             for pack in packs:
+                # Seeds are pack-local: never carry kimi seeds into qwen file_history.
+                pack_seeds: list[dict[str, Any]] = []
+
                 # Lane A — commit_message
                 try:
                     report_phase(f"GitHub · {pack.pack_id} · commit_message 搜索")
@@ -256,7 +280,7 @@ class GitHubSource:
                     usage.extend(a_usage)
                     checkpoints.extend(a_cp)
                     errors.extend(a_err)
-                    seeds.extend(a_seeds)
+                    pack_seeds.extend(a_seeds)
                     log.info(
                         "GitHub lane=commit_message pack=%s done · obs=+%d seeds=+%d errors=%d",
                         pack.pack_id,
@@ -268,51 +292,66 @@ class GitHubSource:
                     log.exception("commit_message lane failed for pack=%s", pack.pack_id)
                     errors.append(f"commit_message:{pack.pack_id}:{type(exc).__name__}")
 
-                # Lane B — code_snapshot
-                try:
-                    report_phase(f"GitHub · {pack.pack_id} · code_snapshot 搜索")
+                # Lane B — code_snapshot (10 rpm/user; skip early when quota is gone
+                # so we do not thrash into 403 while commit lane still has work).
+                if code_budget <= 0:
                     log.info(
-                        "GitHub lane=code_snapshot pack=%s budget=%s",
+                        "GitHub lane=code_snapshot pack=%s skipped · code_budget=0",
                         pack.pack_id,
-                        code_budget,
                     )
-                    b_obs, b_usage, b_cp, b_err, b_seeds = await self._run_code_snapshot_lane(
-                        client,
-                        pack,
-                        code_budget=code_budget,
-                        run_id=run_id,
-                    )
-                    observations.extend(b_obs)
-                    usage.extend(b_usage)
-                    checkpoints.extend(b_cp)
-                    errors.extend(b_err)
-                    seeds.extend(b_seeds)
-                    log.info(
-                        "GitHub lane=code_snapshot pack=%s done · obs=+%d seeds=+%d errors=%d",
+                elif self._resource_exhausted(client, "code_search"):
+                    wait = self._resource_retry_after(client, "code_search")
+                    log.warning(
+                        "GitHub lane=code_snapshot pack=%s skipped · code_search exhausted wait=%.1fs",
                         pack.pack_id,
-                        len(b_obs),
-                        len(b_seeds),
-                        len(b_err),
+                        wait or 0.0,
                     )
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("code_snapshot lane failed for pack=%s", pack.pack_id)
-                    errors.append(f"code_snapshot:{pack.pack_id}:{type(exc).__name__}")
+                    errors.append(f"code_snapshot:{pack.pack_id}:rate_limited_skip")
+                else:
+                    try:
+                        report_phase(f"GitHub · {pack.pack_id} · code_snapshot 搜索")
+                        log.info(
+                            "GitHub lane=code_snapshot pack=%s budget=%s",
+                            pack.pack_id,
+                            code_budget,
+                        )
+                        b_obs, b_usage, b_cp, b_err, b_seeds = await self._run_code_snapshot_lane(
+                            client,
+                            pack,
+                            code_budget=code_budget,
+                            run_id=run_id,
+                        )
+                        observations.extend(b_obs)
+                        usage.extend(b_usage)
+                        checkpoints.extend(b_cp)
+                        errors.extend(b_err)
+                        pack_seeds.extend(b_seeds)
+                        log.info(
+                            "GitHub lane=code_snapshot pack=%s done · obs=+%d seeds=+%d errors=%d",
+                            pack.pack_id,
+                            len(b_obs),
+                            len(b_seeds),
+                            len(b_err),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.exception("code_snapshot lane failed for pack=%s", pack.pack_id)
+                        errors.append(f"code_snapshot:{pack.pack_id}:{type(exc).__name__}")
 
-                # Lane C — seeded_file_history
-                if self._settings.github_file_history_enabled and seeds:
+                # Lane C — seeded_file_history (only this pack's seeds)
+                if self._settings.github_file_history_enabled and pack_seeds:
                     try:
                         report_phase(
-                            f"GitHub · {pack.pack_id} · file history · {len(seeds)} 个 seed 文件"
+                            f"GitHub · {pack.pack_id} · file history · {len(pack_seeds)} 个 seed 文件"
                         )
                         log.info(
                             "GitHub lane=seeded_file_history pack=%s seeds=%d",
                             pack.pack_id,
-                            len(seeds),
+                            len(pack_seeds),
                         )
                         c_obs, c_usage, c_cp, c_err = await self._run_seeded_history_lane(
                             client,
                             pack,
-                            seeds=seeds,
+                            seeds=pack_seeds,
                             run_id=run_id,
                             mode=mode,
                         )
@@ -379,15 +418,34 @@ class GitHubSource:
         existing = load_checkpoint(
             lane="commit_message", pack_id=pack.pack_id, shard_id=root_shard_id
         )
-        watermark = existing.watermark if existing else ""
-        if mode == "full" and cfg.github_backfill_from:
-            watermark = ""
-            window_start, window_end = default_window(
-                lookback_hours=max(cfg.github_lookback_hours, 24),
-                overlap_minutes=cfg.github_overlap_minutes,
-                watermark=cfg.github_backfill_from,
+        # mode=full always ignores checkpoint watermark so we actually backfill.
+        if mode == "full":
+            if cfg.github_backfill_from:
+                window_start, window_end = default_window(
+                    lookback_hours=max(cfg.github_lookback_hours, 24),
+                    overlap_minutes=cfg.github_overlap_minutes,
+                    watermark=cfg.github_backfill_from,
+                )
+            else:
+                full_hours = max(
+                    1,
+                    int(getattr(cfg, "github_full_lookback_hours", 0) or 0)
+                    or max(cfg.github_lookback_hours, 720),
+                )
+                window_start, window_end = default_window(
+                    lookback_hours=full_hours,
+                    overlap_minutes=cfg.github_overlap_minutes,
+                    watermark="",
+                )
+            log.info(
+                "GitHub full-scan window pack=%s (watermark ignored) start=%s end=%s backfill_from=%r",
+                pack.pack_id,
+                window_start.isoformat(),
+                window_end.isoformat(),
+                cfg.github_backfill_from or "",
             )
         else:
+            watermark = existing.watermark if existing else ""
             window_start, window_end = default_window(
                 lookback_hours=cfg.github_lookback_hours,
                 overlap_minutes=cfg.github_overlap_minutes,
@@ -410,7 +468,10 @@ class GitHubSource:
         )
 
         message_hints: dict[str, str] = {}
+        lane_paused = False
         for idx, shard in enumerate(shards, start=1):
+            if lane_paused:
+                break
             if idx == 1 or idx == total_shards or idx % 5 == 0:
                 report_phase(f"GitHub · {pack.pack_id} · commit_message {idx}/{total_shards}")
                 log.info(
@@ -420,6 +481,16 @@ class GitHubSource:
                     pack.pack_id,
                     (shard.build_q() or shard.query_id or "")[:80],
                 )
+            if self._resource_exhausted(client, "search"):
+                wait = self._resource_retry_after(client, "search")
+                log.warning(
+                    "GitHub commit_message pack=%s search quota exhausted wait=%.1fs — pause lane",
+                    pack.pack_id,
+                    wait or 0.0,
+                )
+                errors.append(f"commit_message:{pack.pack_id}:rate_limited")
+                lane_paused = True
+                break
             try:
                 o, u, cp, e, sh, mh = await self._search_shard(client, shard, run_id=run_id)
                 observations.extend(o)
@@ -429,10 +500,18 @@ class GitHubSource:
                 seeds.extend(sh)
                 message_hints.update(mh)
             except Exception as exc:  # noqa: BLE001
+                if self._is_rate_limited(exc):
+                    log.warning(
+                        "GitHub commit_message pack=%s rate limited — pause remaining shards",
+                        pack.pack_id,
+                    )
+                    errors.append(f"{shard.query_id}:rate_limited")
+                    lane_paused = True
+                    break
                 errors.append(f"{shard.query_id}:{type(exc).__name__}")
 
-        # Advance root window watermark only after shards processed.
-        if shards and not errors:
+        # Advance root window watermark only after shards processed without hard rate-limit pause.
+        if shards and not lane_paused and not errors:
             cp = CheckpointRow(
                 source="github",
                 lane="commit_message",
@@ -492,6 +571,15 @@ class GitHubSource:
                     pack.pack_id,
                     (shard.build_q() or shard.query_id or "")[:80],
                 )
+            if self._resource_exhausted(client, "code_search"):
+                wait = self._resource_retry_after(client, "code_search")
+                log.warning(
+                    "GitHub code_snapshot pack=%s code_search quota exhausted wait=%.1fs — pause lane",
+                    pack.pack_id,
+                    wait or 0.0,
+                )
+                errors.append(f"code_snapshot:{pack.pack_id}:rate_limited")
+                break
             try:
                 o, u, cp, e, sh, _mh = await self._search_shard(client, shard, run_id=run_id)
                 observations.extend(o)
@@ -508,6 +596,13 @@ class GitHubSource:
                         len(sh),
                     )
             except Exception as exc:  # noqa: BLE001
+                if self._is_rate_limited(exc):
+                    log.warning(
+                        "GitHub code_snapshot pack=%s rate limited — pause remaining shards",
+                        pack.pack_id,
+                    )
+                    errors.append(f"{shard.query_id}:rate_limited")
+                    break
                 errors.append(f"{shard.query_id}:{type(exc).__name__}")
                 log.warning(
                     "GitHub code_snapshot [%d/%d] failed: %s",
@@ -545,13 +640,37 @@ class GitHubSource:
         checkpoints: list[CheckpointUpdate] = []
         errors: list[str] = []
 
+        # Drop catalog/example noise seeds before spending core quota.
+        clean_seeds = [
+            s
+            for s in seeds
+            if not is_noise_artifact_path(str(s.get("path") or s.get("file_path") or ""))
+        ]
+        skipped_noise = len(seeds) - len(clean_seeds)
+        if skipped_noise:
+            log.info(
+                "GitHub file_history pack=%s skipped %d noise-path seeds",
+                pack.pack_id,
+                skipped_noise,
+            )
+
+        if self._resource_exhausted(client, "core"):
+            wait = self._resource_retry_after(client, "core")
+            log.warning(
+                "GitHub file_history pack=%s core quota exhausted wait=%.1fs — skip lane",
+                pack.pack_id,
+                wait or 0.0,
+            )
+            errors.append(f"seeded_file_history:{pack.pack_id}:rate_limited")
+            return observations, usage, checkpoints, errors
+
         window_start, window_end = default_window(
             lookback_hours=cfg.github_lookback_hours,
             overlap_minutes=cfg.github_overlap_minutes,
         )
         shards = build_seeded_file_history_shards(
             pack,
-            seeds,
+            clean_seeds,
             window_start=window_start,
             window_end=window_end,
             page_budget=1,
@@ -577,7 +696,10 @@ class GitHubSource:
             total_repos,
         )
 
+        lane_paused = False
         for repo_idx, ((owner, repo), repo_shards) in enumerate(by_repo.items(), start=1):
+            if lane_paused:
+                break
             if repo_idx == 1 or repo_idx == total_repos or repo_idx % 10 == 0:
                 report_phase(
                     f"GitHub · {pack.pack_id} · file history repo {repo_idx}/{total_repos} · "
@@ -591,6 +713,16 @@ class GitHubSource:
                     repo,
                     len(repo_shards),
                 )
+
+            if self._resource_exhausted(client, "core"):
+                wait = self._resource_retry_after(client, "core")
+                log.warning(
+                    "GitHub file_history pack=%s core exhausted mid-lane wait=%.1fs — pause",
+                    pack.pack_id,
+                    wait or 0.0,
+                )
+                errors.append(f"seeded_file_history:{pack.pack_id}:rate_limited")
+                break
 
             probe_shard = repo_shards[0]
             attribution_token = current_query_attribution.set(
@@ -613,6 +745,14 @@ class GitHubSource:
                         per_page=1,
                     )
                 except Exception as exc:  # noqa: BLE001
+                    if self._is_rate_limited(exc):
+                        log.warning(
+                            "GitHub file_history pack=%s rate limited at repo probe — pause lane",
+                            pack.pack_id,
+                        )
+                        errors.append(f"history_repo:{owner}/{repo}:rate_limited")
+                        lane_paused = True
+                        break
                     errors.append(f"history_repo:{owner}/{repo}:{type(exc).__name__}")
                     continue
             finally:
@@ -633,6 +773,10 @@ class GitHubSource:
                 continue
 
             for shard in repo_shards:
+                if lane_paused:
+                    break
+                if is_noise_artifact_path(shard.file_path):
+                    continue
                 paths_probed += 1
                 if paths_probed == 1 or paths_probed % 20 == 0:
                     log.info(
@@ -663,6 +807,14 @@ class GitHubSource:
                             per_page=min(100, limit),
                         )
                     except Exception as exc:  # noqa: BLE001
+                        if self._is_rate_limited(exc):
+                            log.warning(
+                                "GitHub file_history pack=%s rate limited on path probe — pause lane",
+                                pack.pack_id,
+                            )
+                            errors.append(f"{shard.query_id}:rate_limited")
+                            lane_paused = True
+                            break
                         errors.append(f"{shard.query_id}:{type(exc).__name__}")
                         continue
                 finally:
@@ -752,6 +904,52 @@ class GitHubSource:
             return False
         return repository.get("private") is False
 
+    def _rate_limit_wait_cap(self) -> float:
+        cfg = self._settings
+        return float(getattr(cfg, "github_rate_limit_max_wait_seconds", 90.0) or 90.0)
+
+    def _resource_retry_after(self, client: Any, resource: str) -> float | None:
+        pool = getattr(client, "pool", None)
+        if pool is None:
+            return None
+        retry_after = getattr(pool, "retry_after", None)
+        if not callable(retry_after):
+            return None
+        try:
+            return retry_after(resource)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _resource_exhausted(self, client: Any, resource: str) -> bool:
+        """True when no live token can serve *resource* within the wait cap."""
+        pool = getattr(client, "pool", None)
+        if pool is None:
+            return False
+        pick = getattr(pool, "pick", None)
+        if not callable(pick):
+            return False
+        try:
+            if pick(resource) is not None:
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+        wait = self._resource_retry_after(client, resource)
+        if wait is None:
+            # All tokens dead for this resource.
+            return True
+        return wait > self._rate_limit_wait_cap()
+
+    @staticmethod
+    def _is_rate_limited(exc: BaseException) -> bool:
+        name = type(exc).__name__
+        if name in {"GitHubRateLimitedError"}:
+            return True
+        error_class = getattr(exc, "error_class", "") or ""
+        if error_class == "rate_limited":
+            return True
+        msg = str(exc).lower()
+        return "rate_limited" in msg or "rate limit" in msg
+
     async def _search_shard(
         self,
         client: Any,
@@ -791,8 +989,10 @@ class GitHubSource:
         coverage = shard.coverage_mode
         page = start_page
         pages_done = 0
+        # Adaptive: shrink page_budget once we know total_count (saves search quota).
+        effective_page_budget = max(1, shard.page_budget)
 
-        while pages_done < shard.page_budget:
+        while pages_done < effective_page_budget:
             if shard.lane == "commit_message":
                 page_result = await client.search_commits(
                     q,
@@ -815,6 +1015,34 @@ class GitHubSource:
 
             items = list(page_result.items or ())
             total_hits += len(items)
+
+            # First page: log hit volume + adapt remaining pages to actual result size.
+            if pages_done == 0:
+                tc = int(getattr(page_result, "total_count", 0) or 0)
+                page_size = max(1, int(cfg.github_search_page_size or 100))
+                if tc == 0 and not items:
+                    log.info(
+                        "GitHub search zero hits lane=%s pack=%s q=%s",
+                        shard.lane,
+                        shard.pack_id,
+                        q[:100],
+                    )
+                    # still record usage below; no more pages.
+                    effective_page_budget = 1
+                else:
+                    # Cap at API max 1000 results and configured page_budget.
+                    max_fetchable = min(1000, max(tc, len(items)))
+                    need_pages = max(1, (max_fetchable + page_size - 1) // page_size)
+                    effective_page_budget = min(shard.page_budget, need_pages)
+                    log.info(
+                        "GitHub search hits lane=%s pack=%s total_count=%d pages=%d/%d q=%s",
+                        shard.lane,
+                        shard.pack_id,
+                        tc,
+                        effective_page_budget,
+                        shard.page_budget,
+                        q[:80],
+                    )
 
             if page_result.incomplete_results or page_result.total_count >= 1000:
                 if shard.lane == "commit_message":
@@ -847,7 +1075,9 @@ class GitHubSource:
                 if shard.lane == "code_snapshot":
                     file_path = str(it.get("path") or "")
                     object_sha = str(it.get("sha") or "")
-                    # code search item sha is blob sha; commit is in url sometimes.
+                    # Skip catalog/example noise before spending core quota on blob fetch.
+                    if is_noise_artifact_path(file_path):
+                        continue
                 wi = work_from_search_item(
                     it,
                     source_kind=source_kind,

@@ -11,11 +11,12 @@ GLM_PACK = ProviderDiscoveryPack(
     pack_id="glm",
     version="1",
     commit_message_anchors=(
-        "glm api key",
-        "zhipu",
-        "bigmodel",
-        "rotate glm",
-        "remove leaked key",
+        "GLM_API_KEY",
+        "ZHIPUAI_API_KEY",
+        "BIGMODEL_API_KEY",
+        "ZHIPU_API_KEY",
+        "open.bigmodel.cn",
+        "api.zhipuai.cn",
     ),
     code_content_anchors=(
         "GLM_API_KEY",

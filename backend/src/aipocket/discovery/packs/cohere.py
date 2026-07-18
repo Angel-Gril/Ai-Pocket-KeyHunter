@@ -1,4 +1,8 @@
-"""Cohere discovery pack (declarative only)."""
+"""Cohere discovery pack (declarative only).
+
+GH Stream Hunter v10 R3: cohere_api_key / COHERE_API_KEY /
+  .env cohere_api_key / sk- cohere_api_key.
+"""
 
 from __future__ import annotations
 
@@ -9,16 +13,23 @@ COHERE_OFFICIAL_ENDPOINT = "https://api.cohere.com/v1"
 
 COHERE_PACK = ProviderDiscoveryPack(
     pack_id="cohere",
-    version="1",
+    version="2",
     commit_message_anchors=(
-        "cohere api key",
-        "cohere token",
-        "rotate cohere",
-        "remove leaked key",
+        # --- gh_stream_v10_r3 ---
+        "cohere_api_key",
+        "COHERE_API_KEY",
+        ".env cohere_api_key",
+        "sk- cohere_api_key",
+        # --- supersets ---
+        "CO_API_KEY",
+        "api.cohere.com",
+        "api.cohere.ai",
+        ".env COHERE_API_KEY",
     ),
     code_content_anchors=(
         "COHERE_API_KEY",
         "CO_API_KEY",
+        "cohere_api_key",
         "api.cohere.com",
         "api.cohere.ai",
     ),

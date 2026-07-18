@@ -1,4 +1,10 @@
-"""Kimi / Moonshot discovery pack (declarative only)."""
+"""Kimi / Moonshot discovery pack (declarative only).
+
+GH Stream Hunter v10 R3:
+  moonshot_api_key / MOONSHOT_API_KEY / kimi_api_key / KIMI_API_KEY
+  .env moonshot_api_key / .env kimi_api_key
+  sk- moonshot_api_key / sk- kimi_api_key
+"""
 
 from __future__ import annotations
 
@@ -9,17 +15,30 @@ KIMI_OFFICIAL_ENDPOINT = "https://api.moonshot.cn/v1"
 
 KIMI_PACK = ProviderDiscoveryPack(
     pack_id="kimi",
-    version="1",
+    version="2",
     commit_message_anchors=(
-        "kimi api key",
-        "moonshot",
-        "rotate moonshot",
-        "remove leaked key",
+        # --- gh_stream_v10_r3 ---
+        "moonshot_api_key",
+        "MOONSHOT_API_KEY",
+        "kimi_api_key",
+        "KIMI_API_KEY",
+        ".env moonshot_api_key",
+        ".env kimi_api_key",
+        "sk- moonshot_api_key",
+        "sk- kimi_api_key",
+        # --- supersets ---
+        "MOONSHOT_API_BASE",
+        "MOONSHOT_BASE_URL",
+        "api.moonshot.cn",
+        ".env MOONSHOT_API_KEY",
+        ".env KIMI_API_KEY",
     ),
     code_content_anchors=(
         "MOONSHOT_API_KEY",
         "KIMI_API_KEY",
         "MOONSHOT_API_BASE",
+        "moonshot_api_key",
+        "kimi_api_key",
         "api.moonshot.cn",
         "platform.moonshot.cn",
     ),

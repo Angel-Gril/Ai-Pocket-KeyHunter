@@ -26,6 +26,7 @@ from aipocket.core.config import settings as default_settings
 from aipocket.core.credentials import CredentialBundle, CredentialEvidence
 from aipocket.core.key_patterns import KEY_PATTERNS, is_noise
 from aipocket.services.config_extractor import extract_config_bundles
+from aipocket.services.github_noise import is_noise_artifact_path
 from aipocket.services.github_patch import join_side, line_span, parse_unified_patch
 from aipocket.services.github_work_queue import ArtifactWorkItem
 
@@ -156,6 +157,10 @@ async def fetch_and_extract(
     budget = blob_budget or BlobBudget(remaining=cfg.github_blob_fallback_budget)
 
     for cf in files_to_scan:
+        # Skip catalog / example / docs noise before extraction + blob spend.
+        if is_noise_artifact_path(cf.filename):
+            continue
+
         if cf.patch:
             result.secrets.extend(_extract_from_patch(cf, work=work, pack=pack))
             continue

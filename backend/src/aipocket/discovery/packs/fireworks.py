@@ -1,4 +1,8 @@
-"""Fireworks AI discovery pack (declarative only)."""
+"""Fireworks AI discovery pack (declarative only).
+
+GH Stream Hunter v10 R3: fireworks_api_key / FIREWORKS_API_KEY /
+  .env fireworks_api_key / sk- fireworks_api_key.
+"""
 
 from __future__ import annotations
 
@@ -9,16 +13,22 @@ FIREWORKS_OFFICIAL_ENDPOINT = "https://api.fireworks.ai/inference/v1"
 
 FIREWORKS_PACK = ProviderDiscoveryPack(
     pack_id="fireworks",
-    version="1",
+    version="2",
     commit_message_anchors=(
-        "fireworks api key",
-        "fireworks.ai",
-        "rotate fireworks",
-        "remove leaked key",
+        # --- gh_stream_v10_r3 ---
+        "fireworks_api_key",
+        "FIREWORKS_API_KEY",
+        ".env fireworks_api_key",
+        "sk- fireworks_api_key",
+        # --- supersets ---
+        "FIREWORKS_AI_API_KEY",
+        "api.fireworks.ai",
+        ".env FIREWORKS_API_KEY",
     ),
     code_content_anchors=(
         "FIREWORKS_API_KEY",
         "FIREWORKS_AI_API_KEY",
+        "fireworks_api_key",
         "api.fireworks.ai",
     ),
     code_qualifier_groups=(

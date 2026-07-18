@@ -116,3 +116,49 @@ def test_pick_prefers_budget_for_resource():
         {"x-ratelimit-resource": "core", "x-ratelimit-remaining": "4000"},
     )
     assert pool.pick("core") == "high"
+
+
+def test_round_robin_among_equal_remaining():
+    pool = GitHubTokenPool(["a", "b", "c"])
+    for t in ("a", "b", "c"):
+        pool.update_from_headers(
+            t,
+            {
+                "x-ratelimit-resource": "search",
+                "x-ratelimit-remaining": "30",
+            },
+        )
+    seen: list[str] = []
+    for _ in range(6):
+        picked = pool.pick("search")
+        assert picked is not None
+        seen.append(picked)
+    # With equal remaining, RR should cycle through the pool.
+    assert set(seen) == {"a", "b", "c"}
+    assert seen[0] != seen[1] or seen[1] != seen[2]
+
+
+def test_cooldown_token_skipped_for_other_live_tokens():
+    pool = GitHubTokenPool(["cool", "hot"])
+    pool.apply_rate_limit_response(
+        "cool",
+        resource="code_search",
+        headers={
+            "retry-after": "120",
+            "x-ratelimit-resource": "code_search",
+            "x-ratelimit-remaining": "0",
+        },
+        secondary=False,
+    )
+    for _ in range(5):
+        assert pool.pick("code_search") == "hot"
+    # core still available on the cooled token (resource-scoped cooldown).
+    assert pool.pick("core") in {"cool", "hot"}
+
+
+def test_snapshot_does_not_leak_full_token():
+    pool = GitHubTokenPool(["ghp_supersecrettokenvalue"])
+    snap = pool.snapshot()
+    keys = list(snap.keys())
+    assert keys == ["ghp_su…"]
+    assert "supersecret" not in str(snap)
