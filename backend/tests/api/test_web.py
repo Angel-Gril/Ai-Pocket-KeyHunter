@@ -452,6 +452,58 @@ async def test_scan_manager_passes_immutable_github_pack_filter(tmp_path, monkey
     assert manager.status()["github_pack_ids"] == ["cohere"]
 
 
+def test_scan_start_request_resolves_multi_sources():
+    from aipocket.api.schemas import ScanStartRequest
+
+    assert ScanStartRequest(source="fofa").resolved_source_label() == "fofa"
+    assert ScanStartRequest(source="all").resolved_source_label() == "all"
+    assert (
+        ScanStartRequest(sources=["shodan", "fofa"]).resolved_source_label() == "fofa,shodan"
+    )
+    assert (
+        ScanStartRequest(sources=["github", "fofa", "shodan"]).resolved_source_label() == "all"
+    )
+    # Non-empty sources wins over legacy source.
+    assert (
+        ScanStartRequest(source="all", sources=["fofa", "shodan"]).resolved_source_label()
+        == "fofa,shodan"
+    )
+
+
+@pytest.mark.asyncio
+async def test_scan_manager_multi_source_label(tmp_path, monkeypatch):
+    from aipocket.api.scan_manager import ScanManager
+    from aipocket.core.models import ScanRunResult
+
+    captured: dict = {}
+    result = ScanRunResult(
+        started_at="2026-07-16T00:00:00Z",
+        finished_at="2026-07-16T00:01:00Z",
+        sources=["fofa", "shodan"],
+        total_hosts=0,
+        total_credentials=0,
+        total_valid=0,
+        queries_used=[],
+        results=[],
+    )
+
+    async def fake_run_scan(**kwargs):
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr("aipocket.services.scanner.run_scan", fake_run_scan)
+    monkeypatch.setattr("aipocket.core.config.settings.database_url", "")
+    manager = ScanManager()
+    manager._run_dir = tmp_path
+
+    await manager._run("fofa,shodan")
+
+    assert captured["sources"] == {"fofa", "shodan"}
+    assert ScanManager._sources_for_scan("all") is None
+    assert ScanManager._sources_for_scan("fofa") == {"fofa"}
+    assert ScanManager._sources_for_scan("fofa,shodan") == {"fofa", "shodan"}
+
+
 @pytest.mark.asyncio
 async def test_scan_manager_stop_when_idle_raises():
     from aipocket.api.scan_manager import ScanManager

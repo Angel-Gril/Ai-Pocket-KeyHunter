@@ -12,8 +12,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+ScanSourceItem = Literal["fofa", "shodan", "github"]
 ScanSource = Literal["fofa", "shodan", "github", "all"]
 ScanMode = Literal["full", "incremental"]
+_ALL_SCAN_SOURCES: frozenset[str] = frozenset({"fofa", "shodan", "github"})
 GitHubPackId = Literal[
     "all",
     "glm",
@@ -126,9 +128,26 @@ class ExportRequest(BaseModel):
 # Scan
 # ----------------------------------------------------------------------------
 class ScanStartRequest(BaseModel):
+    """Start a scan.
+
+    Prefer ``sources`` for multi-select (e.g. FOFA + Shodan without GitHub).
+    Legacy single-value ``source`` remains accepted; when both are set,
+    non-empty ``sources`` wins.
+    """
+
     source: ScanSource = "all"
+    sources: list[ScanSourceItem] = Field(default_factory=list, max_length=3)
     mode: ScanMode = "incremental"
     github_pack_ids: list[GitHubPackId] = Field(default_factory=list, max_length=16)
+
+    def resolved_source_label(self) -> str:
+        """Canonical status label: ``all`` | ``fofa`` | ``fofa,shodan`` | …"""
+        if self.sources:
+            items = sorted(set(self.sources))
+            if set(items) >= _ALL_SCAN_SOURCES:
+                return "all"
+            return ",".join(items)
+        return self.source
 
 
 class ScanProgress(BaseModel):

@@ -204,6 +204,22 @@ class ScanManager:
                 pass
         self._handlers = []
 
+    @staticmethod
+    def _sources_for_scan(source: str) -> set[str] | None:
+        """Map status label → ``run_scan(sources=…)`` set.
+
+        - ``all`` / empty → None (every configured source)
+        - ``fofa`` → ``{"fofa"}``
+        - ``fofa,shodan`` → ``{"fofa", "shodan"}``
+        """
+        label = (source or "all").strip()
+        if not label or label == "all":
+            return None
+        parts = {p.strip() for p in label.split(",") if p.strip()}
+        if not parts or "all" in parts:
+            return None
+        return parts
+
     async def _run(
         self,
         source: str,
@@ -214,7 +230,7 @@ class ScanManager:
 
         # Restrict the scan to the chosen source(s) via a parameter — no global
         # settings mutation, so concurrent /settings reads/writes stay correct.
-        sources = None if source == "all" else {source}
+        sources = self._sources_for_scan(source)
 
         result: ScanRunResult | None = None
         phase_token = set_phase_reporter(self.set_phase)

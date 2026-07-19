@@ -49,8 +49,11 @@ def _to_status(raw: dict) -> ScanStatusResponse:
 @_protected.post("/start", response_model=ScanStatusResponse)
 async def start_scan(body: ScanStartRequest, request: Request) -> ScanStatusResponse:
     mgr = _manager(request)
+    source_label = body.resolved_source_label()
+    if not source_label:
+        raise ApiError("请至少选择一个数据源", status_code=400, code="validation_error")
     try:
-        raw = mgr.start(body.source, body.mode, tuple(body.github_pack_ids))
+        raw = mgr.start(source_label, body.mode, tuple(body.github_pack_ids))
     except RuntimeError as e:
         # A scan is already running → conflict; the frontend greys out the button.
         raise ApiError(str(e), status_code=409, code="conflict") from e

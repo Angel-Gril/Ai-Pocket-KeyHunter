@@ -4,7 +4,8 @@ import { clearToken, getToken } from "@/lib/auth-storage"
 /* Types — mirror src/aipocket/web/schemas.py and models.py            */
 /* ------------------------------------------------------------------ */
 
-export type ScanSource = "fofa" | "shodan" | "github" | "all"
+export type ScanSourceItem = "fofa" | "shodan" | "github"
+export type ScanSource = ScanSourceItem | "all"
 export type ScanMode = "full" | "incremental"
 export type GitHubPackId =
   | "all"
@@ -534,10 +535,17 @@ export const api = {
     source: ScanSource,
     mode: ScanMode,
     githubPackIds: readonly GitHubPackId[] = [],
+    sources: readonly ScanSourceItem[] = [],
   ) =>
     request<ScanStatusResponse>("/scan/start", {
       method: "POST",
-      body: { source, mode, github_pack_ids: githubPackIds },
+      body: {
+        source,
+        // Multi-select list; backend prefers this over single `source` when non-empty.
+        sources: sources.length > 0 ? [...sources] : undefined,
+        mode,
+        github_pack_ids: githubPackIds,
+      },
     }),
   scanStop: () => request<ScanStatusResponse>("/scan/stop", { method: "POST" }),
   scanStatus: (signal?: AbortSignal) => request<ScanStatusResponse>("/scan/status", { signal }),
