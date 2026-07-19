@@ -376,6 +376,23 @@ async def _run_scan_inner(
     # -> GPT recheck -> balance
     # ------------------------------------------------------------------
     report_phase("提取候选密钥")
+    from aipocket.core.db import current_run_id as _current_run_id
+
+    from .candidate_store import (
+        STAGE_GPT,
+        STAGE_PROBER,
+        STAGE_REGEX,
+        load_candidates,
+        spill_enabled,
+        upsert_candidates,
+        upsert_github_observations,
+    )
+
+    run_id = _current_run_id.get() or (run_dir.name if run_dir else "")
+    use_spill = spill_enabled() and bool(run_id)
+    # Only reload from PG when something was actually written this run.
+    spilled_any = False
+
     creds = extract_credentials(all_hits)
     observations = ObservationRegistry()
     # Map a credential back to its discovery target for per-query funnel metrics.
@@ -451,6 +468,35 @@ async def _run_scan_inner(
         pre_filtered_count - len(creds),
     )
 
+    # Spill only prefilter survivors so DB never holds noise keys.
+    # GitHub keeps full CredentialBundle + evidence via upsert_github_observations.
+    if use_spill and creds:
+        survivor_ids = {_credential_identity(c) for c in creds}
+        if cred_observations:
+            gh_survivors = [
+                obs
+                for obs in cred_observations
+                if _credential_identity(obs.credential) in survivor_ids
+            ]
+            if gh_survivors:
+                await asyncio.to_thread(upsert_github_observations, run_id, gh_survivors)
+                spilled_any = True
+        non_github = [
+            c
+            for c in creds
+            if _credential_identity(c) in survivor_ids
+            and (c.backend or c.source or "").lower() != "github"
+        ]
+        if non_github:
+            await asyncio.to_thread(
+                upsert_candidates,
+                run_id,
+                STAGE_REGEX,
+                non_github,
+                method=ExtractionMethod.REGEX.value,
+            )
+            spilled_any = True
+
     # Active probing — order high-signal targets first; the runner then applies
     # evidence gates and a per-target request budget before issuing requests.
     from aipocket.prober import probe_hosts
@@ -509,7 +555,17 @@ async def _run_scan_inner(
         )
 
         probe_report = await probe_hosts(ordered_targets, safe_products)
-        probed_creds = list(probe_report.credentials)
+        if probe_report.spilled:
+            spilled_any = True
+            # Reload prober candidates from PG (not held across batches in RAM).
+            probed_creds = await asyncio.to_thread(load_candidates, run_id, stages=[STAGE_PROBER])
+            log.info(
+                "Prober spilled path: reloaded %d candidates from scan_candidates (reported=%d)",
+                len(probed_creds),
+                probe_report.credential_count,
+            )
+        else:
+            probed_creds = list(probe_report.credentials)
         target_by_identity = {target.identity.identity_hash: target for target in ordered_targets}
         outcome_counts: dict[str, int] = {}
         for outcome in probe_report.outcomes:
@@ -561,6 +617,10 @@ async def _run_scan_inner(
         record_credentials("candidates", probed_creds)
         record_credentials("prefilter_survivors", probed_creds)
         log.info("After active probing: %d candidate credentials", len(creds))
+        # When spill is on, drop the large probed list after merge+metrics so
+        # peak RSS can fall before GPT/validate; validate reloads from PG.
+        if use_spill and probe_report.spilled:
+            probed_creds = []
 
     from .analyzer import extract_with_gpt
 
@@ -613,6 +673,37 @@ async def _run_scan_inner(
         record_credentials("candidates", gpt_creds)
         record_credentials("prefilter_survivors", gpt_creds)
         log.info("After GPT enrichment: %d candidate credentials", len(creds))
+        if use_spill:
+            await asyncio.to_thread(
+                upsert_candidates,
+                run_id,
+                STAGE_GPT,
+                gpt_creds,
+                method=ExtractionMethod.GPT.value,
+            )
+            spilled_any = True
+
+    # When PG spill wrote rows this run, rebuild the validation set from the
+    # store so we do not depend on the in-memory merge after multi-batch prober.
+    if use_spill and spilled_any:
+        reloaded = await asyncio.to_thread(load_candidates, run_id)
+        if reloaded:
+            # Re-register observations for any rows that were not observed above
+            # (e.g. prober spilled-only path after we cleared probed_creds).
+            for cred in reloaded:
+                if observations.get(cred) is None:
+                    backend = (cred.backend or cred.source or "").lower()
+                    if "github" in backend:
+                        observations.observe(
+                            cred,
+                            ExtractionMethod.REGEX,
+                            (("github", "github"),),
+                        )
+                    else:
+                        observe_credentials(ExtractionMethod.PROBER, [cred])
+            creds = reloaded
+            seen = {_credential_identity(c) for c in creds}
+            log.info("Candidate store reload for validate: %d credentials", len(creds))
 
     if not creds:
         log.info("No credentials found — writing empty scan results")

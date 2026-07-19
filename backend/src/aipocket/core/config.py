@@ -38,11 +38,10 @@ class Settings(BaseSettings):
     scan_fast: bool = False
     scan_prober: bool = True
     prober_concurrency: int = 50
-    # Max hosts scheduled as asyncio tasks at once. Full scans can hit 10k–30k
-    # targets; creating every Task up-front OOMs small VPS boxes. Batches keep
-    # peak task/client memory bounded while concurrency still governs in-flight
-    # HTTP. 500 is a safe default for ~4–6GB hosts.
-    prober_batch_size: int = 500
+    # Max hosts scheduled per wave. Full scans can hit 10k–30k targets; creating
+    # every Task up-front OOMs small VPS boxes. Worker-pool + DB spill keep peak
+    # memory bounded. 200 is a safe default for ~4–6GB hosts (was 500).
+    prober_batch_size: int = 200
     # Per-target HTTP budget for product probers. Weak-password dict needs headroom.
     max_requests_per_target: int = 600
     # Independent budget for GenericPageProber so it cannot starve product L1 nodes.

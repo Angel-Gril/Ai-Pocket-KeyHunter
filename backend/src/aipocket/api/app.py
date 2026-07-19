@@ -32,6 +32,16 @@ async def _lifespan(app: FastAPI):
 
     await clear_stale_scan_lock()
 
+    # OOM / hard kill leaves runs.state='running' with zero finalized metrics.
+    # Mark them interrupted so History stops looking like "finished with all 0s".
+    if settings.pg_enabled:
+        from aipocket.services.candidate_store import mark_orphan_runs_interrupted
+
+        try:
+            await asyncio.to_thread(mark_orphan_runs_interrupted, "process_restart")
+        except Exception as e:  # noqa: BLE001 — startup must not fail
+            log.warning("orphan run cleanup skipped: %s", e)
+
     scheduler = None
     task = None
     if settings.scheduler_enabled:

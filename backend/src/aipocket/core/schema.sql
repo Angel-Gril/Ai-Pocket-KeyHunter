@@ -213,3 +213,42 @@ CREATE TABLE IF NOT EXISTS advisories (
     updated_at  TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_advisories_product ON advisories (product);
+
+-- Intermediate credential candidates (regex / prober / github / gpt).
+-- Spilled during the scan so probe batches and GitHub observations do not
+-- accumulate unbounded lists in process memory. Final valid/suspicious rows
+-- still land in ``results`` after validation.
+CREATE TABLE IF NOT EXISTS scan_candidates (
+    id              BIGSERIAL PRIMARY KEY,
+    run_id          TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    stage           TEXT NOT NULL,              -- regex | prober | github | gpt
+    identity        TEXT NOT NULL,              -- secret_fingerprint:endpoint
+    apikey          TEXT NOT NULL DEFAULT '',
+    apiurl          TEXT NOT NULL DEFAULT '',
+    host            TEXT NOT NULL DEFAULT '',
+    source          TEXT NOT NULL DEFAULT '',   -- fofa | shodan | github | ...
+    query_id        TEXT NOT NULL DEFAULT '',
+    pack_id         TEXT NOT NULL DEFAULT '',
+    lane            TEXT NOT NULL DEFAULT '',
+    method          TEXT NOT NULL DEFAULT '',   -- ExtractionMethod value
+    prefilter_ok    BOOLEAN NOT NULL DEFAULT TRUE,
+    record          JSONB NOT NULL,             -- full Credential (+bundle secret)
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (run_id, identity)
+);
+CREATE INDEX IF NOT EXISTS idx_scan_candidates_run ON scan_candidates (run_id);
+CREATE INDEX IF NOT EXISTS idx_scan_candidates_run_stage ON scan_candidates (run_id, stage);
+CREATE INDEX IF NOT EXISTS idx_scan_candidates_run_source ON scan_candidates (run_id, source);
+
+-- Per-batch probe telemetry (outcomes / findings / node_outcomes) without
+-- keeping multi-MB evidence blobs in RAM across all batches.
+CREATE TABLE IF NOT EXISTS scan_probe_events (
+    id              BIGSERIAL PRIMARY KEY,
+    run_id          TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    event_type      TEXT NOT NULL,              -- outcome | finding | node_outcome
+    record          JSONB NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_scan_probe_events_run ON scan_probe_events (run_id);
+CREATE INDEX IF NOT EXISTS idx_scan_probe_events_run_type
+    ON scan_probe_events (run_id, event_type);

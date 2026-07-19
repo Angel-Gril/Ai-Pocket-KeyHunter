@@ -52,6 +52,10 @@ class ProbeReport:
     outcomes: tuple[ProbeTargetOutcome, ...]
     findings: tuple[Finding, ...] = ()
     node_outcomes: tuple[NodeOutcome, ...] = ()
+    # When True, credentials/findings/node_outcomes were spilled to PG
+    # (scan_candidates / scan_probe_events) and the tuple fields may be empty.
+    spilled: bool = False
+    credential_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,18 +360,18 @@ async def _run_probe_batch(
     hosts_done_before: int,
     hosts_total: int,
 ) -> list[tuple[list[Credential], ProbeTargetOutcome, list[Finding], list[NodeOutcome]]]:
-    """Schedule and await one bounded wave of target probe assignments."""
+    """Run one wave with a fixed worker pool (no N-task fan-out)."""
     batch_len = len(batch)
     start = hosts_done_before + 1
     end = hosts_done_before + batch_len
     log.info(
-        "Prober batch %d/%d: hosts %d–%d / %d (%d tasks, concurrency=%d)",
+        "Prober batch %d/%d: hosts %d–%d / %d (workers=%d, concurrency=%d)",
         batch_idx,
         batch_total,
         start,
         end,
         hosts_total,
-        batch_len,
+        min(concurrency, batch_len),
         concurrency,
     )
 
@@ -378,49 +382,67 @@ async def _run_probe_batch(
     results: list[
         tuple[list[Credential], ProbeTargetOutcome, list[Finding], list[NodeOutcome]]
     ] = []
+    queue: asyncio.Queue[ProbeAssignment | None] = asyncio.Queue()
+    for assignment in batch:
+        queue.put_nowait(assignment)
+    # One sentinel per worker so each exits cleanly.
+    worker_n = max(1, min(concurrency, batch_len))
+    for _ in range(worker_n):
+        queue.put_nowait(None)
+
+    progress_lock = asyncio.Lock()
+    done_count = 0
+    batch_creds = 0
+    progress_step = max(50, batch_len // 2) or 1
+
+    async def _worker(client: httpx.AsyncClient) -> None:
+        nonlocal done_count, batch_creds
+        while True:
+            assignment = await queue.get()
+            if assignment is None:
+                return
+            batch_result = await _probe_one(client, sem, assignment)
+            async with progress_lock:
+                results.append(batch_result)
+                done_count += 1
+                batch_creds += len(batch_result[0])
+                if done_count % progress_step == 0 or done_count == batch_len:
+                    overall = hosts_done_before + done_count
+                    log.info(
+                        "Prober progress: %d / %d hosts (batch %d/%d, batch_creds=%d)",
+                        overall,
+                        hosts_total,
+                        batch_idx,
+                        batch_total,
+                        batch_creds,
+                    )
+
     async with httpx.AsyncClient(
         timeout=PROBE_TIMEOUT,
         limits=limits,
         follow_redirects=False,
     ) as client:
-        tasks = [asyncio.create_task(_probe_one(client, sem, assignment)) for assignment in batch]
-        progress_step = max(50, batch_len // 2) or 1
-        batch_creds = 0
-        for done, coro in enumerate(asyncio.as_completed(tasks), start=1):
-            batch_result = await coro
-            results.append(batch_result)
-            batch_creds += len(batch_result[0])
-            if done % progress_step == 0 or done == batch_len:
-                overall = hosts_done_before + done
-                log.info(
-                    "Prober progress: %d / %d hosts (batch %d/%d, batch_creds=%d)",
-                    overall,
-                    hosts_total,
-                    batch_idx,
-                    batch_total,
-                    batch_creds,
-                )
+        await asyncio.gather(*(_worker(client) for _ in range(worker_n)))
 
     log.info(
         "Prober batch %d/%d done: +%d creds this batch (hosts %d/%d)",
         batch_idx,
         batch_total,
-        sum(len(credentials) for credentials, *_rest in results),
+        batch_creds,
         hosts_done_before + batch_len,
         hosts_total,
     )
     return results
 
 
-def _dedupe_creds(batches: list[list[Credential]]) -> list[Credential]:
+def _dedupe_creds(creds: list[Credential]) -> list[Credential]:
     seen: set[tuple[str, str]] = set()
     all_creds: list[Credential] = []
-    for batch in batches:
-        for cred in batch:
-            key = (cred.apikey, cred.host)
-            if key not in seen:
-                seen.add(key)
-                all_creds.append(cred)
+    for cred in creds:
+        key = (cred.apikey, cred.host)
+        if key not in seen:
+            seen.add(key)
+            all_creds.append(cred)
     return all_creds
 
 
@@ -432,10 +454,41 @@ def _summarize_node_outcomes(node_outcomes: list[NodeOutcome]) -> dict[str, int]
     return counts
 
 
+def _spill_batch_to_pg(
+    run_id: str,
+    *,
+    credentials: list[Credential],
+    outcomes: list[ProbeTargetOutcome],
+    findings: list[Finding],
+    node_outcomes: list[NodeOutcome],
+) -> int:
+    """Write one batch to PG and return credential rows attempted."""
+    from aipocket.services.candidate_store import (
+        STAGE_PROBER,
+        insert_probe_events,
+        upsert_candidates,
+    )
+
+    n = upsert_candidates(run_id, STAGE_PROBER, credentials, method="prober")
+    insert_probe_events(
+        run_id,
+        outcomes=outcomes,
+        findings=findings,
+        node_outcomes=node_outcomes,
+    )
+    return n
+
+
 async def probe_hosts(
     targets: list[DiscoveryTarget], allowed_products: frozenset[str]
 ) -> ProbeReport:
-    """Probe canonical targets and report every routing/execution outcome."""
+    """Probe canonical targets and report every routing/execution outcome.
+
+    When PostgreSQL is enabled, each batch's credentials / findings are spilled
+    to ``scan_candidates`` / ``scan_probe_events`` and released from RAM. The
+    returned report then has ``spilled=True`` and empty credential/finding
+    tuples (reload via candidate_store). Outcomes stay in-memory (small).
+    """
     if not targets:
         return ProbeReport(credentials=(), outcomes=())
 
@@ -443,23 +496,31 @@ async def probe_hosts(
     if not assignments:
         return ProbeReport(credentials=(), outcomes=tuple(rejected))
 
+    from aipocket.core.db import current_run_id
+    from aipocket.services.candidate_store import spill_enabled
+
+    run_id = current_run_id.get()
+    use_spill = spill_enabled() and bool(run_id)
+
     concurrency = _prober_concurrency()
     batch_size = _prober_batch_size()
     total = len(assignments)
     batch_total = (total + batch_size - 1) // batch_size
     log.info(
-        "Prober plan: %d hosts, concurrency=%d, batch_size=%d → %d batch(es)",
+        "Prober plan: %d hosts, concurrency=%d, batch_size=%d → %d batch(es) spill=%s",
         total,
         concurrency,
         batch_size,
         batch_total,
+        use_spill,
     )
 
     sem = asyncio.Semaphore(concurrency)
-    collected: list[list[Credential]] = []
+    collected_creds: list[Credential] = []
     outcomes = list(rejected)
     all_findings: list[Finding] = []
     all_nodes: list[NodeOutcome] = []
+    spilled_cred_count = 0
     hosts_done = 0
 
     for batch_idx in range(1, batch_total + 1):
@@ -474,14 +535,55 @@ async def probe_hosts(
             hosts_done_before=hosts_done,
             hosts_total=total,
         )
+        batch_creds: list[Credential] = []
+        batch_outcomes: list[ProbeTargetOutcome] = []
+        batch_findings: list[Finding] = []
+        batch_nodes: list[NodeOutcome] = []
         for credentials, outcome, findings, nodes in batch_results:
-            collected.append(credentials)
-            outcomes.append(outcome)
-            all_findings.extend(findings)
-            all_nodes.extend(nodes)
+            batch_creds.extend(credentials)
+            batch_outcomes.append(outcome)
+            batch_findings.extend(findings)
+            batch_nodes.extend(nodes)
+
+        # Outcomes are tiny (hash + status + counts) — keep for dedup marking.
+        outcomes.extend(batch_outcomes)
+
+        if use_spill and run_id:
+            n = await asyncio.to_thread(
+                _spill_batch_to_pg,
+                run_id,
+                credentials=batch_creds,
+                outcomes=batch_outcomes,
+                findings=batch_findings,
+                node_outcomes=batch_nodes,
+            )
+            spilled_cred_count += n
+            # Explicitly drop batch payloads so GC can reclaim before next wave.
+            del batch_creds, batch_findings, batch_nodes, batch_outcomes, batch_results
+        else:
+            collected_creds.extend(batch_creds)
+            all_findings.extend(batch_findings)
+            all_nodes.extend(batch_nodes)
+
         hosts_done += len(batch)
 
-    all_creds = _dedupe_creds(collected)
+    if use_spill:
+        log.info(
+            "Prober spilled %d credential rows across %d batches (outcomes=%d kept in RAM)",
+            spilled_cred_count,
+            batch_total,
+            len(outcomes),
+        )
+        return ProbeReport(
+            credentials=(),
+            outcomes=tuple(outcomes),
+            findings=(),
+            node_outcomes=(),
+            spilled=True,
+            credential_count=spilled_cred_count,
+        )
+
+    all_creds = _dedupe_creds(collected_creds)
     node_summary = _summarize_node_outcomes(all_nodes)
     confirmed = sum(1 for f in all_findings if f.confirmed)
     log.info(
@@ -499,4 +601,6 @@ async def probe_hosts(
         outcomes=tuple(outcomes),
         findings=tuple(all_findings),
         node_outcomes=tuple(all_nodes),
+        spilled=False,
+        credential_count=len(all_creds),
     )
