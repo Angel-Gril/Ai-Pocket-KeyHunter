@@ -121,6 +121,7 @@ def create_app() -> FastAPI:
         cve,
         export,
         high_value,
+        honeypot,
         key,
         keys,
         runs,
@@ -140,6 +141,7 @@ def create_app() -> FastAPI:
         export,
         scan,
         cve,
+        honeypot,
         settings_router,
         system,
     ):

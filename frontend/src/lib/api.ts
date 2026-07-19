@@ -344,6 +344,39 @@ export interface CveResponse {
   cves: CveRecord[]
 }
 
+export type HoneypotSource = "auto" | "manual" | string
+
+export interface HoneypotSite {
+  host_key: string
+  host: string
+  reason: string
+  source: HoneypotSource
+  first_seen: string
+  last_seen: string
+  hit_count: number
+  run_id: string
+  notes: string
+}
+
+export interface HoneypotListResponse {
+  results: HoneypotSite[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface HoneypotCreateRequest {
+  host: string
+  reason?: string
+  notes?: string
+}
+
+export interface HoneypotUpdateRequest {
+  host_key: string
+  reason?: string | null
+  notes?: string | null
+}
+
 /* ------------------------------------------------------------------ */
 /* Core request machinery                                              */
 /* ------------------------------------------------------------------ */
@@ -556,6 +589,31 @@ export const api = {
   cveSync: () => request<CveSyncResponse>("/cve/sync", { method: "POST" }),
   cveAdd: (body: CveAddRequest) =>
     request<CveAddResponse>("/cve/add", { method: "POST", body }),
+
+  // Honeypot site cache
+  getHoneypots: (params?: { q?: string; source?: string; limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams()
+    if (params?.q) sp.set("q", params.q)
+    if (params?.source) sp.set("source", params.source)
+    if (params?.limit != null) sp.set("limit", String(params.limit))
+    if (params?.offset != null) sp.set("offset", String(params.offset))
+    const qs = sp.toString()
+    return request<HoneypotListResponse>(`/honeypot${qs ? `?${qs}` : ""}`)
+  },
+  createHoneypot: (body: HoneypotCreateRequest) =>
+    request<HoneypotSite>("/honeypot", { method: "POST", body }),
+  updateHoneypot: (body: HoneypotUpdateRequest) =>
+    request<HoneypotSite>("/honeypot", { method: "PATCH", body }),
+  deleteHoneypot: (hostKey: string) =>
+    request<{ ok: boolean; host_key: string }>(
+      `/honeypot?host_key=${encodeURIComponent(hostKey)}`,
+      { method: "DELETE" },
+    ),
+  bulkDeleteHoneypots: (hostKeys: string[]) =>
+    request<{ deleted: number }>("/honeypot/bulk-delete", {
+      method: "POST",
+      body: { host_keys: hostKeys },
+    }),
 
   // Settings
   getSettings: () => request<SettingsView>("/settings"),

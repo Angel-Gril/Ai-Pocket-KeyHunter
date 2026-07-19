@@ -372,6 +372,36 @@ async def _run_scan_inner(
     )
 
     # ------------------------------------------------------------------
+    # Honeypot site cache — skip known bad hosts before any outbound HTTP
+    # (probe / GPT / validate). Populated incrementally by prior scans.
+    # ------------------------------------------------------------------
+    from .honeypot_store import (
+        filter_credentials as filter_honeypot_credentials,
+    )
+    from .honeypot_store import (
+        filter_targets as filter_honeypot_targets,
+    )
+    from .honeypot_store import (
+        load_known_host_keys,
+    )
+    from .honeypot_store import (
+        record_from_results as record_honeypot_sites,
+    )
+
+    known_honeypots = await asyncio.to_thread(load_known_host_keys)
+    if known_honeypots:
+        before_hp = len(targets)
+        targets, hp_skipped = filter_honeypot_targets(targets, known_honeypots)
+        if hp_skipped:
+            log.info(
+                "Honeypot cache: skipped %d/%d target(s) (%d known sites)",
+                hp_skipped,
+                before_hp,
+                len(known_honeypots),
+            )
+            report_phase(f"蜜罐缓存 · 跳过 {hp_skipped} 个已知站点 (库内 {len(known_honeypots)})")
+
+    # ------------------------------------------------------------------
     # Shared downstream pipeline (source-agnostic): extract -> validate
     # -> GPT recheck -> balance
     # ------------------------------------------------------------------
@@ -460,12 +490,25 @@ async def _run_scan_inner(
 
     pre_filtered_count = len(creds)
     creds = pre_filter_credentials(creds)
+    format_rejected = pre_filtered_count - len(creds)
+    hp_cred_skipped = 0
+    if known_honeypots:
+        before_hp_creds = len(creds)
+        creds, hp_cred_skipped = filter_honeypot_credentials(creds, known_honeypots)
+        if hp_cred_skipped:
+            log.info(
+                "Honeypot cache: dropped %d credential(s) on known sites (%d → %d)",
+                hp_cred_skipped,
+                before_hp_creds,
+                len(creds),
+            )
     record_credentials("prefilter_survivors", creds)
     log.info(
-        "Pre-filter: %d → %d credentials (rejected %d bad formats)",
+        "Pre-filter: %d → %d credentials (rejected format=%d honeypot-host=%d)",
         pre_filtered_count,
         len(creds),
-        pre_filtered_count - len(creds),
+        format_rejected,
+        hp_cred_skipped,
     )
 
     # Spill only prefilter survivors so DB never holds noise keys.
@@ -859,6 +902,17 @@ async def _run_scan_inner(
         suspicious_hosts=suspicious_urls,
     )
     valid = finalized.final_verified
+
+    # Persist newly confirmed honeypot hosts so the next scan skips them.
+    try:
+        await asyncio.to_thread(
+            record_honeypot_sites,
+            results,
+            run_id=run_id,
+            no_auth_hosts=no_auth_urls,
+        )
+    except Exception as e:  # noqa: BLE001 — cache write must never fail the scan
+        log.warning("honeypot cache record skipped: %s", e)
 
     outcome_groups: dict[tuple[str, str, str, str, ErrorClass, int | None], int] = {}
     missing_observations = 0

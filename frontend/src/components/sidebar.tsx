@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom"
 import { useQuery } from "@tanstack/react-query"
 import {
+  Bug,
   Gem,
   GitBranch,
   KeyRound,
@@ -29,6 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/scan", label: "执行扫描", icon: Radar },
   { to: "/github", label: "GitHub 狩猎", icon: GitBranch },
   { to: "/cve", label: "CVE 库", icon: ShieldAlert },
+  { to: "/honeypot", label: "蜜罐站点", icon: Bug },
   { to: "/settings", label: "设置", icon: Settings },
 ]
 

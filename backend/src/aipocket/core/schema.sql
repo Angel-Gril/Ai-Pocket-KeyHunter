@@ -252,3 +252,22 @@ CREATE TABLE IF NOT EXISTS scan_probe_events (
 CREATE INDEX IF NOT EXISTS idx_scan_probe_events_run ON scan_probe_events (run_id);
 CREATE INDEX IF NOT EXISTS idx_scan_probe_events_run_type
     ON scan_probe_events (run_id, event_type);
+
+-- Confirmed honeypot / no-auth sites. Loaded at scan start to skip probe /
+-- validate HTTP work; written during honeypot finalization (incremental).
+-- host_key is the stable match key: hostname:port (scheme-agnostic, lowercase).
+CREATE TABLE IF NOT EXISTS honeypot_sites (
+    host_key     TEXT PRIMARY KEY,
+    host         TEXT NOT NULL,                  -- display form (same as host_key usually)
+    reason       TEXT NOT NULL DEFAULT '',       -- honeypot:no-auth-host | manual | ...
+    source       TEXT NOT NULL DEFAULT 'auto',  -- auto | manual
+    first_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    hit_count    INTEGER NOT NULL DEFAULT 1,
+    run_id       TEXT,                           -- last confirming scan run
+    notes        TEXT NOT NULL DEFAULT '',
+    record       JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_honeypot_sites_last_seen ON honeypot_sites (last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_honeypot_sites_reason ON honeypot_sites (reason);
+CREATE INDEX IF NOT EXISTS idx_honeypot_sites_source ON honeypot_sites (source);

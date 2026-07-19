@@ -9,6 +9,7 @@ import HighValuePage from "@/pages/HighValuePage"
 import ScanPage from "@/pages/ScanPage"
 import GithubHunterPage from "@/pages/GithubHunterPage"
 import CvePage from "@/pages/CvePage"
+import HoneypotPage from "@/pages/HoneypotPage"
 import SettingsPage from "@/pages/SettingsPage"
 
 export function App() {
@@ -25,6 +26,7 @@ export function App() {
           <Route path="/scan" element={<ScanPage />} />
           <Route path="/github" element={<GithubHunterPage />} />
           <Route path="/cve" element={<CvePage />} />
+          <Route path="/honeypot" element={<HoneypotPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Route>

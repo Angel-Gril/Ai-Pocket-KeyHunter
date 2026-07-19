@@ -241,8 +241,13 @@ async def retry_gpt_failed(run_id: str) -> RetryGptFailedReport:
 
         # 5. Honeypot filter (mutates in place; splits suspicious later)
         from aipocket.services.honeypot import filter_honeypots
+        from aipocket.services.honeypot_store import record_from_results
 
         filter_honeypots(results)
+        try:
+            record_from_results(results, run_id=run_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("honeypot cache record skipped on retry: %s", e)
 
         valid = [r for r in results if r.valid and not r.suspicious]
         suspicious = [r for r in results if r.valid and r.suspicious]

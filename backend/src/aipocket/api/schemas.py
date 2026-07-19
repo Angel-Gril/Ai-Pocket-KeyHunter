@@ -256,6 +256,48 @@ class CveAddResponse(BaseModel):
 
 
 # ----------------------------------------------------------------------------
+# Honeypot site cache
+# ----------------------------------------------------------------------------
+class HoneypotSite(BaseModel):
+    host_key: str
+    host: str = ""
+    reason: str = ""
+    source: str = "auto"  # auto | manual
+    first_seen: str = ""
+    last_seen: str = ""
+    hit_count: int = 1
+    run_id: str = ""
+    notes: str = ""
+
+
+class HoneypotListResponse(BaseModel):
+    results: list[HoneypotSite] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 200
+    offset: int = 0
+
+
+class HoneypotCreateRequest(BaseModel):
+    host: str
+    reason: str = "honeypot:manual"
+    notes: str = ""
+
+
+class HoneypotUpdateRequest(BaseModel):
+    host_key: str
+    reason: str | None = None
+    notes: str | None = None
+
+
+class HoneypotBulkDeleteRequest(BaseModel):
+    host_keys: list[str] = Field(default_factory=list, max_length=500)
+
+
+class HoneypotBulkDeleteResponse(BaseModel):
+    deleted: int = 0
+
+
+# ----------------------------------------------------------------------------
 # Settings
 # ----------------------------------------------------------------------------
 class SettingsView(BaseModel):
