@@ -74,6 +74,23 @@ def _credential_identity(credential: Credential) -> tuple[str, str]:
     return credential.apikey, credential.apiurl
 
 
+def _discovery_funnel_counts(
+    host_hits: list[dict],
+    targets: list[DiscoveryTarget],
+    cred_observations: list,
+) -> tuple[int, int]:
+    """Run-level raw_hits / unique_targets across host + credential lanes.
+
+    Host sources (FOFA/Shodan): raw search hits and canonicalized targets.
+    Credential sources (GitHub): each observation is a raw hit; unique targets
+    are distinct credential identities (secret fingerprint + endpoint).
+    """
+    raw_hits = len(host_hits) + len(cred_observations)
+    unique_github = len({_credential_identity(obs.credential) for obs in cred_observations})
+    unique_targets = len(targets) + unique_github
+    return raw_hits, unique_targets
+
+
 @dataclass(frozen=True, slots=True)
 class QueryBudgets:
     fofa: int | None
@@ -313,6 +330,18 @@ async def _run_scan_inner(
     for target in targets:
         for source, query in target.provenance_pairs:
             query_metrics.increment(source, query, unique_targets=1)
+    # GitHub credential lane: count observations into the same funnel metrics.
+    _seen_github_ids: set[tuple[str, str]] = set()
+    for obs in cred_observations:
+        query_key = obs.query_id or obs.pack_id or "github"
+        query_metrics.increment("github", query_key, raw_hits=1)
+        identity = _credential_identity(obs.credential)
+        if identity not in _seen_github_ids:
+            _seen_github_ids.add(identity)
+            query_metrics.increment("github", query_key, unique_targets=1)
+    raw_hits_count, unique_targets_count = _discovery_funnel_counts(
+        all_hits, targets, cred_observations
+    )
     if not sources_used:
         if sources == {"github"}:
             source_errors = [error for result in fetch_results for error in result.errors]
@@ -332,13 +361,13 @@ async def _run_scan_inner(
 
     log.info(
         "Discovery: raw_hits=%d unique_targets=%d credential_obs=%d (sources: %s)",
-        len(all_hits),
-        len(targets),
+        raw_hits_count,
+        unique_targets_count,
         len(cred_observations),
         ", ".join(sources_used),
     )
     report_phase(
-        f"发现完成 · hits={len(all_hits)} targets={len(targets)} "
+        f"发现完成 · hits={raw_hits_count} targets={unique_targets_count} "
         f"github_obs={len(cred_observations)}"
     )
 
@@ -596,8 +625,8 @@ async def _run_scan_inner(
             "state": "finished",
             "sources": sources_used,
             "hits_by_source": hits_by_source,
-            "raw_hits": len(all_hits),
-            "unique_targets": len(targets),
+            "raw_hits": raw_hits_count,
+            "unique_targets": unique_targets_count,
             "total_hosts": len(targets),
             "total_credentials": 0,
             "candidates": 0,
@@ -632,8 +661,8 @@ async def _run_scan_inner(
             sources=sources_used,
             hits_by_source=hits_by_source,
             total_hosts=len(targets),
-            raw_hits_count=len(all_hits),
-            unique_targets=len(targets),
+            raw_hits_count=raw_hits_count,
+            unique_targets=unique_targets_count,
             total_credentials=0,
             total_valid=0,
             total_active_http_requests=total_http,
@@ -835,8 +864,8 @@ async def _run_scan_inner(
         "state": "finished",
         "sources": sources_used,
         "hits_by_source": hits_by_source,
-        "raw_hits": len(all_hits),
-        "unique_targets": len(targets),
+        "raw_hits": raw_hits_count,
+        "unique_targets": unique_targets_count,
         "candidates": len(creds),
         "active_requests": len(to_validate),
         "total_active_http_requests": total_http,
@@ -882,8 +911,8 @@ async def _run_scan_inner(
         sources=sources_used,
         hits_by_source=hits_by_source,
         total_hosts=len(targets),
-        raw_hits_count=len(all_hits),
-        unique_targets=len(targets),
+        raw_hits_count=raw_hits_count,
+        unique_targets=unique_targets_count,
         candidates=len(creds),
         active_requests=len(to_validate),
         total_active_http_requests=total_http,

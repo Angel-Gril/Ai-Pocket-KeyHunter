@@ -7,11 +7,18 @@ funnel fields (``raw_hits``, ``unique_targets``, ``final_verified``,
 at DEFAULT 0 even when ``total_hosts`` / ``results`` / ``scan_*.jsonl`` still
 hold the real numbers.
 
+GitHub-only runs are a special case: discovery never produced host hits, so
+``raw_hits`` / ``unique_targets`` were written as 0 even though
+``hits_by_source.github`` and ``total_credentials`` hold real counts.
+
 This script is idempotent and only fills zeros:
 
   1. Prefer ``scan_*.jsonl`` first-line metadata when present under RESULTS_DIR
-  2. Else use ``runs.total_hosts`` / ``total_valid`` / ``results`` counts
-  3. ``high_value_final`` from ``high_value_keys`` COUNT when still 0
+     (and when those meta values are > 0)
+  2. Else use ``hits_by_source`` sum (covers GitHub observation counts)
+  3. Else use ``runs.total_hosts`` / ``total_credentials`` / ``candidates``
+  4. ``final_verified`` / ``suspicious`` from ``results`` counts
+  5. ``high_value_final`` from ``high_value_keys`` COUNT when still 0
 
 Usage (Docker, recommended on the VPS)::
 
@@ -73,6 +80,25 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _hits_by_source_sum(value: Any) -> int:
+    """Sum discovery counts from hits_by_source JSONB (host or GitHub obs)."""
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return 0
+    if not isinstance(value, dict):
+        return 0
+    total = 0
+    for item in value.values():
+        n = _int(item)
+        if n > 0:
+            total += n
+    return total
+
+
 def _plan_updates(
     row: dict[str, Any],
     *,
@@ -84,24 +110,42 @@ def _plan_updates(
     """Compute column patches for one run (only keys that should change)."""
     patch: dict[str, int] = {}
 
+    hbs = _hits_by_source_sum(row.get("hits_by_source"))
+    meta_hbs = _hits_by_source_sum(meta.get("hits_by_source"))
+    total_hosts = _int(row.get("total_hosts"))
+    total_creds = _int(row.get("total_credentials"))
+    row_candidates = _int(row.get("candidates"))
+    meta_candidates = _int(meta.get("candidates"))
+
     raw = _int(row.get("raw_hits"))
     meta_raw = _int(meta.get("raw_hits") or meta.get("raw_hits_count"))
-    total_hosts = _int(row.get("total_hosts"))
     if raw <= 0:
-        new_raw = meta_raw or total_hosts
+        # Prefer meta raw_hits only when > 0 (GitHub scan meta often has 0).
+        # hits_by_source is the durable discovery count for credential sources.
+        new_raw = meta_raw or hbs or meta_hbs or total_hosts or total_creds
         if new_raw > 0:
             patch["raw_hits"] = new_raw
 
     unique = _int(row.get("unique_targets"))
     meta_unique = _int(meta.get("unique_targets"))
     if unique <= 0:
-        new_unique = meta_unique or total_hosts or patch.get("raw_hits", 0)
+        # Unique targets: host canonicalize count, else unique credential totals.
+        new_unique = (
+            meta_unique
+            or total_hosts
+            or meta_candidates
+            or row_candidates
+            or total_creds
+            or hbs
+            or meta_hbs
+            or patch.get("raw_hits", 0)
+        )
         if new_unique > 0:
             patch["unique_targets"] = new_unique
 
-    candidates = _int(row.get("candidates"))
+    candidates = row_candidates
     if candidates <= 0:
-        new_c = _int(meta.get("candidates")) or _int(row.get("total_credentials"))
+        new_c = meta_candidates or total_creds
         if new_c > 0:
             patch["candidates"] = new_c
 
@@ -158,7 +202,7 @@ def main() -> int:
             """
             SELECT run_id, total_hosts, total_credentials, total_valid,
                    raw_hits, unique_targets, candidates, active_requests,
-                   final_verified, suspicious, high_value_final
+                   final_verified, suspicious, high_value_final, hits_by_source
             FROM runs
             ORDER BY run_id
             """

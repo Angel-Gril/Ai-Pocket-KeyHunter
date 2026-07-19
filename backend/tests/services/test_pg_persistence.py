@@ -674,6 +674,7 @@ class TestResultsReaderPg:
                         "suspicious": 0,
                         "high_value_final": 0,
                         "sources": ["fofa", "shodan"],
+                        "hits_by_source": {"fofa": 800, "shodan": 400},
                         "has_log": True,
                     }
                 ],
@@ -693,13 +694,60 @@ class TestResultsReaderPg:
         from aipocket.api import results_reader
 
         entry = results_reader.list_runs()[0]["runs"][0]
-        assert entry["raw_hits"] == 1200  # total_hosts fallback
-        assert entry["unique_targets"] == 1200
+        # hits_by_source sum preferred over total_hosts when raw_hits is 0
+        assert entry["raw_hits"] == 1200
+        assert entry["unique_targets"] == 1200  # total_hosts before candidates
         assert entry["candidates"] == 40
         assert entry["final_verified"] == 9  # total_valid / results count
         assert entry["suspicious"] == 9
         assert entry["high_value_final"] == 2
         assert entry["sources"] == ["fofa", "shodan"]
+
+    def test_list_runs_github_falls_back_via_hits_by_source(self, fake_pg):
+        """GitHub runs stored raw_hits=0; recover from hits_by_source / creds."""
+        import datetime as _dt
+
+        started = _dt.datetime(2026, 7, 18, 14, 6, 37)
+        fake_pg(
+            {
+                "FROM runs ORDER BY run_id DESC": [
+                    {
+                        "run_id": "run_2026_07_18_14-06-37",
+                        "started_at": started,
+                        "total_hosts": 0,
+                        "total_credentials": 120,
+                        "total_valid": 70,
+                        "raw_hits": 0,
+                        "unique_targets": 0,
+                        "candidates": 100,
+                        "active_requests": 90,
+                        "final_verified": 70,
+                        "suspicious": 0,
+                        "high_value_final": 3,
+                        "sources": ["github"],
+                        "hits_by_source": {"github": 150},
+                        "has_log": True,
+                    }
+                ],
+                "GROUP BY run_id, kind": [
+                    {"run_id": "run_2026_07_18_14-06-37", "kind": "valid", "n": 70},
+                ],
+                "FROM high_value_keys": [
+                    {"run_id": "run_2026_07_18_14-06-37", "n": 3},
+                ],
+                "regexp_split_to_table": [
+                    {"run_id": "run_2026_07_18_14-06-37", "backend": "github"},
+                ],
+            }
+        )
+        from aipocket.api import results_reader
+
+        entry = results_reader.list_runs()[0]["runs"][0]
+        assert entry["raw_hits"] == 150  # hits_by_source.github
+        assert entry["unique_targets"] == 100  # candidates
+        assert entry["final_verified"] == 70
+        assert entry["high_value_final"] == 3
+        assert entry["sources"] == ["github"]
 
     def test_load_kind_prefers_pg_when_run_exists(self, fake_pg):
         fake_pg(

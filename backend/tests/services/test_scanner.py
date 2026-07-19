@@ -5,11 +5,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from aipocket.core.credentials import CredentialBundle
 from aipocket.core.models import Credential, ValidationResult
 from aipocket.core.targets import canonicalize_hits
+from aipocket.discovery.base import ArtifactProvenance, CredentialSourceObservation
 from aipocket.services.scanner import (
     QueryBudgets,
     _complete_ledger,
+    _credential_identity,
+    _discovery_funnel_counts,
     _fetch_fofa,
     _fetch_shodan,
     _trim_hits,
@@ -357,6 +361,145 @@ async def test_run_scan_no_source_configured_raises(tmp_path, monkeypatch):
     monkeypatch.setattr("aipocket.core.config.settings.results_dir", str(tmp_path))
     with pytest.raises(RuntimeError):
         await run_scan(query_budgets=QueryBudgets(1, 1))
+
+
+def _github_obs(apikey: str, *, query_id: str = "q1", endpoint: str = "https://api.example/v1"):
+    bundle = CredentialBundle.create(
+        apikey,
+        endpoint_candidates=(endpoint,),
+        provider_hint="openai",
+    )
+    cred = Credential(
+        apikey=bundle.secret_value.reveal(),
+        apiurl=endpoint,
+        backend="github",
+        source="github",
+        bundle=bundle,
+    )
+    return CredentialSourceObservation(
+        bundle=bundle,
+        credential=cred,
+        provenance=ArtifactProvenance(
+            repository_id="1",
+            repository_full_name="org/repo",
+            commit_sha="abc",
+            source_kind="blob",
+            query_id=query_id,
+            pack_id="openai",
+        ),
+        query_id=query_id,
+        pack_id="openai",
+        lane="code_snapshot",
+        coverage_mode="complete",
+    )
+
+
+def test_discovery_funnel_counts_host_only():
+    hits = [
+        {"host": "a.com", "_source": "fofa", "_query_id": "q"},
+        {"host": "a.com", "_source": "shodan", "_query_id": "q"},
+    ]
+    targets = canonicalize_hits(hits)
+    raw, unique = _discovery_funnel_counts(hits, targets, [])
+    assert raw == 2
+    assert unique == 1
+
+
+def test_discovery_funnel_counts_github_dedupes_credentials():
+    obs = [
+        _github_obs("sk-proj-aaaaaaaaaaaa"),
+        _github_obs("sk-proj-aaaaaaaaaaaa"),  # same identity
+        _github_obs("sk-proj-bbbbbbbbbbbb"),
+    ]
+    raw, unique = _discovery_funnel_counts([], [], obs)
+    assert raw == 3
+    assert unique == 2
+    assert len({_credential_identity(o.credential) for o in obs}) == 2
+
+
+def test_discovery_funnel_counts_mixed_host_and_github():
+    hits = [{"host": "a.com", "protocol": "https", "_source": "fofa", "_query_id": "fq"}]
+    targets = canonicalize_hits(hits)
+    obs = [_github_obs("sk-proj-cccccccccccc")]
+    raw, unique = _discovery_funnel_counts(hits, targets, obs)
+    assert raw == 2
+    assert unique == 2
+
+
+@pytest.mark.asyncio
+async def test_run_scan_github_reports_raw_hits_and_unique_targets(tmp_path, monkeypatch):
+    """GitHub credential observations must populate run-level funnel counts."""
+    from aipocket.core.metrics import QueryUsage
+    from aipocket.discovery.base import SourceFetchResult
+
+    monkeypatch.setattr("aipocket.core.config.settings.fofa_keys", "")
+    monkeypatch.setattr("aipocket.core.config.settings.shodan_keys", "")
+    monkeypatch.setattr("aipocket.core.config.settings.gpt_base_url", "")
+    monkeypatch.setattr("aipocket.core.config.settings.scan_prober", False)
+    monkeypatch.setattr("aipocket.core.config.settings.results_dir", str(tmp_path))
+    monkeypatch.setattr("aipocket.core.config.settings.database_url", "")
+
+    obs = [
+        _github_obs("sk-proj-aaaaaaaaaaaa", query_id="pack:openai:code"),
+        _github_obs("sk-proj-aaaaaaaaaaaa", query_id="pack:openai:code"),
+        _github_obs("sk-proj-bbbbbbbbbbbb", query_id="pack:openai:code"),
+    ]
+
+    class _FakeGithubSource:
+        name = "github"
+
+    class _FakeRegistry:
+        def resolve(self, **kwargs):
+            return [_FakeGithubSource()]
+
+        async def fetch_all(self, *args, **kwargs):
+            return [
+                SourceFetchResult(
+                    source="github",
+                    credential_observations=tuple(obs),
+                    query_usage=(
+                        QueryUsage(
+                            query="filename:.env sk-proj",
+                            query_id="pack:openai:code",
+                            lane="code_snapshot",
+                            pack_id="openai",
+                            credits=1,
+                        ),
+                    ),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "aipocket.services.scanner.SourceRegistry.default",
+        classmethod(lambda cls: _FakeRegistry()),
+    )
+
+    async def fake_validate(creds, **kwargs):
+        return [
+            ValidationResult(credential=c, valid=True, status_code=200, tier="tier5") for c in creds
+        ]
+
+    monkeypatch.setattr("aipocket.services.scanner.validate_all", fake_validate)
+
+    run_dir = tmp_path / "run_github"
+    run_dir.mkdir()
+    result = await run_scan(sources={"github"}, run_dir=run_dir)
+
+    assert result.sources == ["github"]
+    assert result.hits_by_source == {"github": 3}
+    assert result.raw_hits_count == 3
+    assert result.unique_targets == 2
+    assert result.total_hosts == 0  # host lane empty
+    assert result.total_credentials == 2
+    assert result.final_verified == 2
+
+    import json
+
+    scan_path = next(run_dir.glob("scan_*.jsonl"))
+    metadata = json.loads(scan_path.read_text().splitlines()[0])
+    assert metadata["raw_hits"] == 3
+    assert metadata["unique_targets"] == 2
+    assert metadata["hits_by_source"] == {"github": 3}
 
 
 def test_trim_hits_under_limit():

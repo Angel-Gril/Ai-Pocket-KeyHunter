@@ -233,13 +233,28 @@ def _sources_from_jsonb(value: Any) -> list[str]:
     return sorted({p for p in parts if p})
 
 
+def _hits_by_source_sum(value: Any) -> int:
+    """Sum per-source discovery counts (host hits or GitHub observations)."""
+    if not isinstance(value, dict):
+        return 0
+    total = 0
+    for item in value.values():
+        try:
+            total += int(item)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 def _list_runs_pg() -> list[dict[str, Any]]:
     """List runs from PG. Counts come from GROUP BY; high-value from the FK.
 
     Funnel columns (``raw_hits``, ``final_verified``, …) were added after some
     historical imports; when they are still 0 we fall back to older fields
-    (``total_hosts`` / ``results`` counts / ``high_value_keys``) so History
-    does not look empty for pre-funnel runs.
+    (``hits_by_source`` / ``total_hosts`` / ``results`` counts /
+    ``high_value_keys``) so History does not look empty for pre-funnel runs.
+    GitHub-only runs store observations in ``hits_by_source`` while
+    ``total_hosts`` stays 0 — prefer that sum over host fields.
     """
     from aipocket.core.db import get_pool
 
@@ -250,6 +265,7 @@ def _list_runs_pg() -> list[dict[str, Any]]:
             SELECT run_id, started_at, total_hosts, total_credentials, total_valid,
                    raw_hits, unique_targets, candidates, active_requests,
                    final_verified, suspicious, high_value_final, metrics_version, scan_mode, sources,
+                   hits_by_source,
                    (log IS NOT NULL AND log <> '') AS has_log
             FROM runs ORDER BY run_id DESC
             """
@@ -320,14 +336,25 @@ def _list_runs_pg() -> list[dict[str, Any]]:
                 if int(run.get("metrics_version") or 1) >= 2
                 else _positive_int(run.get("high_value_final"), hv_by.get(rid, 0))
             )
+        hbs = _hits_by_source_sum(run.get("hits_by_source"))
         entry = {
             "run_id": rid,
             "started_at": started.isoformat() if started else _run_id_to_iso(rid),
             "valid_count": valid_n,
             "suspicious_count": susp_n,
             "has_log": bool(run["has_log"]),
-            "raw_hits": _positive_int(run["raw_hits"], run["total_hosts"]),
-            "unique_targets": _positive_int(run["unique_targets"], run["total_hosts"]),
+            # GitHub runs: raw_hits was historically left 0 (host-only counter);
+            # recover from hits_by_source / credential totals.
+            "raw_hits": _positive_int(
+                run["raw_hits"], hbs, run["total_hosts"], run["total_credentials"]
+            ),
+            "unique_targets": _positive_int(
+                run["unique_targets"],
+                run["total_hosts"],
+                run["candidates"],
+                run["total_credentials"],
+                hbs,
+            ),
             "candidates": _positive_int(run["candidates"], run["total_credentials"]),
             "active_requests": _positive_int(run["active_requests"]),
             "final_verified": final_verified,
@@ -367,18 +394,28 @@ def _list_runs_files() -> list[dict[str, Any]]:
         valid_files = list(run.glob("valid_*.jsonl"))
         susp_files = list(run.glob("suspicious_*.jsonl"))
         metadata = _scan_metadata(run)
+        hbs = _hits_by_source_sum(metadata.get("hits_by_source"))
+        total_hosts = int(metadata.get("total_hosts", 0) or 0)
+        total_creds = int(metadata.get("total_credentials", 0) or 0)
+        candidates = int(metadata.get("candidates", 0) or 0)
         entry = {
             "run_id": run.name,
             "started_at": run_started,
             "valid_count": sum(_count_lines(f) for f in valid_files),
             "suspicious_count": sum(_count_lines(f) for f in susp_files),
             "has_log": (run / "run.log").exists(),
-            "raw_hits": int(metadata.get("raw_hits", 0)),
-            "unique_targets": int(metadata.get("unique_targets", 0)),
-            "candidates": int(metadata.get("candidates", 0)),
-            "active_requests": int(metadata.get("active_requests", 0)),
-            "final_verified": int(metadata.get("final_verified", 0)),
-            "suspicious": int(metadata.get("suspicious", 0)),
+            "raw_hits": _positive_int(metadata.get("raw_hits"), hbs, total_hosts, total_creds),
+            "unique_targets": _positive_int(
+                metadata.get("unique_targets"),
+                total_hosts,
+                candidates,
+                total_creds,
+                hbs,
+            ),
+            "candidates": _positive_int(candidates, total_creds),
+            "active_requests": int(metadata.get("active_requests", 0) or 0),
+            "final_verified": int(metadata.get("final_verified", 0) or 0),
+            "suspicious": int(metadata.get("suspicious", 0) or 0),
             "sources": _sources_of(valid_files),
             "scan_mode": str(metadata.get("scan_mode", "incremental")),
             "high_value_final": int(
