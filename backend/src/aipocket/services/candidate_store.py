@@ -236,36 +236,75 @@ def load_candidates(
     if not spill_enabled() or not run_id:
         return []
 
+    out: list[Credential] = []
+    for page in iter_candidate_pages(run_id, stages=stages, prefilter_ok_only=prefilter_ok_only):
+        out.extend(page)
+    return out
+
+
+def iter_candidate_pages(
+    run_id: str,
+    *,
+    stages: Iterable[str] | None = None,
+    prefilter_ok_only: bool = True,
+    batch_size: int | None = None,
+    skip_identities: set[str] | None = None,
+) -> Iterable[list[Credential]]:
+    """Keyset-page load candidates (bounded working set).
+
+    Yields pages ordered by ``id``. When ``skip_identities`` is set, those
+    rows are filtered out in SQL (resume mid-validate).
+    """
+    if not spill_enabled() or not run_id:
+        return
+
+    from aipocket.core.config import settings as _settings
+
+    page_size = max(1, int(batch_size or _settings.validate_batch_size))
     from aipocket.core.db import get_pool
 
-    clauses = ["run_id = %s"]
-    params: list[Any] = [run_id]
+    base_clauses = ["run_id = %s"]
+    base_params: list[Any] = [run_id]
     if prefilter_ok_only:
-        clauses.append("prefilter_ok = TRUE")
+        base_clauses.append("prefilter_ok = TRUE")
     stage_list = list(stages) if stages is not None else None
     if stage_list:
-        clauses.append("stage = ANY(%s)")
-        params.append(stage_list)
+        base_clauses.append("stage = ANY(%s)")
+        base_params.append(stage_list)
+    if skip_identities:
+        base_clauses.append("NOT (identity = ANY(%s))")
+        base_params.append(list(skip_identities))
 
-    sql = f"""
-        SELECT record FROM scan_candidates
-        WHERE {" AND ".join(clauses)}
-        ORDER BY id
-    """
     pool = get_pool()
-    with pool.connection() as conn, conn.cursor() as cur:
-        cur.execute(sql, params)
-        rows = cur.fetchall()
-
-    out: list[Credential] = []
-    for row in rows:
-        record = row["record"] if isinstance(row, dict) else row[0]
-        if isinstance(record, dict):
-            try:
-                out.append(deserialize_credential(record))
-            except Exception as e:  # noqa: BLE001 — skip corrupt rows
-                log.warning("skip corrupt scan_candidate row: %s", e)
-    return out
+    last_id = 0
+    while True:
+        clauses = [*base_clauses, "id > %s"]
+        params = [*base_params, last_id, page_size]
+        sql = f"""
+            SELECT id, identity, record FROM scan_candidates
+            WHERE {" AND ".join(clauses)}
+            ORDER BY id
+            LIMIT %s
+        """
+        with pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        if not rows:
+            break
+        page: list[Credential] = []
+        for row in rows:
+            rid = row["id"] if isinstance(row, dict) else row[0]
+            record = row["record"] if isinstance(row, dict) else row[2]
+            last_id = int(rid)
+            if isinstance(record, dict):
+                try:
+                    page.append(deserialize_credential(record))
+                except Exception as e:  # noqa: BLE001 — skip corrupt rows
+                    log.warning("skip corrupt scan_candidate row: %s", e)
+        if page:
+            yield page
+        if len(rows) < page_size:
+            break
 
 
 def count_candidates(run_id: str, *, stages: Iterable[str] | None = None) -> int:
@@ -369,6 +408,132 @@ def load_probe_outcomes(run_id: str) -> list[dict[str, Any]]:
         record = row["record"] if isinstance(row, dict) else row[0]
         if isinstance(record, dict):
             out.append(record)
+    return out
+
+
+def serialize_validation_result(result: Any) -> dict[str, Any]:
+    """Serialize ValidationResult including credential bundle secret."""
+    data = result.model_dump()
+    cred = getattr(result, "credential", None)
+    if cred is not None:
+        data["credential"] = serialize_credential(cred)
+    return data
+
+
+def deserialize_validation_result(record: dict[str, Any]) -> Any:
+    """Rebuild ValidationResult from a stored record."""
+    from aipocket.core.models import ValidationResult
+
+    data = dict(record)
+    cred_raw = data.pop("credential", None)
+    if isinstance(cred_raw, dict):
+        data["credential"] = deserialize_credential(cred_raw)
+    return ValidationResult(**{k: v for k, v in data.items() if k in ValidationResult.model_fields})
+
+
+def upsert_validation_results(run_id: str, results: Sequence[Any]) -> int:
+    """Spill validation outcomes for resume. Returns rows attempted."""
+    if not spill_enabled() or not run_id or not results:
+        return 0
+
+    from psycopg.types.json import Jsonb
+
+    rows: list[tuple] = []
+    for result in results:
+        cred = getattr(result, "credential", None)
+        if cred is None:
+            continue
+        identity = _identity_key(cred)
+        rows.append(
+            (
+                run_id,
+                identity,
+                bool(getattr(result, "valid", False)),
+                str(getattr(result, "validation_state", "") or ""),
+                str(getattr(result, "error", "") or "")[:500],
+                Jsonb(serialize_validation_result(result)),
+            )
+        )
+    if not rows:
+        return 0
+
+    from aipocket.core.db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn, conn.transaction(), conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO scan_validation_results (
+                run_id, identity, valid, validation_state, error, record
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (run_id, identity) DO UPDATE SET
+                valid = EXCLUDED.valid,
+                validation_state = EXCLUDED.validation_state,
+                error = EXCLUDED.error,
+                record = EXCLUDED.record
+            """,
+            rows,
+        )
+    log.info(
+        "scan_validation_results upsert: run=%s attempted=%d",
+        run_id,
+        len(rows),
+    )
+    return len(rows)
+
+
+def load_validated_identities(run_id: str) -> set[str]:
+    """Return identity keys already present in scan_validation_results."""
+    if not spill_enabled() or not run_id:
+        return set()
+    from aipocket.core.db import get_pool
+
+    pool = get_pool()
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT identity FROM scan_validation_results WHERE run_id = %s",
+            (run_id,),
+        )
+        rows = cur.fetchall()
+    out: set[str] = set()
+    for row in rows:
+        ident = row["identity"] if isinstance(row, dict) else row[0]
+        if ident:
+            out.add(str(ident))
+    return out
+
+
+def load_validation_results(
+    run_id: str,
+    *,
+    valid_only: bool = False,
+) -> list[Any]:
+    """Load spilled ValidationResult rows (for finalize / resume merge)."""
+    if not spill_enabled() or not run_id:
+        return []
+    from aipocket.core.db import get_pool
+
+    clauses = ["run_id = %s"]
+    params: list[Any] = [run_id]
+    if valid_only:
+        clauses.append("valid = TRUE")
+    sql = f"""
+        SELECT record FROM scan_validation_results
+        WHERE {" AND ".join(clauses)}
+        ORDER BY id
+    """
+    pool = get_pool()
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+    out: list[Any] = []
+    for row in rows:
+        record = row["record"] if isinstance(row, dict) else row[0]
+        if isinstance(record, dict):
+            try:
+                out.append(deserialize_validation_result(record))
+            except Exception as e:  # noqa: BLE001
+                log.warning("skip corrupt scan_validation_results row: %s", e)
     return out
 
 

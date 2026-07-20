@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -223,13 +224,23 @@ class FofaClient:
         pages: int | None = None,
         size: int | None = None,
         fields: str = DEFAULT_FIELDS,
+        *,
+        on_page: Callable[[list[dict[str, Any]]], None] | None = None,
+        retain_results: bool = True,
     ) -> list[dict[str, Any]]:
+        """Paginate a FOFA search.
+
+        ``on_page`` is invoked after each non-empty page (full hit dicts).
+        When ``retain_results`` is False the returned list is empty and callers
+        must persist pages via ``on_page`` (memory-bounded spill path).
+        """
         self.query_id = query
         pages = pages or settings.fofa_max_pages
         size = size or settings.fofa_page_size
         qbase64 = base64.b64encode(query.encode()).decode()
         field_names = [f.strip() for f in fields.split(",")]
         all_results: list[dict[str, Any]] = []
+        retained = 0
 
         for page in range(1, pages + 1):
             data = self._request_page(qbase64, page, size, fields)
@@ -242,13 +253,17 @@ class FofaClient:
                 break
 
             mapped = _rows_to_dicts(raw_rows, field_names)
-            all_results.extend(mapped)
+            if on_page is not None:
+                on_page(mapped)
+            if retain_results:
+                all_results.extend(mapped)
+            retained += len(mapped)
             total = data.get("size", 0)
             log.info("  page %d: +%d (total est. %s)", page, len(mapped), total)
 
             if len(raw_rows) < size:
                 break
-            if len(all_results) >= 10000:
+            if retained >= 10000:
                 log.warning("  hit 10000 cap, stopping")
                 break
             # Inter-page spacing is handled by KeyPool.throttle on next request.

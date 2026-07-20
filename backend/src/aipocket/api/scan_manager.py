@@ -144,16 +144,19 @@ class ScanManager:
         source: str,
         mode: str = "incremental",
         github_pack_ids: tuple[str, ...] = (),
+        resume_run_id: str = "",
     ) -> dict:
         """Start a background scan. Raises RuntimeError if one is already running."""
         with self._lock:
             if self._state in ("running", "stopping"):
                 raise RuntimeError("a scan is already running")
-            self._reset_for_new_run(source, mode, github_pack_ids)
+            self._reset_for_new_run(source, mode, github_pack_ids, resume_run_id=resume_run_id)
 
         self._loop = asyncio.get_running_loop()
         self._attach_log_handlers()
-        self._task = asyncio.create_task(self._run(source, mode, github_pack_ids))
+        self._task = asyncio.create_task(
+            self._run(source, mode, github_pack_ids, resume_run_id=resume_run_id)
+        )
         return self.status()
 
     def _reset_for_new_run(
@@ -161,19 +164,25 @@ class ScanManager:
         source: str,
         mode: str,
         github_pack_ids: tuple[str, ...] = (),
+        *,
+        resume_run_id: str = "",
     ) -> None:
         from aipocket.services.writer import new_run_dir
 
         self._source = source
         self._mode = mode
         self._github_pack_ids = github_pack_ids
-        self._run_dir = new_run_dir()
+        if resume_run_id:
+            self._run_dir = settings.results_path / resume_run_id
+            self._run_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self._run_dir = new_run_dir()
         self._started_at = datetime.now(UTC).isoformat()
         self._finished_at = None
         self._error = None
         self._state = "running"
         self._progress = self._empty_progress()
-        self._phase = "启动中"
+        self._phase = "恢复中" if resume_run_id else "启动中"
 
     def _attach_log_handlers(self) -> None:
         # Attach to the "aipocket" logger (not root), so only our own modules'
@@ -225,6 +234,7 @@ class ScanManager:
         source: str,
         mode: str = "incremental",
         github_pack_ids: tuple[str, ...] = (),
+        resume_run_id: str = "",
     ) -> None:
         from aipocket.services.scanner import run_scan
 
@@ -235,15 +245,21 @@ class ScanManager:
         result: ScanRunResult | None = None
         phase_token = set_phase_reporter(self.set_phase)
         try:
-            log.info("Web scan starting (source=%s, run=%s)", source, self._run_dir)
+            log.info(
+                "Web scan starting (source=%s, run=%s, resume=%s)",
+                source,
+                self._run_dir,
+                resume_run_id or "-",
+            )
             from aipocket.core.scan_phase import report_phase
 
-            report_phase(f"启动扫描 · source={source}")
+            report_phase(f"{'恢复' if resume_run_id else '启动'}扫描 · source={source}")
             result = await run_scan(
                 run_dir=self._run_dir,
                 sources=sources,
                 mode=mode,
                 github_pack_ids=github_pack_ids,
+                resume_run_id=resume_run_id or None,
             )
             with self._lock:
                 self._state = "finished"

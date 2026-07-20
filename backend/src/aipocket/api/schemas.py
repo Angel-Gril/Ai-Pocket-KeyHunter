@@ -139,6 +139,8 @@ class ScanStartRequest(BaseModel):
     sources: list[ScanSourceItem] = Field(default_factory=list, max_length=3)
     mode: ScanMode = "incremental"
     github_pack_ids: list[GitHubPackId] = Field(default_factory=list, max_length=16)
+    # Opt-in resume of an interrupted run (C8). Empty/default = new run_id.
+    resume_run_id: str = ""
 
     def resolved_source_label(self) -> str:
         """Canonical status label: ``all`` | ``fofa`` | ``fofa,shodan`` | …"""

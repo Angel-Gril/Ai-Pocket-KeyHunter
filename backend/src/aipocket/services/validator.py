@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -227,32 +228,152 @@ def _validation_client(client: httpx.AsyncClient, cred: Credential | None = None
     return InstrumentedAsyncClient(client, defaults=defaults)
 
 
+def _validate_concurrency() -> int:
+    return max(1, int(settings.validate_concurrency))
+
+
+def _validate_batch_size() -> int:
+    return max(1, int(settings.validate_batch_size))
+
+
 async def validate_all(
     credentials: list[Credential],
     *,
     attribution: dict[int, RequestAttribution] | None = None,
 ) -> list[ValidationResult]:
-    sem = asyncio.Semaphore(settings.validate_concurrency)
+    """Validate credentials with a bounded worker pool (never N-task gather)."""
+    if not credentials:
+        return []
+
+    concurrency = _validate_concurrency()
     timeout = httpx.Timeout(settings.validate_timeout)
-    limits = httpx.Limits(max_connections=settings.validate_concurrency * 2)
+    limits = httpx.Limits(max_connections=concurrency * 2)
+    sem = asyncio.Semaphore(concurrency)
+    total = len(credentials)
+    worker_n = max(1, min(concurrency, total))
+    progress_step = max(50, total // 10) or 1
+
+    results: list[ValidationResult] = []
+    queue: asyncio.Queue[Credential | None] = asyncio.Queue()
+    for cred in credentials:
+        queue.put_nowait(cred)
+    for _ in range(worker_n):
+        queue.put_nowait(None)
+
+    progress_lock = asyncio.Lock()
+    done_count = 0
+
+    async def _worker(client: httpx.AsyncClient) -> None:
+        nonlocal done_count
+        from aipocket.core.request_ledger import current_query_attribution
+
+        while True:
+            credential = await queue.get()
+            if credential is None:
+                return
+            token = current_query_attribution.set(
+                (attribution or {}).get(id(credential), RequestAttribution())
+            )
+            try:
+                result = await _probe_one(client, sem, credential)
+            finally:
+                current_query_attribution.reset(token)
+            async with progress_lock:
+                results.append(result)
+                done_count += 1
+                if done_count % progress_step == 0 or done_count == total:
+                    log.info(
+                        "Validate progress: %d / %d (workers=%d, concurrency=%d)",
+                        done_count,
+                        total,
+                        worker_n,
+                        concurrency,
+                    )
 
     async with httpx.AsyncClient(
         timeout=timeout, limits=limits, follow_redirects=True
     ) as raw_client:
         client = _validation_client(raw_client)
+        await asyncio.gather(*(_worker(client) for _ in range(worker_n)))
 
-        async def one(credential: Credential) -> ValidationResult:
-            from aipocket.core.request_ledger import current_query_attribution
+    return results
 
-            token = current_query_attribution.set(
-                (attribution or {}).get(id(credential), RequestAttribution())
-            )
-            try:
-                return await _probe_one(client, sem, credential)
-            finally:
-                current_query_attribution.reset(token)
 
-        return await asyncio.gather(*(one(c) for c in credentials))
+async def validate_from_store(
+    run_id: str,
+    *,
+    stages: Sequence[str] | None = None,
+    skip_identities: set[str] | None = None,
+    attribution: dict[int, RequestAttribution] | None = None,
+    valid_only_return: bool = False,
+    resume: bool = True,
+) -> list[ValidationResult]:
+    """Page-load candidates from PG, validate with a worker pool, spill results.
+
+    When ``valid_only_return`` is True, only valid results are retained in the
+    returned list (invalids stay in ``scan_validation_results``). When
+    ``resume`` is True, identities already present in the validation table are
+    skipped (merged with ``skip_identities``).
+    """
+    from aipocket.services.candidate_store import (
+        iter_candidate_pages,
+        load_validated_identities,
+        spill_enabled,
+        upsert_validation_results,
+    )
+
+    if not spill_enabled() or not run_id:
+        return []
+
+    done = set(skip_identities or ())
+    if resume:
+        done |= await asyncio.to_thread(load_validated_identities, run_id)
+    batch_size = _validate_batch_size()
+    collected: list[ValidationResult] = []
+    page_idx = 0
+    total_validated = 0
+
+    log.info(
+        "validate_from_store: run=%s batch_size=%d skip=%d concurrency=%d",
+        run_id,
+        batch_size,
+        len(done),
+        _validate_concurrency(),
+    )
+
+    for page in iter_candidate_pages(
+        run_id,
+        stages=stages,
+        prefilter_ok_only=True,
+        batch_size=batch_size,
+        skip_identities=done if done else None,
+    ):
+        page_idx += 1
+        if not page:
+            continue
+        log.info(
+            "validate_from_store page %d: %d credentials",
+            page_idx,
+            len(page),
+        )
+        page_results = await validate_all(page, attribution=attribution)
+        await asyncio.to_thread(upsert_validation_results, run_id, page_results)
+        total_validated += len(page_results)
+        if valid_only_return:
+            collected.extend(r for r in page_results if r.valid)
+        else:
+            collected.extend(page_results)
+        # Free page working set before next load.
+        del page, page_results
+
+    log.info(
+        "validate_from_store done: run=%s pages=%d validated=%d returned=%d",
+        run_id,
+        page_idx,
+        total_validated,
+        len(collected),
+    )
+    return collected
 
 
 # A forged key that no real gateway would ever accept. Realistic-looking
@@ -549,8 +670,11 @@ async def _probe_one(
     except Exception as exc:  # noqa: BLE001 - per-credential isolation boundary
         fingerprint = hashlib.sha256(cred.apikey.encode()).hexdigest()[:12]
         log.error(
-            "validation failed unexpectedly for credential fingerprint=%s",
+            "validation failed unexpectedly for credential fingerprint=%s (%s): %s",
             fingerprint,
+            type(exc).__name__,
+            exc,
+            exc_info=True,
         )
         result = ValidationResult(
             credential=cred,

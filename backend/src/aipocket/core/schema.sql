@@ -46,6 +46,9 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS total_active_http_requests INTEGER NOT
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS ledger_complete BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS ledger_incomplete_reason TEXT NOT NULL DEFAULT '';
 -- metrics_version: 2 = pre-ledger; 3 = ledger_complete true + real denominator
+-- Pipeline phase checkpoint for memory-bounded full-scan resume.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS phase_detail JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- One row per valid/suspicious ValidationResult. `seq` (0-based within
 -- (run_id, kind)) replaces the old JSONL file line index used by reveal/export.
@@ -239,6 +242,44 @@ CREATE TABLE IF NOT EXISTS scan_candidates (
 CREATE INDEX IF NOT EXISTS idx_scan_candidates_run ON scan_candidates (run_id);
 CREATE INDEX IF NOT EXISTS idx_scan_candidates_run_stage ON scan_candidates (run_id, stage);
 CREATE INDEX IF NOT EXISTS idx_scan_candidates_run_source ON scan_candidates (run_id, source);
+CREATE INDEX IF NOT EXISTS idx_scan_candidates_run_prefilter
+    ON scan_candidates (run_id, prefilter_ok);
+
+-- Full FOFA/Shodan discovery hit payloads (body/banner/header intact for GPT).
+-- Spilled page-by-page so the scanner process never retains O(total_hits) RAM.
+CREATE TABLE IF NOT EXISTS scan_discovery_hits (
+    id           BIGSERIAL PRIMARY KEY,
+    run_id       TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    source       TEXT NOT NULL,              -- fofa | shodan | ...
+    entry_id     TEXT NOT NULL,              -- stable identity hash (url/ip:port)
+    query_id     TEXT NOT NULL DEFAULT '',
+    host         TEXT NOT NULL DEFAULT '',
+    ip           TEXT NOT NULL DEFAULT '',
+    port         TEXT NOT NULL DEFAULT '',
+    protocol     TEXT NOT NULL DEFAULT '',
+    record       JSONB NOT NULL,             -- FULL hit dict (body/banner/header intact)
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (run_id, entry_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scan_discovery_hits_run
+    ON scan_discovery_hits (run_id);
+CREATE INDEX IF NOT EXISTS idx_scan_discovery_hits_run_source
+    ON scan_discovery_hits (run_id, source);
+
+-- Per-credential validation outcomes for mid-validate resume without re-probing.
+CREATE TABLE IF NOT EXISTS scan_validation_results (
+    id               BIGSERIAL PRIMARY KEY,
+    run_id           TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+    identity         TEXT NOT NULL,              -- same as scan_candidates.identity
+    valid            BOOLEAN NOT NULL DEFAULT FALSE,
+    validation_state TEXT NOT NULL DEFAULT '',
+    error            TEXT NOT NULL DEFAULT '',
+    record           JSONB NOT NULL,             -- ValidationResult.model_dump()
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (run_id, identity)
+);
+CREATE INDEX IF NOT EXISTS idx_scan_validation_results_run
+    ON scan_validation_results (run_id);
 
 -- Per-batch probe telemetry (outcomes / findings / node_outcomes) without
 -- keeping multi-MB evidence blobs in RAM across all batches.

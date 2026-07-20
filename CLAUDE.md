@@ -62,7 +62,7 @@ docker compose -f docker-compose.yml up -d
 
 | Command | Description |
 |---------|-------------|
-| `aipocket scan` | Run a full scan (FOFA + Shodan + optional GitHub + extract + validate + balance) |
+| `aipocket scan` | Run a full scan (FOFA + Shodan + optional GitHub + extract + validate + balance). Opt-in resume: `--resume-run run_YYYY_...` (requires PostgreSQL spill tables) |
 | `aipocket serve` | Start FastAPI web API |
 | `aipocket watch` | Periodic scanner (scheduler loop) |
 | `aipocket queries` | Print current FOFA/Shodan query sets |

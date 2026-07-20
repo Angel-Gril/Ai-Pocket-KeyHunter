@@ -61,6 +61,11 @@ class SourceFetchResult:
     query_usage: tuple[QueryUsage, ...] = ()
     checkpoint_updates: tuple[CheckpointUpdate, ...] = ()
     errors: tuple[str, ...] = ()
+    # When hits/obs were spilled to PG and released from RAM, counters carry
+    # the durable totals (len(host_hits) / len(credential_observations) may be 0).
+    host_hit_count: int | None = None
+    credential_observation_count: int | None = None
+    spilled: bool = False
 
 
 @dataclass(frozen=True, slots=True)

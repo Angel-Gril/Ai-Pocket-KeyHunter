@@ -26,7 +26,17 @@ FOFA_KEY = "Bearer sk-proj-abc123def456ghi789"
 def _make_mock_client(hits):
     """A MagicMock client usable as a context manager returning `hits` per search()."""
     mock = MagicMock()
-    mock.search.return_value = hits
+
+    def _search(*_args, **kwargs):
+        on_page = kwargs.get("on_page")
+        retain = kwargs.get("retain_results", True)
+        page = list(hits)
+        if on_page is not None:
+            on_page(page)
+        return page if retain else []
+
+    mock.search.side_effect = _search
+    mock.count.return_value = len(hits) if hits else 0
     mock.__enter__ = MagicMock(return_value=mock)
     mock.__exit__ = MagicMock(return_value=False)
     return mock
@@ -47,7 +57,7 @@ def test_fofa_fetch_preserves_complete_query_provenance(monkeypatch):
         lambda: _make_mock_client([{"host": "example.com", "protocol": "https"}]),
     )
 
-    hits, _ = _fetch_fofa(max_queries=1)
+    hits, _, _count = _fetch_fofa(max_queries=1)
     target = canonicalize_hits(hits)[0]
 
     assert target.advisory_ids == frozenset({"CVE-1", "CVE-2"})
@@ -71,7 +81,7 @@ def test_shodan_fetch_preserves_complete_query_provenance(monkeypatch):
     )
     monkeypatch.setattr("aipocket.clients.shodan.ShodanClient", lambda: client)
 
-    hits, _ = _fetch_shodan(max_queries=1)
+    hits, _, _count = _fetch_shodan(max_queries=1)
     target = canonicalize_hits(hits)[0]
 
     assert target.advisory_ids == frozenset({"CVE-1", "CVE-2"})
@@ -103,6 +113,12 @@ async def test_run_scan_creates_parent_before_fetch_without_run_dir(monkeypatch)
     monkeypatch.setattr("aipocket.core.config.settings.shodan_keys", "")
     monkeypatch.setattr("aipocket.core.config.settings.scan_prober", False)
     monkeypatch.setattr("aipocket.core.config.settings.gpt_key", "")
+    monkeypatch.setattr("aipocket.services.candidate_store.spill_enabled", lambda: False)
+    monkeypatch.setattr("aipocket.services.discovery_store.spill_enabled", lambda: False)
+    monkeypatch.setattr("aipocket.services.scan_checkpoint.mark_phase", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "aipocket.services.honeypot_store.load_known_host_keys", lambda: set()
+    )
     monkeypatch.setattr(
         "aipocket.services.writer.create_run_pg",
         lambda *_args: events.append("parent"),
@@ -309,6 +325,13 @@ async def test_run_scan_preserves_exact_source_query_pairs_for_merged_target(tmp
     monkeypatch.setattr("aipocket.services.writer.create_run_pg", lambda *_args: None)
     monkeypatch.setattr("aipocket.services.writer.persist_ledger_batch_pg", lambda *_args: None)
     monkeypatch.setattr("aipocket.services.scanner.load_query_history", lambda _source: ())
+    # Spill / PG helpers would open a real pool against the fake URL.
+    monkeypatch.setattr("aipocket.services.candidate_store.spill_enabled", lambda: False)
+    monkeypatch.setattr("aipocket.services.discovery_store.spill_enabled", lambda: False)
+    monkeypatch.setattr("aipocket.services.scan_checkpoint.mark_phase", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "aipocket.services.honeypot_store.load_known_host_keys", lambda: set()
+    )
     persisted_metrics = []
 
     def capture_persist(

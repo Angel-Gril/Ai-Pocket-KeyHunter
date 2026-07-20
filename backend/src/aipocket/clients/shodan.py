@@ -24,6 +24,7 @@ the whole search when another key (or a later retry) would succeed.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -308,12 +309,17 @@ class ShodanClient:
         pages: int | None = None,
         *,
         max_cursor_restarts: int = 1,
+        on_page: Callable[[list[dict[str, Any]]], None] | None = None,
+        retain_results: bool = True,
     ) -> list[dict[str, Any]]:
         """Paginate a Shodan host search.
 
         If Shodan reports a search-cursor timeout mid-pagination, restart the
         query from page 1 (up to ``max_cursor_restarts`` times) and merge
         results with de-duplication so earlier pages are not lost.
+
+        ``on_page`` receives each page's newly-added unique rows. When
+        ``retain_results`` is False the returned list is empty (spill path).
         """
         self.query_id = query
         pages = pages or settings.shodan_max_pages
@@ -321,6 +327,7 @@ class ShodanClient:
         seen: set[tuple[str, str, str]] = set()
         restarts = 0
         page = 1
+        retained = 0
 
         while page <= pages:
             try:
@@ -337,7 +344,7 @@ class ShodanClient:
                         page,
                         restarts,
                         max_cursor_restarts,
-                        len(all_results),
+                        retained if not retain_results else len(all_results),
                     )
                     break
                 restarts += 1
@@ -347,7 +354,7 @@ class ShodanClient:
                     page,
                     restarts,
                     max_cursor_restarts,
-                    len(all_results),
+                    retained if not retain_results else len(all_results),
                 )
                 page = 1
                 continue
@@ -361,14 +368,20 @@ class ShodanClient:
                 break
 
             mapped = [map_match(m) for m in matches]
+            page_new: list[dict[str, Any]] = []
             added = 0
             for row in mapped:
                 key = _result_dedupe_key(row)
                 if key in seen:
                     continue
                 seen.add(key)
-                all_results.append(row)
+                page_new.append(row)
+                if retain_results:
+                    all_results.append(row)
                 added += 1
+            retained += added
+            if on_page is not None and page_new:
+                on_page(page_new)
             total = data.get("total", 0)
             log.info(
                 "  shodan page %d: +%d (unique +%d, total est. %s)",

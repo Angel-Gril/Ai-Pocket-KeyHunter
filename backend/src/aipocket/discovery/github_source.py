@@ -209,6 +209,55 @@ class GitHubSource:
         usage: list[QueryUsage] = []
         checkpoints: list[CheckpointUpdate] = []
         errors: list[str] = []
+        total_obs_count = 0
+        spilled_any = False
+        spill_buffer: list[CredentialSourceObservation] = []
+        # Flush every N observations so peak RAM stays bounded (plan WS-2).
+        spill_batch = max(50, int(getattr(self._settings, "validate_batch_size", 500) or 500))
+        run_id = (ledger.run_id if ledger else "") or str(kwargs.get("run_id") or "")
+
+        def _flush_spill(force: bool = False) -> None:
+            nonlocal total_obs_count, spilled_any, spill_buffer
+            if not spill_buffer:
+                return
+            if not force and len(spill_buffer) < spill_batch:
+                return
+            from aipocket.services.candidate_store import (
+                spill_enabled,
+                upsert_github_observations,
+            )
+            from aipocket.services.honeypot import pre_filter_credentials
+
+            batch = spill_buffer
+            spill_buffer = []
+            total_obs_count += len(batch)
+            if not (spill_enabled() and run_id):
+                observations.extend(batch)
+                return
+            # Prefilter each batch so noise keys never land in scan_candidates.
+            survivor_set = {
+                (c.apikey, c.apiurl) for c in pre_filter_credentials([o.credential for o in batch])
+            }
+            survivors = [
+                o for o in batch if (o.credential.apikey, o.credential.apiurl) in survivor_set
+            ]
+            if survivors:
+                upsert_github_observations(run_id, survivors)
+                spilled_any = True
+            log.info(
+                "GitHub spill flush: batch=%d survivors=%d total_obs=%d",
+                len(batch),
+                len(survivors),
+                total_obs_count,
+            )
+
+        def _extend_obs(
+            items: list[CredentialSourceObservation] | Sequence[CredentialSourceObservation],
+        ) -> None:
+            if not items:
+                return
+            spill_buffer.extend(items)
+            _flush_spill(force=False)
 
         pack_ids = [p.pack_id for p in packs]
         report_phase(f"GitHub 狩猎 · packs={','.join(pack_ids)}")
@@ -241,7 +290,7 @@ class GitHubSource:
                 obs, err = await self._process_work_items(
                     client, pending, packs=packs, message_hints={}
                 )
-                observations.extend(obs)
+                _extend_obs(obs)
                 errors.extend(err)
                 log.info(
                     "GitHub: pending work done · obs=+%d errors=%d",
@@ -249,7 +298,6 @@ class GitHubSource:
                     len(err),
                 )
 
-            run_id = (ledger.run_id if ledger else "") or kwargs.get("run_id") or ""
             commit_budget = budgets.github_commit
             if commit_budget is None:
                 commit_budget = self._settings.github_commit_query_budget
@@ -276,7 +324,7 @@ class GitHubSource:
                         run_id=run_id,
                         mode=mode,
                     )
-                    observations.extend(a_obs)
+                    _extend_obs(a_obs)
                     usage.extend(a_usage)
                     checkpoints.extend(a_cp)
                     errors.extend(a_err)
@@ -321,7 +369,7 @@ class GitHubSource:
                             code_budget=code_budget,
                             run_id=run_id,
                         )
-                        observations.extend(b_obs)
+                        _extend_obs(b_obs)
                         usage.extend(b_usage)
                         checkpoints.extend(b_cp)
                         errors.extend(b_err)
@@ -355,7 +403,7 @@ class GitHubSource:
                             run_id=run_id,
                             mode=mode,
                         )
-                        observations.extend(c_obs)
+                        _extend_obs(c_obs)
                         usage.extend(c_usage)
                         checkpoints.extend(c_cp)
                         errors.extend(c_err)
@@ -374,20 +422,28 @@ class GitHubSource:
                 if close is not None:
                     await close()
 
-        report_phase(f"GitHub 狩猎完成 · observations={len(observations)}")
+        _flush_spill(force=True)
+        obs_total = total_obs_count if total_obs_count else len(observations)
+        report_phase(f"GitHub 狩猎完成 · observations={obs_total}")
         log.info(
-            "GitHub fetch complete · observations=%d usage=%d errors=%d",
+            "GitHub fetch complete · observations=%d retained_in_ram=%d usage=%d errors=%d spill=%s",
+            obs_total,
             len(observations),
             len(usage),
             len(errors),
+            spilled_any,
         )
         return SourceFetchResult(
             source=self.name,
             host_hits=(),  # NEVER fake hosts
-            credential_observations=tuple(observations),
+            # When spilled, survivors are already in scan_candidates — do not
+            # re-hold the full observation list in the scanner process.
+            credential_observations=() if spilled_any else tuple(observations),
             query_usage=tuple(usage),
             checkpoint_updates=tuple(checkpoints),
             errors=tuple(errors),
+            credential_observation_count=obs_total,
+            spilled=spilled_any,
         )
 
     # ---------------------------------------------------------------- lanes

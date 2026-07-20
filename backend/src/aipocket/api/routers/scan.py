@@ -53,7 +53,12 @@ async def start_scan(body: ScanStartRequest, request: Request) -> ScanStatusResp
     if not source_label:
         raise ApiError("请至少选择一个数据源", status_code=400, code="validation_error")
     try:
-        raw = mgr.start(source_label, body.mode, tuple(body.github_pack_ids))
+        raw = mgr.start(
+            source_label,
+            body.mode,
+            tuple(body.github_pack_ids),
+            resume_run_id=(body.resume_run_id or "").strip(),
+        )
     except RuntimeError as e:
         # A scan is already running → conflict; the frontend greys out the button.
         raise ApiError(str(e), status_code=409, code="conflict") from e

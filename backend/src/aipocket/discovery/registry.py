@@ -152,10 +152,20 @@ def merge_fetch_results(
         host_hits.extend(r.host_hits)
         cred_obs.extend(r.credential_observations)
         # Host count for host sources; observation count for credential sources.
-        if r.credential_observations and not r.host_hits:
-            hits_by_source[r.source] = len(r.credential_observations)
+        # Prefer explicit counters when the source spilled payloads to PG.
+        is_cred_lane = r.source == "github" or (
+            bool(r.credential_observations) and not r.host_hits and r.host_hit_count is None
+        )
+        if is_cred_lane:
+            hits_by_source[r.source] = (
+                r.credential_observation_count
+                if r.credential_observation_count is not None
+                else len(r.credential_observations)
+            )
         else:
-            hits_by_source[r.source] = len(r.host_hits)
+            hits_by_source[r.source] = (
+                r.host_hit_count if r.host_hit_count is not None else len(r.host_hits)
+            )
         for u in r.query_usage:
             queries_used.append(u.query)
             all_usage.append(u)

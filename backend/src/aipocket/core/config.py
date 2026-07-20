@@ -72,6 +72,9 @@ class Settings(BaseSettings):
 
     validate_concurrency: int = 20
     validate_timeout: float = 15.0
+    # Credentials loaded/scheduled per wave when validating from PG store.
+    # Full scans can hit 30k+ survivors; page size bounds peak RAM.
+    validate_batch_size: int = 500
 
     scheduler_enabled: bool = False
     scheduler_interval: int = 3600
@@ -183,6 +186,13 @@ class Settings(BaseSettings):
     @classmethod
     def _strip_keys(cls, v: str) -> str:
         return ",".join(k.strip() for k in v.split(",") if k.strip())
+
+    @field_validator("validate_batch_size")
+    @classmethod
+    def _validate_batch_size_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("validate_batch_size must be >= 1")
+        return v
 
     @property
     def keys(self) -> list[str]:

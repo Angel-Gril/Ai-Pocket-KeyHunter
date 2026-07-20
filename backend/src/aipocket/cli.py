@@ -86,6 +86,11 @@ def scan(
         "skipping generic DIRECT-CRED-LEAK queries so the prober gets product-fingerprint hits. "
         "Full end-to-end (fetch → probe → validate) with minimal quota cost.",
     ),
+    resume_run: str = typer.Option(
+        "",
+        "--resume-run",
+        help="Opt-in resume of an interrupted run_id (reuses spill tables; skips finished phases).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Run a single scan across configured sources (FOFA + Shodan + GitHub) and write results."""
@@ -132,10 +137,16 @@ def scan(
     from aipocket.services.scanner import QueryBudgets, run_scan
     from aipocket.services.writer import new_run_dir
 
-    run_dir = new_run_dir()
+    if resume_run:
+        run_dir = settings.results_path / resume_run
+        run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        run_dir = new_run_dir()
     _setup_logging(verbose, log_file=run_dir / "run.log")
     if fast:
         log.info("Fast mode enabled")
+    if resume_run:
+        log.info("Resume mode: run_id=%s", resume_run)
 
     # Create PG tables if needed (no-op when DATABASE_URL is unset).
     from aipocket.core.db import ensure_schema
@@ -155,6 +166,7 @@ def scan(
             mode=mode,  # type: ignore[arg-type]
             sources=sources,
             github_pack_ids=(github_pack,) if github_pack else (),
+            resume_run_id=resume_run or None,
         )
     )
     _print_summary(result)
