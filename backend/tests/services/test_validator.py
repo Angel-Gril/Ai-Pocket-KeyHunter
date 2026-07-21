@@ -11,11 +11,13 @@ from aipocket.services.validator import (
     HIGH_VALUE_INTERNATIONAL,
     HIGH_VALUE_MODELS,
     _extract_rate_headers,
+    _fetch_models_list,
     _infer_tier,
     _is_severe_model_mismatch,
     _model_family_and_gen,
     _normalize_apiurl,
     _probe,
+    _probe_one,
     high_value_probe_order,
     validate_all,
     verify_no_auth,
@@ -352,6 +354,106 @@ async def test_one_provider_error_does_not_abort_other_credentials(monkeypatch):
 
 
 @respx.mock
+async def test_probe_rejects_non_ascii_apikey_without_http_call():
+    """CJK/scraped garbage keys must not crash httpx header encoding."""
+    cred = Credential(apikey="sk-这不是密钥abc", apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is False
+    assert r.error == "non-ascii-apikey"
+    assert r.validation_state == "auth_rejected"
+    assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_probe_rejects_emoji_apikey_without_http_call():
+    cred = Credential(apikey="sk-key-with-🔑-token", apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is False
+    assert r.error == "non-ascii-apikey"
+    assert r.validation_state == "auth_rejected"
+    assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_probe_rejects_non_ascii_openai_official_key_shape():
+    """Official-looking sk-proj- keys with CJK still fail before request build."""
+    cred = Credential(
+        apikey="sk-proj-" + "a" * 20 + "中文密钥",
+        apiurl="https://api.openai.com/v1",
+    )
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is False
+    assert r.error == "non-ascii-apikey"
+    assert r.validation_state == "auth_rejected"
+    assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_fetch_models_list_skips_non_ascii_apikey():
+    cred = Credential(apikey="密钥-not-ascii", apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        models = await _fetch_models_list(client, cred, CHAT_URL)
+    assert models == []
+    assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_fetch_models_list_swallows_unicode_encode_error(monkeypatch):
+    """Defense in depth if a non-ASCII value slips past the early gate."""
+    cred = Credential(apikey=VALID_KEY, apiurl=BASE)
+
+    async def boom(*_a, **_k):
+        raise UnicodeEncodeError("ascii", "x", 0, 1, "ordinal not in range(128)")
+
+    async with httpx.AsyncClient() as client:
+        monkeypatch.setattr(client, "get", boom)
+        models = await _fetch_models_list(client, cred, CHAT_URL)
+    assert models == []
+
+
+async def test_probe_one_maps_unicode_encode_to_auth_rejected(monkeypatch):
+    """UnicodeEncodeError is permanent, not transient_error (no retry value)."""
+    import asyncio
+
+    cred = Credential(apikey=VALID_KEY, apiurl=BASE)
+
+    async def boom(_client, _cred):
+        raise UnicodeEncodeError("ascii", "Bearer 中", 7, 8, "ordinal not in range(128)")
+
+    monkeypatch.setattr("aipocket.services.validator._probe", boom)
+    async with httpx.AsyncClient() as client:
+        r = await _probe_one(client, asyncio.Semaphore(1), cred)
+    assert r.valid is False
+    assert r.error == "non-ascii-header"
+    assert r.validation_state == "auth_rejected"
+
+
+@respx.mock
+async def test_validate_all_isolates_non_ascii_from_ascii_peers(monkeypatch):
+    good = Credential(apikey=VALID_KEY, apiurl=BASE)
+    bad = Credential(apikey="sk-无效密钥abc123", apiurl=BASE)
+
+    respx.get(MODELS_URL).mock(return_value=httpx.Response(404))
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}]},
+            headers=_make_headers(rate_limit=1000),
+        )
+    )
+    monkeypatch.setattr("aipocket.services.high_value_writer.try_save", lambda _result: None)
+
+    results = await validate_all([bad, good])
+    by_key = {r.credential.apikey: r for r in results}
+    assert by_key[bad.apikey].valid is False
+    assert by_key[bad.apikey].error == "non-ascii-apikey"
+    assert by_key[good.apikey].valid is True
+
+
+@respx.mock
 async def test_domain_key_conflict_is_not_guessed_or_probed():
     credential = Credential(
         apiurl="https://api.openai.com/v1",
@@ -438,23 +540,17 @@ async def test_probe_follows_redirect():
 
 class TestHighValueProbeOrder:
     def test_membership_covers_both_regions(self):
-        assert set(HIGH_VALUE_MODELS) == set(HIGH_VALUE_INTERNATIONAL) | set(
-            HIGH_VALUE_DOMESTIC
-        )
+        assert set(HIGH_VALUE_MODELS) == set(HIGH_VALUE_INTERNATIONAL) | set(HIGH_VALUE_DOMESTIC)
 
     def test_domestic_aggregator_prefers_domestic_models(self):
         order = high_value_probe_order("siliconflow")
         assert order[0] in HIGH_VALUE_DOMESTIC
-        assert order.index(HIGH_VALUE_DOMESTIC[0]) < order.index(
-            HIGH_VALUE_INTERNATIONAL[0]
-        )
+        assert order.index(HIGH_VALUE_DOMESTIC[0]) < order.index(HIGH_VALUE_INTERNATIONAL[0])
 
     def test_international_aggregator_prefers_international_models(self):
         order = high_value_probe_order("openrouter")
         assert order[0] in HIGH_VALUE_INTERNATIONAL
-        assert order.index(HIGH_VALUE_INTERNATIONAL[0]) < order.index(
-            HIGH_VALUE_DOMESTIC[0]
-        )
+        assert order.index(HIGH_VALUE_INTERNATIONAL[0]) < order.index(HIGH_VALUE_DOMESTIC[0])
 
     def test_unknown_gateway_defaults_international_first(self):
         order = high_value_probe_order("gateway")

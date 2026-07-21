@@ -14,6 +14,7 @@ from aipocket.core.config import settings
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 from aipocket.core.request_ledger import RequestAttribution
 from aipocket.core.validation_state import apply_state
+from aipocket.services.http_transport import is_http_header_value_safe
 from aipocket.services.providers import (
     provider_registry,
     resolve_provider,
@@ -667,6 +668,22 @@ async def _probe_one(
     try:
         async with sem:
             result = await _probe(_validation_client(client, cred), cred)
+    except UnicodeEncodeError as exc:
+        # Defense in depth: non-ASCII header values (apikey / org / project).
+        # Permanent rejection — not transient; retrying will never succeed.
+        fingerprint = hashlib.sha256(cred.apikey.encode()).hexdigest()[:12]
+        log.warning(
+            "validation rejected non-ASCII header for credential fingerprint=%s: %s",
+            fingerprint,
+            exc,
+        )
+        result = ValidationResult(
+            credential=cred,
+            valid=False,
+            error="non-ascii-header",
+            validation_state="auth_rejected",
+        )
+        return result
     except Exception as exc:  # noqa: BLE001 - per-credential isolation boundary
         fingerprint = hashlib.sha256(cred.apikey.encode()).hexdigest()[:12]
         log.error(
@@ -689,9 +706,14 @@ async def _probe_one(
 
 async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResult:
     result = ValidationResult(credential=cred, validated_at=datetime.now(UTC).isoformat())
-    apply_state(result, "structurally_valid")
-
     try:
+        # httpx requires ASCII header values; CJK/emoji "keys" from scrapes crash
+        # request build with UnicodeEncodeError. Reject early as permanent invalid.
+        if not is_http_header_value_safe(cred.apikey):
+            result.error = "non-ascii-apikey"
+            apply_state(result, "auth_rejected")
+            return result
+        apply_state(result, "structurally_valid")
         return await _probe_inner(client, cred, result)
     finally:
         _apply_issuer_attribution(result)
@@ -1023,10 +1045,12 @@ def _models_list_request(cred: Credential, chat_url: str) -> tuple[str, dict[str
 async def _fetch_models_list(
     client: httpx.AsyncClient, cred: Credential, chat_url: str
 ) -> list[str]:
+    if not is_http_header_value_safe(cred.apikey):
+        return []
     models_url, headers = _models_list_request(cred, chat_url)
     try:
         r = await client.get(models_url, headers=headers)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, UnicodeEncodeError):
         return []
     if r.status_code != 200:
         return []

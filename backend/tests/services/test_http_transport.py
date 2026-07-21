@@ -10,8 +10,34 @@ from aipocket.core.request_ledger import RequestLedger, current_ledger
 from aipocket.services.http_transport import (
     InstrumentedTransport,
     LedgerContext,
+    is_http_header_value_safe,
     normalize_endpoint_class,
 )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", True),
+        ("sk-proj-abcdef0123456789", True),
+        ("Bearer sk-abc", True),
+        ("proj_123", True),
+        ("org-ASCII-only", True),
+        ("key with spaces and\ttab", True),  # still ASCII
+        ("sk-中文密钥", False),
+        ("org-组织", False),
+        ("emoji-🔑", False),
+        ("café", False),
+        ("sk-abc\u200bdef", False),  # zero-width space
+    ],
+)
+def test_is_http_header_value_safe(value: str, expected: bool) -> None:
+    assert is_http_header_value_safe(value) is expected
+
+
+def test_is_http_header_value_safe_rejects_non_str() -> None:
+    assert is_http_header_value_safe(None) is False  # type: ignore[arg-type]
+    assert is_http_header_value_safe(123) is False  # type: ignore[arg-type]
 
 
 def test_endpoint_class_never_contains_token():

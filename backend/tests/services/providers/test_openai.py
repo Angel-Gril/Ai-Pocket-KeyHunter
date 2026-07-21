@@ -12,6 +12,7 @@ from aipocket.services.providers.openai import (
     OpenAICredentialKind,
     OpenAIValidation,
     TierEvidence,
+    _request_context,
     classify_openai_credential,
     validate_openai,
 )
@@ -50,6 +51,68 @@ def test_ordinary_key_requires_bundle_or_openai_endpoint_evidence() -> None:
     credential = Credential(apikey="sk-" + "a" * 48, apiurl="https://gateway.example/v1")
 
     assert classify_openai_credential(credential) is None
+
+
+async def test_validate_openai_rejects_non_ascii_apikey_without_http() -> None:
+    """httpx cannot encode non-ASCII Authorization; fail closed before GET /models."""
+    key = "sk-proj-" + "a" * 20 + "中文"
+    async with httpx.AsyncClient() as client:
+        result = await validate_openai(
+            client,
+            _credential(key),
+            InferencePolicy.READ_ONLY,
+        )
+    assert result.valid is False
+    assert result.error == "non-ascii-apikey"
+    assert result.credential_kind is OpenAICredentialKind.PROJECT
+
+
+def test_request_context_skips_non_ascii_optional_headers() -> None:
+    """Scraped CJK org/project names must not be sent as OpenAI-* headers."""
+    cred = _credential(
+        "sk-proj-" + "a" * 40,
+        organization="我的组织",
+        project="项目甲",
+    )
+    ctx = _request_context(cred)
+    assert "Authorization" in ctx.headers
+    assert "OpenAI-Organization" not in ctx.headers
+    assert "OpenAI-Project" not in ctx.headers
+
+
+def test_request_context_keeps_ascii_optional_headers() -> None:
+    cred = _credential(
+        "sk-proj-" + "a" * 40,
+        organization="org_ascii",
+        project="proj_123",
+    )
+    ctx = _request_context(cred)
+    assert ctx.headers["OpenAI-Organization"] == "org_ascii"
+    assert ctx.headers["OpenAI-Project"] == "proj_123"
+
+
+@respx.mock
+async def test_validate_openai_succeeds_when_only_context_headers_are_non_ascii() -> None:
+    """Key is ASCII; non-ASCII org/project are dropped, validation still proceeds."""
+    models = respx.get(f"{BASE}/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "gpt-5"}]})
+    )
+    async with httpx.AsyncClient() as client:
+        result = await validate_openai(
+            client,
+            _credential(
+                "sk-proj-" + "a" * 40,
+                organization="组织名称",
+                project="proj_ok",
+            ),
+            InferencePolicy.READ_ONLY,
+        )
+    assert result.valid is True
+    assert models.called
+    sent = models.calls[0].request.headers
+    # Non-ASCII organization must not appear; ASCII project is kept.
+    assert "组织" not in str(dict(sent))
+    assert sent.get("openai-project") == "proj_ok" or sent.get("OpenAI-Project") == "proj_ok"
 
 
 @respx.mock

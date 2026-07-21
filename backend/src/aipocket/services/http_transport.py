@@ -78,6 +78,22 @@ class LedgerContext:
     rate_resource: RateResource = "other"
 
 
+def is_http_header_value_safe(value: str) -> bool:
+    """Return True if *value* can be sent as an HTTP header field-value.
+
+    httpx encodes header values as ASCII by default. Leaked credentials
+    sometimes contain non-ASCII text (CJK scraped as a "key", localized
+    org/project names, etc.). Putting those into ``Authorization`` /
+    ``x-api-key`` / ``OpenAI-Organization`` raises ``UnicodeEncodeError``
+    during request build — before any network I/O.
+
+    Empty strings are considered safe (optional headers can be omitted).
+    """
+    if not isinstance(value, str):
+        return False
+    return value.isascii()
+
+
 def normalize_endpoint_class(url: str, explicit: str = "") -> str:
     """Return a templated path with secrets stripped.
 

@@ -8,6 +8,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from aipocket.core.models import Credential
+from aipocket.services.http_transport import is_http_header_value_safe
 
 _BASE_URL: Final = "https://api.openai.com/v1"
 
@@ -89,9 +90,11 @@ def _request_context(credential: Credential) -> _RequestContext:
     headers = {"Authorization": f"Bearer {credential.apikey}"}
     project = context.project if context is not None else ""
     organization = context.organization if context is not None else ""
-    if project:
+    # Optional context headers must also be ASCII; scraped CJK org/project names
+    # otherwise raise UnicodeEncodeError inside httpx header normalization.
+    if project and is_http_header_value_safe(project):
         headers["OpenAI-Project"] = project
-    if organization:
+    if organization and is_http_header_value_safe(organization):
         headers["OpenAI-Organization"] = organization
     return _RequestContext(headers=headers, project=project)
 
@@ -227,6 +230,12 @@ async def validate_openai(
             credential_kind=OpenAICredentialKind.ORDINARY,
             valid=False,
             error="not-openai-credential",
+        )
+    if not is_http_header_value_safe(credential.apikey):
+        return OpenAIValidation(
+            credential_kind=kind,
+            valid=False,
+            error="non-ascii-apikey",
         )
     request = _request_context(credential)
     if kind is OpenAICredentialKind.ADMIN:
