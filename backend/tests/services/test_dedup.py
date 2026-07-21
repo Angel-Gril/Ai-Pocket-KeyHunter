@@ -208,3 +208,42 @@ async def test_factory_unreachable_redis_degrades(monkeypatch):
     monkeypatch.setattr(settings, "dedup_redis_url", "redis://127.0.0.1:1/0")
     store = await get_dedup_store()
     assert isinstance(store, NoopDedupStore)
+
+
+async def test_factory_uses_bounded_blocking_pool(monkeypatch):
+    monkeypatch.setattr(settings, "dedup_enabled", True)
+    monkeypatch.setattr(settings, "dedup_redis_url", "redis://cache.example:6379/0")
+    monkeypatch.setattr(settings, "validate_concurrency", 12)
+    monkeypatch.setattr(settings, "validate_timeout", 15.0)
+
+    captured: dict = {}
+
+    class FakePool:
+        @classmethod
+        def from_url(cls, url, **kwargs):
+            captured.update(url=url, **kwargs)
+            return object()
+
+    class FakeRedis:
+        @classmethod
+        def from_pool(cls, pool):
+            captured["pool"] = pool
+            return cls()
+
+        async def ping(self):
+            return True
+
+        async def aclose(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr("redis.asyncio.BlockingConnectionPool", FakePool)
+    monkeypatch.setattr("redis.asyncio.Redis", FakeRedis)
+
+    store = await get_dedup_store()
+
+    assert isinstance(store, RedisDedupStore)
+    assert captured["url"] == settings.dedup_redis_url
+    assert captured["max_connections"] == 12
+    assert captured["timeout"] == 5.0
+    await store.close()
+    assert captured["closed"] is True

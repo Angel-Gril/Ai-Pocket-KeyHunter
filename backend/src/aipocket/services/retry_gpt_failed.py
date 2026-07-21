@@ -204,6 +204,7 @@ async def retry_gpt_failed(run_id: str) -> RetryGptFailedReport:
         return report
 
     set_run_dir(run_dir)
+    dedup = None
     try:
         # 1. Regex extraction
         regex_creds = extract_credentials(all_failed_hits)
@@ -277,10 +278,14 @@ async def retry_gpt_failed(run_id: str) -> RetryGptFailedReport:
             from aipocket.services.dedup import get_dedup_store
             from aipocket.services.finalizer import commit_final_results
 
-            dedup = get_dedup_store()
-            await enrich_results(new_valid, dedup=dedup, use_cache=False)
-            commit_report = await commit_final_results(new_valid, dedup=dedup)
-            report.high_value_final = commit_report.high_value_final
+            dedup = await get_dedup_store()
+            try:
+                await enrich_results(new_valid, dedup=dedup, use_cache=False)
+                commit_report = await commit_final_results(new_valid, dedup=dedup)
+                report.high_value_final = commit_report.high_value_final
+            finally:
+                await dedup.close()
+                dedup = None
 
         # 8. Persist recovered results — PostgreSQL is the source of truth.
         #    APPEND only: INSERT new rows with next seq; never DELETE/replace.
@@ -328,4 +333,6 @@ async def retry_gpt_failed(run_id: str) -> RetryGptFailedReport:
         )
         return report
     finally:
+        if dedup is not None:
+            await dedup.close()
         set_run_dir(None)

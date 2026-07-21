@@ -229,15 +229,29 @@ async def get_dedup_store() -> DedupStore:
     """
     if not settings.dedup_enabled:
         return NoopDedupStore()
+    client: Any = None
     try:
-        from redis.asyncio import from_url
+        from redis.asyncio import BlockingConnectionPool, Redis
 
-        client = from_url(settings.dedup_redis_url, decode_responses=True)
+        # The default asyncio pool raises immediately when its fixed connection
+        # cap is busy. A bounded blocking pool applies backpressure instead of
+        # turning temporary saturation into a scan-ending MaxConnectionsError.
+        pool_size = max(4, min(32, int(settings.validate_concurrency)))
+        pool = BlockingConnectionPool.from_url(
+            settings.dedup_redis_url,
+            max_connections=pool_size,
+            timeout=max(1.0, min(5.0, float(settings.validate_timeout))),
+            decode_responses=True,
+        )
+        client = Redis.from_pool(pool)
         # Fail fast: a PING confirms the server is reachable before we hand the
         # store out, so the whole run doesn't run under a broken connection.
         await client.ping()
         log.info("dedup: Redis connected at %s", settings.dedup_redis_url)
         return RedisDedupStore(client)
     except Exception as e:  # noqa: BLE001 - any failure → graceful degrade
+        if client is not None:
+            with contextlib.suppress(Exception):
+                await client.aclose()
         log.warning("dedup: Redis unavailable (%s), degrading to no-op dedup", e)
         return NoopDedupStore()

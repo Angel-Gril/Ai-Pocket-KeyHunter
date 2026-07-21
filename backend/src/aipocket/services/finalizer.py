@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 
 from aipocket.core.models import ValidationResult
@@ -14,6 +15,8 @@ from aipocket.core.validation_state import (
 from .dedup import DedupStore
 from .high_value_writer import should_save, try_save
 from .honeypot import filter_honeypots
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +144,18 @@ async def commit_final_results(
     """
     high_value_fingerprints: set[str] = set()
     for result in results:
-        await dedup.cache_valid(result)
+        try:
+            await dedup.cache_valid(result)
+        except Exception as exc:  # noqa: BLE001 - Redis cache is non-critical
+            from aipocket.core.observations import credential_identity
+
+            fingerprint = credential_identity(result.credential).secret_fingerprint[:12]
+            log.warning(
+                "Final result cache write failed for credential fingerprint=%s (%s): %s",
+                fingerprint,
+                type(exc).__name__,
+                exc,
+            )
         if should_save(result):
             fingerprint = (
                 result.credential.bundle.secret_fingerprint

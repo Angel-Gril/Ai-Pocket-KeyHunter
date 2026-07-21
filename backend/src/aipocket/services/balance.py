@@ -12,12 +12,38 @@ from rich.table import Table
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ValidationResult
 from aipocket.core.request_ledger import RequestAttribution
+from aipocket.services.http_transport import is_http_header_value_safe
 from aipocket.services.providers import uses_openai_adapter
+
+_BALANCE_BATCH_SIZE = 100
+_CACHE_WARNING_LIMIT = 3
+
 
 if TYPE_CHECKING:
     from .dedup import DedupStore
 
 log = logging.getLogger(__name__)
+
+
+def _credential_label(cred: Credential) -> str:
+    """Return a non-secret identifier suitable for failure logs."""
+    from aipocket.core.observations import credential_identity
+
+    return credential_identity(cred).secret_fingerprint[:12]
+
+
+def _log_cache_failure(operation: str, cred: Credential, exc: Exception, count: int) -> None:
+    if count <= _CACHE_WARNING_LIMIT:
+        log.warning(
+            "Balance cache %s failed for credential fingerprint=%s (%s): %s",
+            operation,
+            _credential_label(cred),
+            type(exc).__name__,
+            exc,
+        )
+    elif count == _CACHE_WARNING_LIMIT + 1:
+        log.warning("Balance cache failures continue; suppressing per-credential warnings")
+
 
 _ANTHROPIC_API_BASE = "https://api.anthropic.com/v1"
 _ANTHROPIC_VERSION = "2023-06-01"
@@ -60,11 +86,13 @@ async def _safe_get(
     params: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """GET with error handling. Returns parsed JSON dict or None on failure."""
+    if not is_http_header_value_safe(key):
+        return None
     if headers is None:
         headers = {"Authorization": f"Bearer {key}"}
     try:
         r = await client.get(url, headers=headers, params=params)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, UnicodeEncodeError, httpx.LocalProtocolError):
         return None
     if r.status_code != 200:
         return None
@@ -87,6 +115,8 @@ def _strip_api_base(apiurl: str) -> str:
 
 
 async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str, Any]:
+    if not is_http_header_value_safe(cred.apikey):
+        return {"gateway": "unsupported", "balance_usd": ""}
     client = _balance_client(client, cred)
     # Official OpenAI keys: force platform host (billing lives on the account,
     # not a reverse-proxy leak host). Runs before generic gateway probes.
@@ -1257,11 +1287,23 @@ async def enrich_results(
     use_cache: bool = True,
     attribution: dict[int, RequestAttribution] | None = None,
 ) -> list[ValidationResult]:
-    sem = asyncio.Semaphore(settings.validate_concurrency)
+    if not results:
+        return results
+
+    concurrency = max(1, int(settings.validate_concurrency))
+    sem = asyncio.Semaphore(concurrency)
     timeout = httpx.Timeout(settings.validate_timeout)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+    limits = httpx.Limits(max_connections=concurrency * 2)
+    cache_failures = 0
+
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        limits=limits,
+        follow_redirects=True,
+    ) as client:
 
         async def _one(r: ValidationResult) -> ValidationResult:
+            nonlocal cache_failures
             from aipocket.core.request_ledger import current_query_attribution
 
             attribution_token = current_query_attribution.set(
@@ -1270,9 +1312,15 @@ async def enrich_results(
             try:
                 if not r.valid:
                     return r
-                # Cross-run balance cache: reuse the previous run's result.
+                # Redis is an optional cache. A saturated/unavailable pool must
+                # never abort enrichment or the scan's final persistence.
                 if dedup is not None and use_cache:
-                    cached = await dedup.get_cached_balance(r.credential)
+                    try:
+                        cached = await dedup.get_cached_balance(r.credential)
+                    except Exception as exc:  # noqa: BLE001 - cache is best-effort
+                        cache_failures += 1
+                        _log_cache_failure("read", r.credential, exc, cache_failures)
+                        cached = None
                     if cached:
                         r.balance = str(cached.get("balance_usd", ""))
                         r.gateway = cached.get("gateway", "") or r.gateway
@@ -1286,8 +1334,13 @@ async def enrich_results(
                 try:
                     async with sem:
                         bal = await query_balance(client, r.credential)
-                except Exception as e:
-                    log.warning("Balance query failed for %s…: %s", r.credential.apikey[:12], e)
+                except Exception as exc:  # noqa: BLE001 - per-credential isolation
+                    log.warning(
+                        "Balance query failed for credential fingerprint=%s (%s): %s",
+                        _credential_label(r.credential),
+                        type(exc).__name__,
+                        exc,
+                    )
                     return r
                 if bal:
                     r.balance = str(bal.get("balance_usd", ""))
@@ -1297,12 +1350,28 @@ async def enrich_results(
                     r.rate_limit_headers["balance_detail"] = str(bal)
                     r.provider_info.balance_provider = bal.get("gateway", "")
                     if dedup is not None:
-                        await dedup.cache_balance(r.credential, bal)
+                        try:
+                            await dedup.cache_balance(r.credential, bal)
+                        except Exception as exc:  # noqa: BLE001 - cache is best-effort
+                            cache_failures += 1
+                            _log_cache_failure("write", r.credential, exc, cache_failures)
+                return r
+            except Exception as exc:  # noqa: BLE001 - final task isolation boundary
+                log.warning(
+                    "Balance enrichment skipped for credential fingerprint=%s (%s): %s",
+                    _credential_label(r.credential),
+                    type(exc).__name__,
+                    exc,
+                )
                 return r
             finally:
                 current_query_attribution.reset(attribution_token)
 
-        return await asyncio.gather(*[_one(r) for r in results])
+        for start in range(0, len(results), _BALANCE_BATCH_SIZE):
+            batch = results[start : start + _BALANCE_BATCH_SIZE]
+            await asyncio.gather(*(_one(result) for result in batch))
+
+    return results
 
 
 async def _query_latest_balances_async() -> list[dict[str, Any]]:

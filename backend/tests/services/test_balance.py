@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import respx
 
-from aipocket.core.models import Credential
-from aipocket.services.balance import query_balance
+from aipocket.core.models import Credential, ValidationResult
+from aipocket.services.balance import enrich_results, query_balance
 
 OR_BASE = "https://openrouter.ai/api/v1"
 OR_KEY = "sk-or-v1-" + "a" * 64
@@ -415,3 +415,71 @@ async def test_dashscope_alive_returns_na_balance() -> None:
     assert result["balance_usd"] == "N/A"
     assert result["source"] == "api_key_no_balance"
     assert result["alive"] is True
+
+
+async def test_query_balance_rejects_non_ascii_key_without_http_call() -> None:
+    cred = Credential(apikey="sk-中文密钥", apiurl="https://gateway.example/v1")
+
+    async with httpx.AsyncClient() as client:
+        result = await query_balance(client, cred)
+
+    assert result == {"gateway": "unsupported", "balance_usd": ""}
+
+
+async def test_enrich_results_survives_cache_pool_exhaustion(monkeypatch) -> None:
+    """A Redis cache miss failure must not close HTTP or abort peer balances."""
+    from redis.exceptions import MaxConnectionsError
+
+    results = [
+        ValidationResult(
+            credential=Credential(
+                apikey=f"sk-balance-{index:04d}",
+                apiurl="https://gateway.example/v1",
+            ),
+            valid=True,
+        )
+        for index in range(118)
+    ]
+
+    class ExhaustedCache:
+        async def get_cached_balance(self, _cred):
+            raise MaxConnectionsError("Too many connections")
+
+        async def cache_balance(self, _cred, _data):
+            raise MaxConnectionsError("Too many connections")
+
+    calls: list[str] = []
+
+    async def fake_query_balance(client, cred):
+        assert client.is_closed is False
+        calls.append(cred.apikey)
+        return {"gateway": "test", "balance_usd": 7.5}
+
+    monkeypatch.setattr("aipocket.services.balance.query_balance", fake_query_balance)
+    enriched = await enrich_results(results, dedup=ExhaustedCache())
+
+    assert enriched is results
+    assert len(calls) == len(results)
+    assert all(result.balance == "7.5" for result in results)
+    assert all(result.gateway == "test" for result in results)
+
+
+async def test_enrich_results_isolates_unexpected_peer_failure(monkeypatch) -> None:
+    results = [
+        ValidationResult(
+            credential=Credential(apikey=f"sk-peer-{index}", apiurl="https://gateway.example/v1"),
+            valid=True,
+        )
+        for index in range(3)
+    ]
+
+    async def fake_query_balance(_client, cred):
+        if cred.apikey == "sk-peer-1":
+            raise RuntimeError("boom")
+        return {"gateway": "test", "balance_usd": 1}
+
+    monkeypatch.setattr("aipocket.services.balance.query_balance", fake_query_balance)
+    enriched = await enrich_results(results)
+
+    assert enriched is results
+    assert [result.balance for result in results] == ["1", "", "1"]

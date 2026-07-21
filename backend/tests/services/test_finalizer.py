@@ -105,6 +105,21 @@ async def test_final_verified_result_is_cached_and_saved(monkeypatch):
     save.assert_awaited_once_with(result)
 
 
+async def test_final_result_cache_failure_does_not_block_persistence(monkeypatch):
+    result = _result(host="verified.example")
+    result.validation_state = "final_verified"
+    dedup = AsyncMock()
+    dedup.cache_valid.side_effect = RuntimeError("Too many connections")
+    save = AsyncMock()
+    monkeypatch.setattr("aipocket.services.finalizer.save_final_high_value", save)
+
+    report = await commit_final_results([result], dedup=dedup)
+
+    dedup.cache_valid.assert_awaited_once_with(result)
+    save.assert_awaited_once_with(result)
+    assert report.high_value_final >= 0
+
+
 async def test_honeypot_error_not_repromoted_from_authenticated_state(monkeypatch):
     """Regression: filter_honeypots sets valid=False+error but leaves auth state.
 

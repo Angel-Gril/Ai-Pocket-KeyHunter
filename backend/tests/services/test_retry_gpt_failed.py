@@ -110,6 +110,15 @@ class TestRetryGptFailedService:
 
             return FinalCommitReport(high_value_final=0)
 
+        class FakeDedup:
+            def __init__(self):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+        dedup = FakeDedup()
+
         monkeypatch.setattr(mod, "extract_credentials", lambda hits: [])
         monkeypatch.setattr(mod, "extract_with_gpt", fake_gpt)
         monkeypatch.setattr(mod, "validate_all", fake_validate)
@@ -117,7 +126,11 @@ class TestRetryGptFailedService:
         monkeypatch.setattr("aipocket.services.honeypot.filter_honeypots", lambda r, **k: r)
         monkeypatch.setattr("aipocket.services.balance.enrich_results", fake_enrich)
         monkeypatch.setattr("aipocket.services.finalizer.commit_final_results", fake_commit)
-        monkeypatch.setattr("aipocket.services.dedup.get_dedup_store", lambda: object())
+
+        async def fake_get_dedup_store():
+            return dedup
+
+        monkeypatch.setattr("aipocket.services.dedup.get_dedup_store", fake_get_dedup_store)
 
         # PG enabled → append_results_pg is required path.
         monkeypatch.setattr("aipocket.core.config.settings.database_url", "postgresql://x/y")
@@ -140,6 +153,7 @@ class TestRetryGptFailedService:
         assert not (run_dir / "gpt_failed_batch_t_1.jsonl").exists()
         assert any(p.name.endswith(".done") for p in run_dir.iterdir())
         assert "PostgreSQL" in report.message
+        assert dedup.closed is True
 
     @pytest.mark.asyncio
     async def test_dedup_skips_already_stored(self, run_root, monkeypatch):
