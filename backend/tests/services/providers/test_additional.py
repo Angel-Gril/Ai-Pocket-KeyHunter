@@ -70,6 +70,40 @@ async def test_read_only_provider_adapter_confirms_auth(
     assert route.calls[0].request.headers["authorization"].startswith("Bearer ")
 
 
+@pytest.mark.parametrize(
+    "apikey",
+    [
+        'authz.split(" ", 1)[1] if authz.lower().startswith("bearer ") else ',
+        "geminiKeychain.read() ?? ",
+        "sk-中文",
+    ],
+)
+@respx.mock
+async def test_additional_provider_rejects_header_unsafe_apikey_without_http(apikey: str) -> None:
+    """Production LocalProtocolError / UnicodeEncodeError cases on Together path."""
+    credential = _credential("together", "https://api.together.ai/v1", key=apikey)
+    async with httpx.AsyncClient() as client:
+        result = await validate_additional_provider(client, credential, "together")
+    assert result.valid is False
+    assert result.error == "header-unsafe-apikey"
+    assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_probe_rejects_header_unsafe_before_together_http() -> None:
+    credential = _credential(
+        "together",
+        "https://api.together.ai/v1",
+        key="(ps.ai_api_key if ps and ps.ai_api_key else settings.ai_api_key) or ",
+    )
+    async with httpx.AsyncClient() as client:
+        result = await _probe(client, credential)
+    assert result.valid is False
+    assert result.error == "header-unsafe-apikey"
+    assert result.validation_state == "auth_rejected"
+    assert len(respx.calls) == 0
+
+
 @pytest.mark.parametrize("provider", ["cohere", "replicate", "together", "fireworks"])
 @respx.mock
 async def test_validator_routes_additional_provider_to_official_adapter(provider: str) -> None:

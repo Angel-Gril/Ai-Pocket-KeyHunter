@@ -668,19 +668,20 @@ async def _probe_one(
     try:
         async with sem:
             result = await _probe(_validation_client(client, cred), cred)
-    except UnicodeEncodeError as exc:
-        # Defense in depth: non-ASCII header values (apikey / org / project).
+    except (UnicodeEncodeError, httpx.LocalProtocolError) as exc:
+        # Defense in depth: illegal Authorization/header field-values.
         # Permanent rejection — not transient; retrying will never succeed.
         fingerprint = hashlib.sha256(cred.apikey.encode()).hexdigest()[:12]
         log.warning(
-            "validation rejected non-ASCII header for credential fingerprint=%s: %s",
+            "validation rejected unsafe header for credential fingerprint=%s (%s): %s",
             fingerprint,
+            type(exc).__name__,
             exc,
         )
         result = ValidationResult(
             credential=cred,
             valid=False,
-            error="non-ascii-header",
+            error="header-unsafe",
             validation_state="auth_rejected",
         )
         return result
@@ -707,10 +708,11 @@ async def _probe_one(
 async def _probe(client: httpx.AsyncClient, cred: Credential) -> ValidationResult:
     result = ValidationResult(credential=cred, validated_at=datetime.now(UTC).isoformat())
     try:
-        # httpx requires ASCII header values; CJK/emoji "keys" from scrapes crash
-        # request build with UnicodeEncodeError. Reject early as permanent invalid.
+        # httpx/h11 require legal header field-values. Scraped "keys" with CJK,
+        # trailing spaces (code fragments), or CR/LF crash request send.
+        # Reject early as permanent invalid — never label as transient_error.
         if not is_http_header_value_safe(cred.apikey):
-            result.error = "non-ascii-apikey"
+            result.error = "header-unsafe-apikey"
             apply_state(result, "auth_rejected")
             return result
         apply_state(result, "structurally_valid")
@@ -1050,7 +1052,7 @@ async def _fetch_models_list(
     models_url, headers = _models_list_request(cred, chat_url)
     try:
         r = await client.get(models_url, headers=headers)
-    except (httpx.HTTPError, UnicodeEncodeError):
+    except (httpx.HTTPError, UnicodeEncodeError, httpx.LocalProtocolError):
         return []
     if r.status_code != 200:
         return []

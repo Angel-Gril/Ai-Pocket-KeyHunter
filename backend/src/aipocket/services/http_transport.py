@@ -78,20 +78,33 @@ class LedgerContext:
     rate_resource: RateResource = "other"
 
 
+# C0 controls that h11/httpcore reject inside field-values (plus CR/LF/NUL family).
+# HTAB (0x09) is allowed in the middle of a value; leading/trailing WS is not.
+_HEADER_FORBIDDEN_CHARS = frozenset("\x00\n\v\f\r")
+
+
 def is_http_header_value_safe(value: str) -> bool:
-    """Return True if *value* can be sent as an HTTP header field-value.
+    """Return True if *value* is a legal HTTP header field-value for httpx/h11.
 
-    httpx encodes header values as ASCII by default. Leaked credentials
-    sometimes contain non-ASCII text (CJK scraped as a "key", localized
-    org/project names, etc.). Putting those into ``Authorization`` /
-    ``x-api-key`` / ``OpenAI-Organization`` raises ``UnicodeEncodeError``
-    during request build — before any network I/O.
+    Rejects values that would raise before or during request send:
 
-    Empty strings are considered safe (optional headers can be omitted).
+    * non-``str`` / empty
+    * non-ASCII → ``UnicodeEncodeError`` (httpx default encoding)
+    * leading/trailing SP or HTAB → ``LocalProtocolError: Illegal header value``
+      (scraped code snippets often end with a trailing space, e.g.
+      ``... else `` / ``... or `` / ``... ?? ``)
+    * CR / LF / NUL / VT / FF anywhere → same LocalProtocolError
+
+    Callers that treat empty as "omit optional header" should check truthiness
+    before calling (``if project and is_http_header_value_safe(project)``).
     """
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not value:
         return False
-    return value.isascii()
+    if not value.isascii():
+        return False
+    if value[0] in " \t" or value[-1] in " \t":
+        return False
+    return not _HEADER_FORBIDDEN_CHARS.intersection(value)
 
 
 def normalize_endpoint_class(url: str, explicit: str = "") -> str:

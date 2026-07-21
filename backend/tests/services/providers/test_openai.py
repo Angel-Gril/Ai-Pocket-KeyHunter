@@ -63,8 +63,20 @@ async def test_validate_openai_rejects_non_ascii_apikey_without_http() -> None:
             InferencePolicy.READ_ONLY,
         )
     assert result.valid is False
-    assert result.error == "non-ascii-apikey"
+    assert result.error == "header-unsafe-apikey"
     assert result.credential_kind is OpenAICredentialKind.PROJECT
+
+
+async def test_validate_openai_rejects_trailing_space_apikey_without_http() -> None:
+    key = "sk-proj-" + "a" * 40 + " "
+    async with httpx.AsyncClient() as client:
+        result = await validate_openai(
+            client,
+            _credential(key),
+            InferencePolicy.READ_ONLY,
+        )
+    assert result.valid is False
+    assert result.error == "header-unsafe-apikey"
 
 
 def test_request_context_skips_non_ascii_optional_headers() -> None:

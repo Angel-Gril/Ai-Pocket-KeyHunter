@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 from aipocket.core.models import Credential, ProviderName
+from aipocket.services.http_transport import is_http_header_value_safe
 
 from .base import ReadOnlyProviderValidation
 
@@ -47,6 +48,8 @@ async def validate_additional_provider(
     """Validate additional discovery-pack providers using read-only official APIs."""
     if provider not in _BASE_URLS:
         return ReadOnlyProviderValidation(valid=False, error="unsupported-provider")
+    if not is_http_header_value_safe(credential.apikey):
+        return ReadOnlyProviderValidation(valid=False, error="header-unsafe-apikey")
 
     headers = {"Authorization": f"Bearer {credential.apikey}"}
     if provider == "cohere":

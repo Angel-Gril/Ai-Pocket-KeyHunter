@@ -235,7 +235,7 @@ async def validate_openai(
         return OpenAIValidation(
             credential_kind=kind,
             valid=False,
-            error="non-ascii-apikey",
+            error="header-unsafe-apikey",
         )
     request = _request_context(credential)
     if kind is OpenAICredentialKind.ADMIN:

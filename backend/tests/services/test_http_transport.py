@@ -18,17 +18,35 @@ from aipocket.services.http_transport import (
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("", True),
+        # legal tokens
         ("sk-proj-abcdef0123456789", True),
         ("Bearer sk-abc", True),
         ("proj_123", True),
         ("org-ASCII-only", True),
-        ("key with spaces and\ttab", True),  # still ASCII
+        ("key with spaces and mid\ttab", True),
+        # empty / non-str handled separately
+        ("", False),
+        # non-ASCII
         ("sk-中文密钥", False),
         ("org-组织", False),
         ("emoji-🔑", False),
         ("café", False),
-        ("sk-abc\u200bdef", False),  # zero-width space
+        ("sk-abc\u200bdef", False),  # zero-width space / em-dash family
+        ("sk-proj-x\u2014y", False),  # em dash from production logs
+        # leading/trailing whitespace → LocalProtocolError in h11
+        (" trailing-space", False),
+        ("trailing-space ", False),
+        ("\tleading-tab", False),
+        ("trailing-tab\t", False),
+        # production code-snippet false positives (trailing space)
+        ('authz.split(" ", 1)[1] if authz.lower().startswith("bearer ") else ', False),
+        ("(ps.ai_api_key if ps and ps.ai_api_key else settings.ai_api_key) or ", False),
+        ("geminiKeychain.read() ?? ", False),
+        ("resp.content.strip().lower().split()[0] if resp.content else ", False),
+        # control chars
+        ("key\nwith\nnewline", False),
+        ("key\rwith\r", False),
+        ("key\x00null", False),
     ],
 )
 def test_is_http_header_value_safe(value: str, expected: bool) -> None:
@@ -38,6 +56,31 @@ def test_is_http_header_value_safe(value: str, expected: bool) -> None:
 def test_is_http_header_value_safe_rejects_non_str() -> None:
     assert is_http_header_value_safe(None) is False  # type: ignore[arg-type]
     assert is_http_header_value_safe(123) is False  # type: ignore[arg-type]
+
+
+def test_header_unsafe_matches_h11_illegal_values() -> None:
+    """Guardrails must reject every value h11 would flag as Illegal header value."""
+    import h11
+
+    samples = [
+        'authz.split(" ", 1)[1] if authz.lower().startswith("bearer ") else ',
+        "(ps.ai_api_key if ps and ps.ai_api_key else settings.ai_api_key) or ",
+        "geminiKeychain.read() ?? ",
+        "resp.content.strip().lower().split()[0] if resp.content else ",
+        "key\nline",
+        "trail ",
+    ]
+    for raw in samples:
+        assert is_http_header_value_safe(raw) is False
+        with pytest.raises(h11.LocalProtocolError):
+            h11.Request(
+                method=b"GET",
+                target=b"/",
+                headers=[
+                    (b"host", b"example.com"),
+                    (b"authorization", f"Bearer {raw}".encode()),
+                ],
+            )
 
 
 def test_endpoint_class_never_contains_token():

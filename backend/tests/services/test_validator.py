@@ -360,7 +360,7 @@ async def test_probe_rejects_non_ascii_apikey_without_http_call():
     async with httpx.AsyncClient() as client:
         r = await _probe(client, cred)
     assert r.valid is False
-    assert r.error == "non-ascii-apikey"
+    assert r.error == "header-unsafe-apikey"
     assert r.validation_state == "auth_rejected"
     assert len(respx.calls) == 0
 
@@ -371,7 +371,7 @@ async def test_probe_rejects_emoji_apikey_without_http_call():
     async with httpx.AsyncClient() as client:
         r = await _probe(client, cred)
     assert r.valid is False
-    assert r.error == "non-ascii-apikey"
+    assert r.error == "header-unsafe-apikey"
     assert r.validation_state == "auth_rejected"
     assert len(respx.calls) == 0
 
@@ -386,14 +386,61 @@ async def test_probe_rejects_non_ascii_openai_official_key_shape():
     async with httpx.AsyncClient() as client:
         r = await _probe(client, cred)
     assert r.valid is False
-    assert r.error == "non-ascii-apikey"
+    assert r.error == "header-unsafe-apikey"
     assert r.validation_state == "auth_rejected"
+    assert len(respx.calls) == 0
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "apikey",
+    [
+        'authz.split(" ", 1)[1] if authz.lower().startswith("bearer ") else ',
+        "(ps.ai_api_key if ps and ps.ai_api_key else settings.ai_api_key) or ",
+        "geminiKeychain.read() ?? ",
+        "resp.content.strip().lower().split()[0] if resp.content else ",
+        "sk-proj-x\u2014y",  # em dash
+        "trailingspace ",
+    ],
+)
+async def test_probe_rejects_code_snippet_and_trailing_ws_apikeys(apikey: str):
+    """Production LocalProtocolError cases — pure ASCII but illegal header values."""
+    cred = Credential(apikey=apikey, apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is False
+    assert r.error == "header-unsafe-apikey"
+    assert r.validation_state == "auth_rejected"
+    assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_probe_rejects_header_unsafe_before_additional_provider(monkeypatch):
+    """Together/Fireworks path must never send illegal Authorization headers."""
+    # Force additional-provider routing if early gate were absent.
+    cred = Credential(
+        apikey="geminiKeychain.read() ?? ",
+        apiurl="https://api.together.ai/v1",
+    )
+    async with httpx.AsyncClient() as client:
+        r = await _probe(client, cred)
+    assert r.valid is False
+    assert r.error == "header-unsafe-apikey"
     assert len(respx.calls) == 0
 
 
 @respx.mock
 async def test_fetch_models_list_skips_non_ascii_apikey():
     cred = Credential(apikey="密钥-not-ascii", apiurl=BASE)
+    async with httpx.AsyncClient() as client:
+        models = await _fetch_models_list(client, cred, CHAT_URL)
+    assert models == []
+    assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_fetch_models_list_skips_trailing_space_apikey():
+    cred = Credential(apikey="snippet or ", apiurl=BASE)
     async with httpx.AsyncClient() as client:
         models = await _fetch_models_list(client, cred, CHAT_URL)
     assert models == []
@@ -427,14 +474,32 @@ async def test_probe_one_maps_unicode_encode_to_auth_rejected(monkeypatch):
     async with httpx.AsyncClient() as client:
         r = await _probe_one(client, asyncio.Semaphore(1), cred)
     assert r.valid is False
-    assert r.error == "non-ascii-header"
+    assert r.error == "header-unsafe"
+    assert r.validation_state == "auth_rejected"
+
+
+async def test_probe_one_maps_local_protocol_error_to_auth_rejected(monkeypatch):
+    """Illegal header value from httpx must not be transient_error."""
+    import asyncio
+
+    cred = Credential(apikey=VALID_KEY, apiurl=BASE)
+
+    async def boom(_client, _cred):
+        raise httpx.LocalProtocolError("Illegal header value b'Bearer foo '")
+
+    monkeypatch.setattr("aipocket.services.validator._probe", boom)
+    async with httpx.AsyncClient() as client:
+        r = await _probe_one(client, asyncio.Semaphore(1), cred)
+    assert r.valid is False
+    assert r.error == "header-unsafe"
     assert r.validation_state == "auth_rejected"
 
 
 @respx.mock
-async def test_validate_all_isolates_non_ascii_from_ascii_peers(monkeypatch):
+async def test_validate_all_isolates_header_unsafe_from_ascii_peers(monkeypatch):
     good = Credential(apikey=VALID_KEY, apiurl=BASE)
     bad = Credential(apikey="sk-无效密钥abc123", apiurl=BASE)
+    snippet = Credential(apikey="geminiKeychain.read() ?? ", apiurl=BASE)
 
     respx.get(MODELS_URL).mock(return_value=httpx.Response(404))
     respx.post(CHAT_URL).mock(
@@ -446,10 +511,11 @@ async def test_validate_all_isolates_non_ascii_from_ascii_peers(monkeypatch):
     )
     monkeypatch.setattr("aipocket.services.high_value_writer.try_save", lambda _result: None)
 
-    results = await validate_all([bad, good])
+    results = await validate_all([bad, snippet, good])
     by_key = {r.credential.apikey: r for r in results}
     assert by_key[bad.apikey].valid is False
-    assert by_key[bad.apikey].error == "non-ascii-apikey"
+    assert by_key[bad.apikey].error == "header-unsafe-apikey"
+    assert by_key[snippet.apikey].error == "header-unsafe-apikey"
     assert by_key[good.apikey].valid is True
 
 
