@@ -52,7 +52,7 @@ function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) 
 
 /**
  * Column-aligned table header matching the shared `KeyRow` layout.
- * `w-full min-w-max`: fill the viewport when narrow content, scroll when wide.
+ * Data columns keep explicit widths; the trailing action area absorbs free space.
  */
 export function KeyTableHeader({ table }: Readonly<{ table: Table<unknown> }>) {
   return (
@@ -61,8 +61,8 @@ export function KeyTableHeader({ table }: Readonly<{ table: Table<unknown> }>) {
       {table.getFlatHeaders().map((header) => (
         <HeaderCell key={header.id} header={header} />
       ))}
-      {/* After STATUS; free width is absorbed by the fluid endpoint column. */}
-      <span className="shrink-0 whitespace-nowrap text-right">测试 / 操作</span>
+      {/* Free width belongs after the data columns, so every boundary stays aligned. */}
+      <span className="min-w-max flex-1 whitespace-nowrap text-right">测试 / 操作</span>
     </div>
   )
 }
