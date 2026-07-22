@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Check, ChevronDown, Copy, Eye, EyeOff, List, Loader2, MessageSquare, Wallet } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ProviderBadge } from "@/components/provider-badge"
-import { colWidthStyle } from "@/components/key-table-columns"
+import { colCellClass, colStyle, colWidthStyle } from "@/components/key-table-columns"
 import { StatusBadge, type StatusVariant } from "@/components/status-badge"
 import type { ProviderEvidence } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -291,7 +291,8 @@ export function KeyRow({
         className,
       )}
     >
-      <div className="flex min-w-max flex-nowrap items-center gap-3.5 px-4 py-3.5">
+      {/* w-full min-w-max: fill wide viewports; scroll when columns exceed the port. */}
+      <div className="flex w-full min-w-max flex-nowrap items-center gap-3.5 px-4 py-3.5">
         {onSelectedChange ? (
           <Checkbox
             checked={selected}
@@ -302,36 +303,48 @@ export function KeyRow({
 
         <KeyCell maskedKey={maskedKey} revealedKey={revealedKey} onReveal={onReveal} onCopy={onCopy} />
 
-        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("endpoint")}>
-          <span className="truncate font-mono text-xs text-text-secondary">{apiurl}</span>
-          <span className="truncate font-mono text-[11px] text-text-muted">{host}</span>
+        <div
+          className={cn("flex flex-col items-start gap-0.5 overflow-hidden", colCellClass("endpoint"))}
+          style={colStyle("endpoint")}
+        >
+          <span className="max-w-full truncate font-mono text-xs text-text-secondary">{apiurl}</span>
+          <span className="max-w-full truncate font-mono text-[11px] text-text-muted">{host}</span>
         </div>
 
-        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("provider")}>
+        <div
+          className={cn("flex flex-col items-start gap-0.5 overflow-hidden", colCellClass("provider"))}
+          style={colStyle("provider")}
+        >
           {provider ? <ProviderBadge provider={provider} /> : null}
           {credentialKind ? (
-            <span className="truncate font-mono text-[11px] text-text-muted">{credentialKind}</span>
+            <span className="max-w-full truncate font-mono text-[11px] text-text-muted">{credentialKind}</span>
           ) : null}
         </div>
 
-        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("balance")}>
+        <div
+          className={cn("flex flex-col items-start gap-0.5 overflow-hidden", colCellClass("balance"))}
+          style={colStyle("balance")}
+        >
           {balance ? (
-            <span className="truncate font-mono text-sm font-semibold text-success">{balance}</span>
+            <span className="max-w-full truncate font-mono text-sm font-semibold text-success">{balance}</span>
           ) : (
             <span className="font-mono text-sm text-text-muted">N/A</span>
           )}
           {tier || tierEvidence || scope ? (
-            <span className="truncate font-mono text-[11px] text-text-muted" title={[scope, tier, tierEvidence].filter(Boolean).join(" · ")}>
+            <span className="max-w-full truncate font-mono text-[11px] text-text-muted" title={[scope, tier, tierEvidence].filter(Boolean).join(" · ")}>
               {/* Prefer live balance tier over scan-time tierEvidence (often "unknown"). */}
               {[scope, tier || tierEvidence].filter(Boolean).join(" · ")}
             </span>
           ) : null}
         </div>
 
-        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("createdAt")}>
+        <div
+          className={cn("flex flex-col items-start gap-0.5 overflow-hidden", colCellClass("createdAt"))}
+          style={colStyle("createdAt")}
+        >
           {createdAt ? (
             <time
-              className="truncate font-mono text-[11px] text-text-secondary"
+              className="max-w-full truncate font-mono text-[11px] text-text-secondary"
               dateTime={createdAt}
               title={createdAt}
             >
@@ -341,15 +354,18 @@ export function KeyRow({
             <span className="font-mono text-[11px] text-text-muted">N/A</span>
           )}
           {evidence?.evidence_kind ? (
-            <span className="truncate font-mono text-[10px] text-text-muted">
+            <span className="max-w-full truncate font-mono text-[10px] text-text-muted">
               {evidence.evidence_kind} · {evidence.source || "provider"}
             </span>
           ) : null}
         </div>
-        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("status")}>
+        <div
+          className={cn("flex flex-col items-start gap-0.5 overflow-hidden", colCellClass("status"))}
+          style={colStyle("status")}
+        >
           {status ? <StatusBadge variant={status.variant} label={status.label} /> : null}
           {validationState ? (
-            <span className="truncate font-mono text-[10px] text-text-muted">{validationState}</span>
+            <span className="max-w-full truncate font-mono text-[10px] text-text-muted">{validationState}</span>
           ) : null}
         </div>
 

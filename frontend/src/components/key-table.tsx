@@ -3,7 +3,7 @@ import { Braces, Loader2, Table as TableIcon } from "lucide-react"
 import type { Header, Table } from "@tanstack/react-table"
 import { BalanceHelpButton } from "@/components/balance-help"
 import { KeyRow, type KeyRowProps } from "@/components/key-row"
-import { colWidthStyle, type KeyColumnId } from "@/components/key-table-columns"
+import { colCellClass, colStyle, type KeyColumnId } from "@/components/key-table-columns"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 
@@ -21,7 +21,10 @@ function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) 
   const id = header.column.id as KeyColumnId
   const canResize = header.column.getCanResize()
   return (
-    <span className="relative flex shrink-0 items-center gap-1 overflow-visible" style={colWidthStyle(id)}>
+    <span
+      className={cn("relative flex items-center gap-1 overflow-visible", colCellClass(id))}
+      style={colStyle(id)}
+    >
       <span className="truncate">{COLUMN_LABELS[id] ?? id}</span>
       {id === "balance" ? <BalanceHelpButton /> : null}
       {canResize ? (
@@ -47,15 +50,18 @@ function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) 
   )
 }
 
-/** Column-aligned table header matching the shared `KeyRow` layout. */
+/**
+ * Column-aligned table header matching the shared `KeyRow` layout.
+ * `w-full min-w-max`: fill the viewport when narrow content, scroll when wide.
+ */
 export function KeyTableHeader({ table }: Readonly<{ table: Table<unknown> }>) {
   return (
-    <div className="flex min-w-max flex-nowrap items-center gap-3.5 border-b border-border-primary bg-surface-base px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.4px] text-text-muted">
+    <div className="flex w-full min-w-max flex-nowrap items-center gap-3.5 border-b border-border-primary bg-surface-base px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.4px] text-text-muted">
       <span className="size-4 shrink-0" aria-hidden />
       {table.getFlatHeaders().map((header) => (
         <HeaderCell key={header.id} header={header} />
       ))}
-      {/* Keep actions immediately after STATUS — no flex-1/ml-auto spacer. */}
+      {/* After STATUS; free width is absorbed by the fluid endpoint column. */}
       <span className="shrink-0 whitespace-nowrap text-right">测试 / 操作</span>
     </div>
   )

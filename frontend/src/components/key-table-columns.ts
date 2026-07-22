@@ -32,9 +32,31 @@ export function colSizeVar(id: KeyColumnId): string {
   return `--col-${id}-size`
 }
 
-/** Inline style binding a cell's width to its column's CSS variable. */
+/**
+ * Column that absorbs free row width on wide viewports so the table can be
+ * `min-w-full` without leaving a dead strip after the actions column.
+ * Resize still works: the handle adjusts this floor via `minWidth`.
+ */
+export const FLUID_COLUMN_ID: KeyColumnId = "endpoint"
+
+/** Fixed-width column (shrink-0). */
 export function colWidthStyle(id: KeyColumnId): React.CSSProperties {
   return { width: `calc(var(${colSizeVar(id)}) * 1px)` }
+}
+
+/** Fluid column: grow into free space, never below the sized min width. */
+export function colFluidStyle(id: KeyColumnId): React.CSSProperties {
+  return { minWidth: `calc(var(${colSizeVar(id)}) * 1px)` }
+}
+
+/** Shared cell layout class for a data column (fixed vs fluid). */
+export function colCellClass(id: KeyColumnId): string {
+  return id === FLUID_COLUMN_ID ? "min-w-0 flex-1" : "shrink-0"
+}
+
+/** Inline width/minWidth for a data column. */
+export function colStyle(id: KeyColumnId): React.CSSProperties {
+  return id === FLUID_COLUMN_ID ? colFluidStyle(id) : colWidthStyle(id)
 }
 
 export interface KeyTableSizing {

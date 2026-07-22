@@ -27,7 +27,9 @@ export function StatusBadge({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-sm px-[9px] py-1 font-mono text-xs font-medium",
+        // w-fit: never stretch when a parent flex column defaults to items-stretch
+        // (e.g. STATUS cell after the column is resized wider than the label).
+        "inline-flex w-fit max-w-full shrink-0 items-center gap-1.5 rounded-sm px-[9px] py-1 font-mono text-xs font-medium",
         styles.container,
         className,
       )}
