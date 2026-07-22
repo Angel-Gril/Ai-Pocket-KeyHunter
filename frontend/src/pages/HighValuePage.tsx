@@ -265,7 +265,7 @@ export default function HighValuePage() {
     body = <CenterState>无匹配结果，试试调整搜索或筛选条件。</CenterState>
   } else {
     body = (
-      <div className="flex-1 overflow-y-auto">
+      <div>
         {rows.map(({ fields, status, originalIndex }) => {
           const key = fields.maskedKey
           const reveal = revealed[key]
@@ -365,9 +365,13 @@ export default function HighValuePage() {
         csvLabel="导出全部 · CSV"
       />
 
-      <div className="flex min-h-0 flex-1 flex-col" style={columnSizeVars}>
-        <KeyTableHeader table={table} />
-        {body}
+      <div className="min-h-0 flex-1 overflow-auto" style={columnSizeVars}>
+        <div className="w-max min-w-full">
+          <div className="sticky top-0 z-10">
+            <KeyTableHeader table={table} />
+          </div>
+          {body}
+        </div>
       </div>
 
       <ChatTestDialog

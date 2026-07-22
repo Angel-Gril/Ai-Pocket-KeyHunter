@@ -50,12 +50,12 @@ function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) 
 /** Column-aligned table header matching the shared `KeyRow` layout. */
 export function KeyTableHeader({ table }: Readonly<{ table: Table<unknown> }>) {
   return (
-    <div className="flex items-center gap-3.5 border-b border-border-primary bg-surface-base px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.4px] text-text-muted">
+    <div className="flex min-w-max flex-nowrap items-center gap-3.5 border-b border-border-primary bg-surface-base px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.4px] text-text-muted">
       <span className="size-4 shrink-0" aria-hidden />
       {table.getFlatHeaders().map((header) => (
         <HeaderCell key={header.id} header={header} />
       ))}
-      <span className="flex-1 text-right">测试 / 操作</span>
+      <span className="ml-auto shrink-0 whitespace-nowrap text-right">测试 / 操作</span>
     </div>
   )
 }

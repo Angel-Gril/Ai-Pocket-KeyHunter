@@ -57,10 +57,13 @@ function ActionButton({ icon, label, onClick, loading }: Readonly<ActionButtonPr
       type="button"
       onClick={onClick}
       disabled={loading}
-      className="inline-flex items-center gap-1.5 rounded-sm border border-border-primary bg-surface-overlay px-2.5 py-1.5 font-sans text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
+      title={label}
+      aria-label={label}
+      className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm border border-border-primary bg-surface-overlay px-2 py-1.5 font-sans text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50 xl:px-2.5"
     >
-      {loading ? <Loader2 className="size-3.5 animate-spin" /> : icon}
-      {label}
+      {loading ? <Loader2 className="size-3.5 shrink-0 animate-spin" /> : icon}
+      {/* Hide labels under xl so the action cluster never crushes into vertical Chinese. */}
+      <span className="hidden xl:inline">{label}</span>
     </button>
   )
 }
@@ -145,18 +148,18 @@ function RowActions({
   onToggleExpand,
 }: Readonly<RowActionsProps>) {
   return (
-    <div className="flex flex-1 items-center justify-end gap-1.5">
+    <div className="ml-auto flex shrink-0 flex-nowrap items-center justify-end gap-1.5">
       {onLoadModels ? (
-        <ActionButton icon={<List className="size-3.5" />} label="模型列表" onClick={onLoadModels} loading={busy?.models} />
+        <ActionButton icon={<List className="size-3.5 shrink-0" />} label="模型列表" onClick={onLoadModels} loading={busy?.models} />
       ) : null}
       {onBalance ? (
-        <ActionButton icon={<Wallet className="size-3.5" />} label="余额" onClick={onBalance} loading={busy?.balance} />
+        <ActionButton icon={<Wallet className="size-3.5 shrink-0" />} label="余额" onClick={onBalance} loading={busy?.balance} />
       ) : null}
       {onPromote ? (
-        <ActionButton icon={<Check className="size-3.5" />} label="标为可用" onClick={onPromote} loading={promotePending} />
+        <ActionButton icon={<Check className="size-3.5 shrink-0" />} label="标为可用" onClick={onPromote} loading={promotePending} />
       ) : null}
       {onChat ? (
-        <ActionButton icon={<MessageSquare className="size-3.5" />} label="测对话" onClick={onChat} loading={busy?.chat} />
+        <ActionButton icon={<MessageSquare className="size-3.5 shrink-0" />} label="测对话" onClick={onChat} loading={busy?.chat} />
       ) : null}
       {canExpand ? (
         <button
@@ -164,7 +167,7 @@ function RowActions({
           onClick={onToggleExpand}
           aria-label={isExpanded ? "Collapse models" : "Expand models"}
           aria-expanded={isExpanded}
-          className="flex size-7 items-center justify-center rounded-sm bg-surface-overlay text-text-muted hover:text-text-primary"
+          className="flex size-7 shrink-0 items-center justify-center rounded-sm bg-surface-overlay text-text-muted hover:text-text-primary"
         >
           <ChevronDown className={cn("size-4 transition-transform", isExpanded && "rotate-180")} />
         </button>
@@ -280,7 +283,7 @@ export function KeyRow({
         className,
       )}
     >
-      <div className="flex items-center gap-3.5 px-4 py-3.5">
+      <div className="flex min-w-max flex-nowrap items-center gap-3.5 px-4 py-3.5">
         {onSelectedChange ? (
           <Checkbox
             checked={selected}
