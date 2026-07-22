@@ -1,9 +1,10 @@
 import { useState } from "react"
-import { ChevronDown, Copy, Eye, EyeOff, List, Loader2, MessageSquare, Wallet } from "lucide-react"
+import { Check, ChevronDown, Copy, Eye, EyeOff, List, Loader2, MessageSquare, Wallet } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ProviderBadge } from "@/components/provider-badge"
 import { colWidthStyle } from "@/components/key-table-columns"
 import { StatusBadge, type StatusVariant } from "@/components/status-badge"
+import type { ProviderEvidence } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 export interface KeyRowStatus {
@@ -23,6 +24,8 @@ export interface KeyRowProps {
   validationState?: string
   scope?: string
   tierEvidence?: string
+  createdAt?: string
+  evidence?: ProviderEvidence
   status?: KeyRowStatus
   models?: string[]
   modelsLoading?: boolean
@@ -35,6 +38,8 @@ export interface KeyRowProps {
   onLoadModels?: () => void
   onBalance?: () => void
   onChat?: () => void
+  onPromote?: () => void
+  promotePending?: boolean
   busy?: { models?: boolean; balance?: boolean; chat?: boolean }
   className?: string
 }
@@ -119,6 +124,8 @@ interface RowActionsProps {
   onLoadModels?: () => void
   onBalance?: () => void
   onChat?: () => void
+  onPromote?: () => void
+  promotePending?: boolean
   busy?: KeyRowProps["busy"]
   canExpand: boolean
   isExpanded: boolean
@@ -130,6 +137,8 @@ function RowActions({
   onLoadModels,
   onBalance,
   onChat,
+  onPromote,
+  promotePending,
   busy,
   canExpand,
   isExpanded,
@@ -142,6 +151,9 @@ function RowActions({
       ) : null}
       {onBalance ? (
         <ActionButton icon={<Wallet className="size-3.5" />} label="余额" onClick={onBalance} loading={busy?.balance} />
+      ) : null}
+      {onPromote ? (
+        <ActionButton icon={<Check className="size-3.5" />} label="标为可用" onClick={onPromote} loading={promotePending} />
       ) : null}
       {onChat ? (
         <ActionButton icon={<MessageSquare className="size-3.5" />} label="测对话" onClick={onChat} loading={busy?.chat} />
@@ -187,6 +199,36 @@ function ModelsPanel({
   )
 }
 
+export function formatEvidenceRecord(value: Record<string, unknown> | undefined, mask = false): string {
+  if (!value || Object.keys(value).length === 0) return "N/A"
+  const formatted = Object.fromEntries(
+    Object.entries(value).map(([key, item]) => {
+      if (mask && typeof item === "string" && item.length > 8) {
+        return [key, `${item.slice(0, 4)}…${item.slice(-4)}`]
+      }
+      return [key, item]
+    }),
+  )
+  return JSON.stringify(formatted)
+}
+
+function evidenceRows(evidence: ProviderEvidence): Array<[string, string]> {
+  return [
+    ["套餐 / 等级", evidence.plan || evidence.tier || "N/A"],
+    ["账户类型", evidence.account_type || "N/A"],
+    ["配额 / 剩余额度", formatEvidenceRecord(evidence.quota)],
+    ["用量 / 窗口", formatEvidenceRecord(evidence.usage)],
+    ["模型权限", formatEvidenceRecord(evidence.entitlements)],
+    ["账户身份", formatEvidenceRecord(evidence.identity, true)],
+  ]
+}
+
+export function evidenceObservedLabel(observedAt?: string): string {
+  if (!observedAt) return "上次探测：N/A"
+  const date = new Date(observedAt)
+  return Number.isNaN(date.getTime()) ? `上次探测：${observedAt}` : `上次探测：${date.toLocaleString()}`
+}
+
 export function KeyRow({
   maskedKey,
   revealedKey,
@@ -199,6 +241,8 @@ export function KeyRow({
   validationState,
   scope,
   tierEvidence,
+  createdAt,
+  evidence,
   status,
   models,
   modelsLoading,
@@ -211,6 +255,8 @@ export function KeyRow({
   onLoadModels,
   onBalance,
   onChat,
+  onPromote,
+  promotePending,
   busy,
   className,
 }: Readonly<KeyRowProps>) {
@@ -226,7 +272,7 @@ export function KeyRow({
 
   // Only offer the models panel when a loader is wired or models already exist.
   const canExpand = Boolean(onLoadModels) || (models?.length ?? 0) > 0
-
+  const evidenceItems = evidence ? evidenceRows(evidence) : []
   return (
     <div
       className={cn(
@@ -271,6 +317,24 @@ export function KeyRow({
           ) : null}
         </div>
 
+        <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("createdAt")}>
+          {createdAt ? (
+            <time
+              className="truncate font-mono text-[11px] text-text-secondary"
+              dateTime={createdAt}
+              title={createdAt}
+            >
+              {new Date(createdAt).toLocaleString()}
+            </time>
+          ) : (
+            <span className="font-mono text-[11px] text-text-muted">N/A</span>
+          )}
+          {evidence?.evidence_kind ? (
+            <span className="truncate font-mono text-[10px] text-text-muted">
+              {evidence.evidence_kind} · {evidence.source || "provider"}
+            </span>
+          ) : null}
+        </div>
         <div className="flex min-w-0 shrink-0 flex-col gap-0.5 overflow-hidden" style={colWidthStyle("status")}>
           {status ? <StatusBadge variant={status.variant} label={status.label} /> : null}
           {validationState ? (
@@ -282,6 +346,8 @@ export function KeyRow({
           onLoadModels={onLoadModels}
           onBalance={onBalance}
           onChat={onChat}
+          onPromote={onPromote}
+          promotePending={promotePending}
           busy={busy}
           canExpand={canExpand}
           isExpanded={isExpanded}
@@ -290,6 +356,24 @@ export function KeyRow({
       </div>
 
       {isExpanded ? <ModelsPanel models={models} modelsLoading={modelsLoading} /> : null}
+      {isExpanded && evidence ? (
+        <div className="border-t border-border-subtle bg-surface-inset px-8 py-3 text-xs">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+            {evidenceItems.map(([label, value]) => (
+              <div key={label} className="min-w-0">
+                <div className="font-mono text-[10px] uppercase tracking-wide text-text-muted">{label}</div>
+                <div className="mt-1 break-all font-mono text-text-secondary" title={value}>{value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-3 font-mono text-[10px] text-text-muted">
+            <span>{evidenceObservedLabel(evidence.observed_at)}</span>
+            {evidence.detail?.cash_balance_state === "depleted" ? (
+              <span className="text-warning">现金余额状态：已耗尽（无数值余额）</span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react"
-import { useMutation, useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import {
@@ -10,6 +10,9 @@ import {
   type ResultKind,
 } from "@/lib/api"
 import { ChatTestDialog } from "@/components/chat-test-dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
 import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
@@ -19,6 +22,7 @@ import { cn, copyToClipboard } from "@/lib/utils"
 type Revealed = { apikey: string; apiurl: string }
 type RowBusy = { models?: boolean; balance?: boolean; chat?: boolean }
 type BalanceInfo = { balance?: string; tier?: string }
+type PromotionRequest = { resultIds: number[]; note: string }
 
 const KINDS: ResultKind[] = ["valid", "suspicious"]
 
@@ -27,6 +31,7 @@ function rowKeyOf(kind: ResultKind, index: number): string {
 }
 
 export default function AllKeysPage() {
+  const queryClient = useQueryClient()
   const [kind, setKind] = useState<ResultKind>("valid")
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [revealed, setRevealed] = useState<Record<string, Revealed>>({})
@@ -34,9 +39,11 @@ export default function AllKeysPage() {
   const [balances, setBalances] = useState<Record<string, BalanceInfo>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState<Record<string, RowBusy>>({})
-  const [exporting, setExporting] = useState(false)
   const [chatIndex, setChatIndex] = useState<number | null>(null)
+  const [exporting, setExporting] = useState(false)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
+  const [promotion, setPromotion] = useState<PromotionRequest | null>(null)
+  const [promotionNote, setPromotionNote] = useState("")
 
   const { table, columnSizeVars } = useKeyTableSizing()
 
@@ -90,6 +97,57 @@ export default function AllKeysPage() {
   const { mutateAsync: modelsAsync } = useMutation({ mutationFn: api.keyModels })
   const { mutateAsync: balanceAsync } = useMutation({ mutationFn: api.keyBalance })
   const { mutateAsync: chatAsync } = useMutation({ mutationFn: api.keyChat })
+  const promoteMutation = useMutation({
+    mutationFn: (request: PromotionRequest) => api.promoteKeys(request.resultIds, request.note),
+    onSuccess: async (report) => {
+      setPromotion(null)
+      setPromotionNote("")
+      setSelected(new Set())
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["keys", "valid"] }),
+        queryClient.invalidateQueries({ queryKey: ["keys", "suspicious"] }),
+        queryClient.invalidateQueries({ queryKey: ["runs"] }),
+        queryClient.invalidateQueries({ queryKey: ["high-value"] }),
+      ])
+      toast.success(`已标为可用 ${report.promoted.length} 条`)
+    },
+    onError: (error) => {
+      toast.error("标为可用失败", { description: errorMessage(error, "状态已变化，请刷新后重试") })
+    },
+  })
+
+  const requestPromotion = useCallback(
+    (resultIds: number[]) => {
+      const ids = [...new Set(resultIds)]
+      if (ids.length === 0) {
+        toast.error("所选记录缺少稳定 result_id")
+        return
+      }
+      setPromotion({ resultIds: ids, note: "" })
+      setPromotionNote("")
+    },
+    [],
+  )
+
+  const promoteSelected = useCallback(() => {
+    const ids = [...selected]
+      .map((index) => records[index]?.result_id)
+      .filter((id): id is number => typeof id === "number")
+    requestPromotion(ids)
+  }, [records, requestPromotion, selected])
+
+  const promoteRow = useCallback(
+    (index: number) => {
+      const resultId = records[index]?.result_id
+      requestPromotion(typeof resultId === "number" ? [resultId] : [])
+    },
+    [records, requestPromotion],
+  )
+
+  const confirmPromotion = useCallback(() => {
+    if (!promotion) return
+    promoteMutation.mutate({ ...promotion, note: promotionNote.trim() })
+  }, [promotion, promotionNote, promoteMutation])
 
   const setRowBusy = useCallback((key: string, patch: RowBusy) => {
     setBusy((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }))
@@ -311,6 +369,8 @@ export default function AllKeysPage() {
           const balanceInfo = balances[key]
           return (
             <IndexedKeyRow
+              onPromote={kind === "suspicious" ? promoteRow : undefined}
+              promotePending={kind === "suspicious" && promoteMutation.isPending}
               key={key}
               index={originalIndex}
               maskedKey={fields.maskedKey}
@@ -324,6 +384,8 @@ export default function AllKeysPage() {
               validationState={fields.validationState}
               scope={fields.scope}
               tierEvidence={balanceInfo ? undefined : fields.tierEvidence}
+              createdAt={fields.createdAt}
+              evidence={fields.evidence}
               status={status}
               models={models[key]}
               modelsLoading={busy[key]?.models}
@@ -407,6 +469,9 @@ export default function AllKeysPage() {
         allChecked={allChecked}
         onToggleAll={handleToggleAll}
         onExportJson={() => void runExport("json")}
+        actionLabel={kind === "suspicious" ? "标为可用" : undefined}
+        onAction={kind === "suspicious" ? promoteSelected : undefined}
+        actionPending={promoteMutation.isPending}
         onExportCsv={() => void runExport("csv")}
         exporting={exporting}
       />
@@ -415,6 +480,38 @@ export default function AllKeysPage() {
         <KeyTableHeader table={table} />
         {body}
       </div>
+
+      <Dialog
+        open={promotion !== null}
+        onOpenChange={(open) => {
+          if (!open && !promoteMutation.isPending) setPromotion(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认标为可用</DialogTitle>
+            <DialogDescription>
+              将 {promotion?.resultIds.length ?? 0} 条疑似记录提升为可用，并写入人工审核审计字段。此操作不会自动重新探测余额。
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            value={promotionNote}
+            onChange={(event) => setPromotionNote(event.target.value)}
+            placeholder="备注（可选，例如：人工复核余额通过）"
+            maxLength={1000}
+            disabled={promoteMutation.isPending}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPromotion(null)} disabled={promoteMutation.isPending}>
+              取消
+            </Button>
+            <Button onClick={confirmPromotion} disabled={promoteMutation.isPending}>
+              {promoteMutation.isPending ? <Loader2 className="animate-spin" /> : null}
+              确认提升
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ChatTestDialog
         open={chatIndex !== null}

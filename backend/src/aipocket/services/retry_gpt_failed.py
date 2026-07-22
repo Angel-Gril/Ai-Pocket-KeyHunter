@@ -240,31 +240,38 @@ async def retry_gpt_failed(run_id: str) -> RetryGptFailedReport:
         )
         results = await validate_all(all_creds)
 
-        # 5. Honeypot filter (mutates in place; splits suspicious later)
-        from aipocket.services.honeypot import filter_honeypots
+        from aipocket.services.dedup import get_dedup_store
+        from aipocket.services.finalizer import finalize_results
         from aipocket.services.honeypot_store import record_from_results
 
-        filter_honeypots(results)
+        dedup = await get_dedup_store()
         try:
+            finalized = await finalize_results(
+                results,
+                dedup=dedup,
+                no_auth_hosts=set(),
+                suspicious_hosts=set(),
+            )
             record_from_results(results, run_id=run_id)
-        except Exception as e:  # noqa: BLE001
-            log.warning("honeypot cache record skipped on retry: %s", e)
-
-        valid = [r for r in results if r.valid and not r.suspicious]
-        suspicious = [r for r in results if r.valid and r.suspicious]
+        finally:
+            await dedup.close()
+        valid = finalized.final_verified
+        suspicious = finalized.rate_limited_unconfirmed
+        rejected = finalized.rejected
 
         # 6. Drop keys already stored for this run BEFORE balance enrich
         #    (append-only; avoid re-querying balance for duplicates).
         existing = _load_existing_identities(run_id)
         new_valid = [r for r in valid if _result_identity(r) not in existing]
         new_suspicious = [r for r in suspicious if _result_identity(r) not in existing]
+        new_rejected = [r for r in rejected if _result_identity(r) not in existing]
         valid_ids = {_result_identity(r) for r in new_valid}
         new_suspicious = [r for r in new_suspicious if _result_identity(r) not in valid_ids]
 
         report.valid_appended = len(new_valid)
         report.suspicious_appended = len(new_suspicious)
 
-        if not new_valid and not new_suspicious:
+        if not new_valid and not new_suspicious and not new_rejected:
             report.archived_files = _archive_failed_files(failed_paths)
             report.message = (
                 f"Recovered {report.credentials_found} credential(s) but all were "
@@ -272,15 +279,14 @@ async def retry_gpt_failed(run_id: str) -> RetryGptFailedReport:
             )
             return report
 
-        # 7. Balance enrich + high-value commit only for *new* valid keys
-        if new_valid:
+        if new_valid or new_suspicious:
             from aipocket.services.balance import enrich_results
             from aipocket.services.dedup import get_dedup_store
             from aipocket.services.finalizer import commit_final_results
 
             dedup = await get_dedup_store()
             try:
-                await enrich_results(new_valid, dedup=dedup, use_cache=False)
+                await enrich_results([*new_valid, *new_suspicious], dedup=dedup, use_cache=False)
                 commit_report = await commit_final_results(new_valid, dedup=dedup)
                 report.high_value_final = commit_report.high_value_final
             finally:
@@ -293,7 +299,11 @@ async def retry_gpt_failed(run_id: str) -> RetryGptFailedReport:
         #    skips files entirely.
         if settings.pg_enabled:
             try:
-                append_results_pg(run_id, new_valid, new_suspicious)
+                append_results_pg(
+                    run_id,
+                    new_valid,
+                    [*new_suspicious, *new_rejected],
+                )
             except LookupError as e:
                 # Run missing from PG while PG is configured — refuse silent
                 # file-only write so the UI doesn't show stale DB state.

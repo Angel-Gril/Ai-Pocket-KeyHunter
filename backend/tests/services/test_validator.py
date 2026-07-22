@@ -867,7 +867,7 @@ async def test_probe_persists_routing_override_to_official():
         result = await _probe(client, cred)
     assert cred.routed_to_official is True
     assert cred.apiurl == "https://api.openai.com/v1"
-    assert cred.host == "api.openai.com"
+    assert cred.host == "https://api.openai.com"
     assert cred.leak_host == LEAK_URL
     # ip/port described the leak host, not the official gateway → cleared
     assert cred.ip == ""

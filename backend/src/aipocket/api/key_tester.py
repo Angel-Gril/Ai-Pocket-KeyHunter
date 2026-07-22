@@ -1,11 +1,11 @@
-"""Single-key test operations — thin wrappers over the existing validator/balance.
+"""Single-key test operations over provider-aware validation and evidence probes.
 
 Three INDEPENDENT operations, never chained automatically (the frontend exposes
 three separate buttons):
 
-* :func:`list_models`  — GET /v1/models (cheap)                → validator._fetch_models_list
-* :func:`query_key_balance` — balance probes (cheap)           → balance.query_balance
-* :func:`test_chat`    — one minimal chat completion (SPENDS)  → real messages/chat only
+* :func:`list_models` — provider-specific read-only model discovery
+* :func:`query_key_balance` — provider-aware balance/quota/identity evidence
+* :func:`test_chat` — one minimal chat completion (SPENDS)
 
 Each builds a throwaway :class:`Credential` from the ``{apikey, apiurl}`` a row
 in the results list carries.
@@ -32,8 +32,10 @@ from aipocket.core.config import settings
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 from aipocket.core.validation_state import apply_state
 from aipocket.services import validator as _v
+from aipocket.services.credential_policy import apply_credential_policy
 from aipocket.services.providers import provider_registry, resolve_provider
 from aipocket.services.providers.anthropic import validate_anthropic
+from aipocket.services.providers.endpoints import build_operation_url, canonicalize_endpoint
 from aipocket.services.providers.openai import InferencePolicy, validate_openai
 
 log = logging.getLogger(__name__)
@@ -44,18 +46,16 @@ def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=timeout, follow_redirects=True)
 
 
-def _route_to_official(cred: Credential) -> Credential:
-    """Mirror scanner routing: prefix-matched keys validate on official hosts."""
+def _route_to_official(cred: Credential) -> Credential | None:
+    """Mirror scanner routing and the shared pre-request credential policy."""
     key_spec = provider_registry.match_key(cred.apikey)
-    if key_spec is None or not key_spec.official_api_url:
-        return cred
-    domain_spec = provider_registry.match_domain(cred.apiurl)
-    if domain_spec is not None:
-        return cred
-    cred.leak_host = cred.apiurl
-    cred.apiurl = key_spec.official_api_url
-    cred.routed_to_official = True
-    return cred
+    if key_spec is not None and key_spec.official_api_url:
+        domain_spec = provider_registry.match_domain(cred.apiurl)
+        if domain_spec is None:
+            cred.leak_host = cred.leak_host or cred.apiurl
+            cred.apiurl = key_spec.official_api_url
+            cred.routed_to_official = True
+    return apply_credential_policy(cred)
 
 
 async def list_models(apikey: str, apiurl: str) -> list[str]:
@@ -67,6 +67,8 @@ async def list_models(apikey: str, apiurl: str) -> list[str]:
     """
     cred = Credential(apikey=apikey, apiurl=apiurl)
     cred = _route_to_official(cred)
+    if cred is None:
+        return []
     resolution = resolve_provider(apiurl=cred.apiurl, apikey=apikey)
     async with _client() as client:
         if resolution.provider in {"google", "gemini"} or resolution.protocol_family == "gemini":
@@ -74,19 +76,42 @@ async def list_models(apikey: str, apiurl: str) -> list[str]:
 
             validation = await validate_gemini(client, cred)
             return list(validation.models) if validation.valid else []
-        chat_url = _v._normalize_apiurl(cred.apiurl)
+        endpoint = canonicalize_endpoint(cred.apiurl, provider=resolution.provider)
+        chat_url = build_operation_url(endpoint, provider=resolution.provider, operation="chat")
         if not chat_url:
             return []
         return await _v._fetch_models_list(client, cred, chat_url)
 
 
 async def query_key_balance(apikey: str, apiurl: str) -> dict:
-    """Query balance/credits for a key (cheap; reuses balance.query_balance)."""
+    """Query read-only provider evidence without cross-provider serial probing."""
     from aipocket.services.balance import query_balance
+    from aipocket.services.balance_dispatch import apply_probe_result, dispatch_probe
 
-    cred = Credential(apikey=apikey, apiurl=apiurl)
+    cred = _route_to_official(Credential(apikey=apikey, apiurl=apiurl))
+    if cred is None:
+        return {"gateway": "unsupported", "balance_usd": "", "reason": "excluded:google_generative_language"}
+    resolution = resolve_provider(apiurl=cred.apiurl, apikey=apikey)
+    result = ValidationResult(
+        credential=cred,
+        validation_state="structurally_valid",
+        provider_info=ProviderInfo(
+            validation_provider=resolution.provider,
+            provider=resolution.provider,
+            category=resolution.category,
+        ),
+    )
     async with _client() as client:
-        return await query_balance(client, cred)
+        probe = await dispatch_probe(client, result)
+        if probe.matched:
+            apply_probe_result(result, probe)
+            evidence = dict(result.provider_evidence)
+            evidence["gateway"] = probe.provider
+            evidence["balance_usd"] = probe.balance_usd
+            return evidence
+        if resolution.provider in {"unknown", "gateway", "ambiguous"}:
+            return await query_balance(client, cred)
+    return {"gateway": resolution.provider, "balance_usd": ""}
 
 
 def _map_adapter_to_result(
@@ -141,6 +166,13 @@ async def test_chat(apikey: str, apiurl: str, model: str) -> ValidationResult:
     """
     cred = Credential(apikey=apikey, apiurl=apiurl)
     cred = _route_to_official(cred)
+    if cred is None:
+        result = ValidationResult(
+            credential=Credential(apikey=apikey, apiurl=apiurl),
+            error="excluded:google_generative_language",
+        )
+        apply_state(result, "unsupported_context")
+        return result
     resolution = resolve_provider(apiurl=cred.apiurl, apikey=apikey)
     log.debug(
         "test_chat provider=%s model=%s",
@@ -266,7 +298,8 @@ async def test_chat(apikey: str, apiurl: str, model: str) -> ValidationResult:
                 models=list(validation.models),
             )
 
-        chat_url = _v._normalize_apiurl(cred.apiurl)
+        endpoint = canonicalize_endpoint(cred.apiurl, provider=resolution.provider)
+        chat_url = build_operation_url(endpoint, provider=resolution.provider, operation="chat")
         if not chat_url:
             result.error = "no apiurl"
             apply_state(result, "unsupported_context")

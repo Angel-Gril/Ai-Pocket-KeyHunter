@@ -19,6 +19,11 @@ def test_normalize_site_key_default_ports():
     assert store.normalize_site_key("api.example.com") == "api.example.com:80"
 
 
+def test_normalize_site_key_ipv6_and_explicit_port():
+    assert store.normalize_site_key("https://[2001:db8::1]:8443/v1") == "[2001:db8::1]:8443"
+    assert store.normalize_site_key("[2001:db8::1]:9000/path") == "[2001:db8::1]:9000"
+
+
 def test_normalize_site_key_empty():
     assert store.normalize_site_key("") == ""
     assert store.normalize_site_key("   ") == ""
@@ -98,6 +103,43 @@ def test_record_from_results_pg_disabled_no_crash(monkeypatch):
     ]
     n = store.record_from_results(results, run_id="run_test", no_auth_hosts={"extra.example:99"})
     assert n == 0
+
+
+def test_record_from_results_isolates_host_failures_and_rejects_cluster_signals(
+    monkeypatch,
+    caplog,
+):
+    monkeypatch.setattr("aipocket.core.config.settings.database_url", "postgresql://test/db")
+    calls: list[tuple[str, str]] = []
+
+    def fake_record_site(host_key: str, *, reason: str, **_kwargs):
+        calls.append((host_key, reason))
+        if host_key == "fail.example:80":
+            raise RuntimeError("write failed")
+        return {"host_key": host_key}
+
+    monkeypatch.setattr(store, "record_site", fake_record_site)
+    results = [
+        _result("fail.example:80", "honeypot:steganography (hidden prompt)"),
+        _result("ok.example:80", "honeypot:response-cluster (same body)"),
+        _result("cluster.example:80", "honeypot:cluster-key (key-level only)"),
+    ]
+
+    with caplog.at_level("INFO", logger="aipocket.services.honeypot_store"):
+        written = store.record_from_results(
+            results,
+            run_id="run_test",
+            no_auth_hosts={"https://noauth.example:443/v1"},
+        )
+
+    assert written == 2
+    assert {host for host, _reason in calls} == {
+        "fail.example:80",
+        "ok.example:80",
+        "noauth.example:443",
+    }
+    assert all(host != "cluster.example:80" for host, _reason in calls)
+    assert "eligible_hosts=3 written_hosts=2 failed_hosts=1" in caplog.text
 
 
 def test_record_site_pg_disabled_returns_dict(monkeypatch):

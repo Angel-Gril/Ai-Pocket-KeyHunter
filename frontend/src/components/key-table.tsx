@@ -12,6 +12,7 @@ const COLUMN_LABELS: Record<KeyColumnId, string> = {
   endpoint: "APIURL / HOST",
   provider: "PROVIDER",
   balance: "BALANCE",
+  createdAt: "入库时间",
   status: "STATUS",
 }
 
@@ -90,6 +91,9 @@ export interface BulkBarProps {
   exporting?: boolean
   jsonLabel?: string
   csvLabel?: string
+  actionLabel?: string
+  onAction?: () => void
+  actionPending?: boolean
 }
 
 export function BulkBar({
@@ -102,6 +106,9 @@ export function BulkBar({
   exporting,
   jsonLabel = "导出 JSON",
   csvLabel = "导出 CSV",
+  actionLabel,
+  onAction,
+  actionPending,
 }: Readonly<BulkBarProps>) {
   return (
     <div className="flex items-center gap-3.5 border-b border-border-subtle bg-surface-inset px-8 py-3">
@@ -116,6 +123,14 @@ export function BulkBar({
           已选 {selectedCount} / {total}
         </span>
       </div>
+      {actionLabel && onAction ? (
+        <ExportButton
+          icon={actionPending ? <Loader2 className="size-3.5 animate-spin" /> : null}
+          label={actionLabel}
+          onClick={onAction}
+          disabled={actionPending || selectedCount === 0}
+        />
+      ) : null}
       <ExportButton
         icon={exporting ? <Loader2 className="size-3.5 animate-spin" /> : <Braces className="size-3.5" />}
         label={jsonLabel}
@@ -140,7 +155,7 @@ export function BulkBar({
 export interface IndexedKeyRowProps
   extends Omit<
     KeyRowProps,
-    "onSelectedChange" | "onExpandedChange" | "onReveal" | "onCopy" | "onLoadModels" | "onBalance" | "onChat"
+    "onSelectedChange" | "onExpandedChange" | "onReveal" | "onCopy" | "onLoadModels" | "onBalance" | "onChat" | "onPromote"
   > {
   index: number
   onSelectedChange?: (index: number, checked: boolean) => void
@@ -150,6 +165,7 @@ export interface IndexedKeyRowProps
   onLoadModels?: (index: number) => void
   onBalance?: (index: number) => void
   onChat?: (index: number) => void
+  onPromote?: (index: number) => void
 }
 
 export const IndexedKeyRow = memo(function IndexedKeyRow({
@@ -161,6 +177,7 @@ export const IndexedKeyRow = memo(function IndexedKeyRow({
   onLoadModels,
   onBalance,
   onChat,
+  onPromote,
   ...rest
 }: Readonly<IndexedKeyRowProps>) {
   const handleSelected = useCallback(
@@ -176,6 +193,7 @@ export const IndexedKeyRow = memo(function IndexedKeyRow({
   const handleLoadModels = useCallback(() => onLoadModels?.(index), [onLoadModels, index])
   const handleBalance = useCallback(() => onBalance?.(index), [onBalance, index])
   const handleChat = useCallback(() => onChat?.(index), [onChat, index])
+  const handlePromote = useCallback(() => onPromote?.(index), [onPromote, index])
 
   return (
     <KeyRow
@@ -187,6 +205,7 @@ export const IndexedKeyRow = memo(function IndexedKeyRow({
       onLoadModels={onLoadModels ? handleLoadModels : undefined}
       onBalance={onBalance ? handleBalance : undefined}
       onChat={onChat ? handleChat : undefined}
+      onPromote={onPromote ? handlePromote : undefined}
     />
   )
 })

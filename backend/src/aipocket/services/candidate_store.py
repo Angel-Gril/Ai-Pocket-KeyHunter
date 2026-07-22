@@ -25,6 +25,10 @@ from aipocket.core.credentials import (
 )
 from aipocket.core.models import Credential
 from aipocket.core.observations import ExtractionMethod, credential_identity
+from aipocket.services.credential_policy import (
+    filter_credentials_by_policy,
+    is_google_direct_result,
+)
 
 log = logging.getLogger(__name__)
 
@@ -152,6 +156,9 @@ def upsert_candidates(
     the primary payload; stage diversity is visible via the first-writer stage.
     """
     if not spill_enabled() or not run_id or not credentials:
+        return 0
+    credentials = filter_credentials_by_policy(credentials, stage=f"candidate:{stage}")
+    if not credentials:
         return 0
 
     rows: list[tuple] = []
@@ -441,7 +448,7 @@ def upsert_validation_results(run_id: str, results: Sequence[Any]) -> int:
     rows: list[tuple] = []
     for result in results:
         cred = getattr(result, "credential", None)
-        if cred is None:
+        if cred is None or is_google_direct_result(result):
             continue
         identity = _identity_key(cred)
         rows.append(

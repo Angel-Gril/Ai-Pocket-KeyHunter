@@ -12,6 +12,9 @@ export interface KeyFields {
   validationState?: string
   scope?: string
   tierEvidence?: string
+  createdAt?: string
+  savedAt?: string
+  evidence?: KeyRecord["provider_evidence"]
 }
 
 function text(value: unknown): string | undefined {
@@ -66,6 +69,9 @@ export function extractKeyFields(rec: KeyRecord): KeyFields {
     validationState: text(rec.validation_state),
     scope: text(rec.scope),
     tierEvidence: text(rec.tier_evidence) ?? text(rec.tier),
+    createdAt: text(rec.created_at) ?? text(rec.validated_at),
+    savedAt: text(rec.saved_at),
+    evidence: rec.provider_evidence,
   }
 }
 

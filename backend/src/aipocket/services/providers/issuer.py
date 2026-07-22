@@ -43,6 +43,8 @@ _PATTERN_BY_ID: dict[str, re.Pattern[str]] = {name: pat for name, pat in KEY_PAT
 
 # Model-id → capability family prefixes (longest first for matching).
 _MODEL_FAMILY_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("longcat", "longcat"),
+    ("minimax", "minimax"),
     ("moonshot", "moonshot"),
     ("deepseek", "deepseek"),
     ("claude", "anthropic"),
@@ -187,6 +189,10 @@ _OFFICIAL_PROVIDER_NAMES: frozenset[str] = frozenset(
         "azure_openai",
         "vertex",
         "gemini",
+        "minimax",
+        "nvidia",
+        "ksyun",
+        "longcat",
     }
 )
 
@@ -218,6 +224,8 @@ def _hostname(apiurl: str) -> str:
 
 def _is_domain_suffix(host: str, suffix: str) -> bool:
     suffix = suffix.lower().rstrip(".")
+    if suffix == "api.longcat.chat":
+        return host == suffix
     if not host or not suffix:
         return False
     return host == suffix or host.endswith(f".{suffix}")
@@ -274,6 +282,10 @@ _PROVIDER_VARIABLE_ALIASES: dict[str, tuple[str, ...]] = {
     "replicate": ("replicate",),
     "together": ("together",),
     "fireworks": ("fireworks",),
+    "minimax": ("minimax",),
+    "nvidia": ("nvidia", "nim"),
+    "ksyun": ("ksyun", "kspmas"),
+    "longcat": ("longcat",),
 }
 
 

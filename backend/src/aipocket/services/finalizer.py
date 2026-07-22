@@ -12,6 +12,7 @@ from aipocket.core.validation_state import (
     is_quarantined,
 )
 
+from .credential_policy import filter_results_by_policy, is_google_direct_result
 from .dedup import DedupStore
 from .high_value_writer import should_save, try_save
 from .honeypot import filter_honeypots
@@ -61,8 +62,9 @@ async def finalize_results(
     suspicious_hosts: set[str],
 ) -> FinalizedResults:
     """Apply explicit terminal verdicts before cache or high-value persistence."""
+    policy_results = filter_results_by_policy(results, stage="finalizer")
     filtered = filter_honeypots(
-        results,
+        policy_results,
         no_auth_hosts=no_auth_hosts,
         suspicious_hosts=suspicious_hosts,
     )
@@ -144,6 +146,8 @@ async def commit_final_results(
     """
     high_value_fingerprints: set[str] = set()
     for result in results:
+        if is_google_direct_result(result):
+            continue
         try:
             await dedup.cache_valid(result)
         except Exception as exc:  # noqa: BLE001 - Redis cache is non-critical

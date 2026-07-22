@@ -6,7 +6,6 @@ import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
@@ -14,6 +13,7 @@ from aipocket.core.config import settings
 from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 from aipocket.core.request_ledger import RequestAttribution
 from aipocket.core.validation_state import apply_state
+from aipocket.services.credential_policy import normalize_credential_endpoint
 from aipocket.services.http_transport import is_http_header_value_safe
 from aipocket.services.providers import (
     provider_registry,
@@ -26,6 +26,7 @@ from aipocket.services.providers.azure_openai import (
     AzureInferencePolicy,
     validate_azure_openai,
 )
+from aipocket.services.providers.endpoints import build_operation_url, canonicalize_endpoint
 from aipocket.services.providers.gemini import validate_gemini
 from aipocket.services.providers.issuer import decide_issuer
 from aipocket.services.providers.openai import InferencePolicy, validate_openai
@@ -733,14 +734,13 @@ async def _probe_inner(
             # Persist the override so downstream stages (balance, verify_no_auth,
             # output) see the endpoint the key is ACTUALLY validated against,
             # not the leaking site where it was discovered.
-            cred.leak_host = cred.apiurl
+            cred.leak_host = cred.leak_host or cred.apiurl or cred.host
             cred.apiurl = key_spec.official_api_url
             cred.routed_to_official = True
-            parsed = urlparse(key_spec.official_api_url)
-            cred.host = parsed.hostname or cred.host
+            normalize_credential_endpoint(cred)
             cred.ip = ""
-            cred.port = str(parsed.port) if parsed.port else ""
-            effective_url = key_spec.official_api_url
+            cred.port = ""
+            effective_url = cred.apiurl
             log.debug(
                 "Key %s… matches provider '%s' but apiurl '%s' is not a known "
                 "provider gateway → overriding to %s (leak_host=%s)",
@@ -774,6 +774,8 @@ async def _probe_inner(
         except KeyError:
             pass
 
+    normalize_credential_endpoint(cred)
+    effective_url = cred.apiurl or effective_url
     result.provider_info = ProviderInfo(
         validation_provider=resolution.provider,
         provider=resolution.provider,
@@ -793,7 +795,7 @@ async def _probe_inner(
         "gemini",
         "vertex",
     }
-    api_url = _normalize_apiurl(effective_url)
+    api_url = _normalize_apiurl(effective_url, provider=resolution.provider)
     if not api_url and resolution.provider not in adapter_providers:
         result.error = "no apiurl"
         return result
@@ -977,7 +979,7 @@ async def _probe_inner(
             # claims to serve.
             probe_models = available_models[:5] + probe_models
 
-    if resolution.protocol_family == "anthropic":
+    if resolution.provider == "longcat" and cred.apiurl.endswith("/anthropic") or resolution.protocol_family == "anthropic":
         result = await _probe_anthropic(client, cred, api_url, result, probe_models)
     else:
         result = await _probe_chat_completions(client, cred, api_url, result, probe_models)
@@ -1023,18 +1025,13 @@ def _models_list_request(cred: Credential, chat_url: str) -> tuple[str, dict[str
     Bearer alone returns 401, which previously made the UI show an empty model list
     even for live ``sk-ant-…`` keys.
     """
-    base = chat_url.replace("/chat/completions", "").replace("/messages", "").rstrip("/")
-    models_url = base + "/models"
+    provider = resolve_provider(apiurl=cred.apiurl or chat_url, apikey=cred.apikey).provider
+    endpoint = canonicalize_endpoint(cred.apiurl or chat_url, provider=provider)
+    models_url = build_operation_url(endpoint, provider=provider, operation="models")
     is_anthropic = uses_anthropic_adapter(
         apiurl=cred.apiurl or chat_url, apikey=cred.apikey
     ) or cred.apikey.startswith("sk-ant-")
     if is_anthropic:
-        # Account-scoped model list lives on the official host for Console keys.
-        if (
-            cred.apikey.startswith("sk-ant-")
-            or "anthropic.com" in (cred.apiurl or chat_url).lower()
-        ):
-            models_url = "https://api.anthropic.com/v1/models"
         headers = {
             "x-api-key": cred.apikey,
             "anthropic-version": "2023-06-01",
@@ -1361,20 +1358,13 @@ async def _probe_chat_completions(
     return result
 
 
-def _normalize_apiurl(url: str | None) -> str:
-    url = (url or "").strip()
-    if not url:
+def _normalize_apiurl(url: str | None, *, provider: str = "") -> str:
+    raw_url = (url or "").strip()
+    if not raw_url:
         return ""
-    if not url.startswith("http"):
-        url = "https://" + url
-    if "/chat/completions" in url:
-        return url
-    if url.endswith("/v1"):
-        return url + "/chat/completions"
-    if "/v1/" in url:
-        base = url.rsplit("/v1/", 1)[0]
-        return base + "/v1/chat/completions"
-    return url.rstrip("/") + "/v1/chat/completions"
+    resolved_provider = provider or resolve_provider(apiurl=raw_url).provider
+    endpoint = canonicalize_endpoint(raw_url, provider=resolved_provider)
+    return build_operation_url(endpoint, provider=resolved_provider, operation="chat")
 
 
 def _extract_rate_headers(headers: Any) -> dict[str, str]:

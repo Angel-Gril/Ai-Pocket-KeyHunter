@@ -50,23 +50,50 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS ledger_incomplete_reason TEXT NOT NULL
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT '';
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS phase_detail JSONB NOT NULL DEFAULT '{}'::jsonb;
 
--- One row per valid/suspicious ValidationResult. `seq` (0-based within
+-- One row per valid/suspicious/rejected ValidationResult. `seq` (0-based within
 -- (run_id, kind)) replaces the old JSONL file line index used by reveal/export.
 CREATE TABLE IF NOT EXISTS results (
     id      BIGSERIAL PRIMARY KEY,
     run_id  TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-    kind    TEXT NOT NULL,                     -- 'valid' | 'suspicious'
+    kind    TEXT NOT NULL,                     -- 'valid' | 'suspicious' | 'rejected'
     seq     INTEGER NOT NULL,                  -- 0-based insertion order within (run_id, kind)
     apikey  TEXT,                              -- credential.apikey (plaintext; export/reveal)
     apiurl  TEXT,                              -- credential.apiurl
     host    TEXT,                              -- credential.host
     valid   BOOLEAN,                           -- ValidationResult.valid
     record  JSONB NOT NULL,                    -- full ValidationResult.model_dump()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- first PostgreSQL persistence time
     UNIQUE (run_id, kind, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_results_run_kind ON results (run_id, kind, seq);
 ALTER TABLE results ADD COLUMN IF NOT EXISTS credential_issuer TEXT NOT NULL DEFAULT 'unknown';
 ALTER TABLE results ADD COLUMN IF NOT EXISTS validation_provider TEXT NOT NULL DEFAULT '';
+ALTER TABLE results ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;
+DO $$
+DECLARE row_item RECORD;
+DECLARE parsed_at TIMESTAMPTZ;
+BEGIN
+    FOR row_item IN
+        SELECT r.id, r.record->>'validated_at' AS validated_at,
+               runs.finished_at, runs.started_at
+        FROM results r
+        JOIN runs ON runs.run_id = r.run_id
+        WHERE r.created_at IS NULL
+    LOOP
+        parsed_at := NULL;
+        BEGIN
+            parsed_at := NULLIF(row_item.validated_at, '')::TIMESTAMPTZ;
+        EXCEPTION WHEN OTHERS THEN
+            parsed_at := NULL;
+        END;
+        UPDATE results
+        SET created_at = COALESCE(parsed_at, row_item.finished_at, row_item.started_at, NOW())
+        WHERE id = row_item.id;
+    END LOOP;
+END $$;
+ALTER TABLE results ALTER COLUMN created_at SET DEFAULT NOW();
+ALTER TABLE results ALTER COLUMN created_at SET NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_results_created_at ON results (created_at DESC);
 
 CREATE TABLE IF NOT EXISTS query_metrics (
     run_id           TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,

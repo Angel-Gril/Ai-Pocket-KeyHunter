@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react"
-import { Link, useNavigate } from "react-router-dom"
-import { useQuery } from "@tanstack/react-query"
-import { ChevronRight, Clock3, Inbox, Loader2, Plus, Search } from "lucide-react"
+import { useNavigate } from "react-router-dom"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { ChevronRight, Clock3, Inbox, Loader2, Plus, Search, Trash2 } from "lucide-react"
+import { toast } from "sonner"
 import { api, type RunDay, type RunSummary } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -51,42 +52,44 @@ function Stat({
   )
 }
 
-function RunRow({ run }: Readonly<{ run: RunSummary }>) {
+function RunRow({
+  run,
+  onDelete,
+  deleting,
+}: Readonly<{ run: RunSummary; onDelete: (run: RunSummary) => void; deleting: boolean }>) {
+  const navigate = useNavigate()
   return (
-    <Link
-      to={`/runs/${run.run_id}`}
-      className="group flex items-center gap-[18px] rounded-md border border-border-primary bg-surface-raised px-[18px] py-4 transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-    >
-      <div className="flex w-[340px] shrink-0 flex-col gap-1.5">
-        <div className="flex items-center gap-2.5">
-          <Clock3 className="size-3.5 text-text-muted" />
-          <span className="font-mono text-[15px] font-semibold text-text-primary">
-            {formatTime(run.started_at)}
-          </span>
+    <div className="group flex items-center gap-[18px] rounded-md border border-border-primary bg-surface-raised px-[18px] py-4 transition-colors hover:bg-surface-overlay">
+      <button
+        type="button"
+        onClick={() => navigate(`/runs/${run.run_id}`)}
+        className="flex min-w-0 flex-1 items-center gap-[18px] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        <div className="flex w-[340px] shrink-0 flex-col gap-1.5">
+          <div className="flex items-center gap-2.5">
+            <Clock3 className="size-3.5 text-text-muted" />
+            <span className="font-mono text-[15px] font-semibold text-text-primary">{formatTime(run.started_at)}</span>
+          </div>
+          <span className="truncate font-mono text-[11px] text-text-muted">{run.run_id}</span>
         </div>
-        <span className="truncate font-mono text-[11px] text-text-muted">{run.run_id}</span>
-      </div>
-
-      <div className="flex w-[150px] shrink-0 flex-wrap gap-1.5">
-        {run.sources.length > 0 ? (
-          run.sources.map((source) => <SourceBadge key={source} source={source} />)
-        ) : (
-          <span className="font-mono text-[11px] text-text-muted">—</span>
-        )}
-      </div>
-
-      <div className="flex flex-1 items-center justify-end gap-7">
-        <Stat value={run.raw_hits} label="原始命中" className="text-text-secondary" />
-        <Stat value={run.unique_targets} label="唯一目标" className="text-text-secondary" />
-        <Stat value={run.final_verified} label="最终可用" className="text-success" />
-        <Stat value={run.suspicious_count} label="可疑" className="text-info" />
-        <Stat value={run.high_value_final} label="高价值" className="text-warning" />
-      </div>
-
-      <div className="flex size-[34px] shrink-0 items-center justify-center rounded-sm bg-surface-overlay text-text-secondary transition-colors group-hover:text-text-primary">
-        <ChevronRight className="size-[17px]" />
-      </div>
-    </Link>
+        <div className="flex w-[150px] shrink-0 flex-wrap gap-1.5">
+          {run.sources.length > 0 ? run.sources.map((source) => <SourceBadge key={source} source={source} />) : <span className="font-mono text-[11px] text-text-muted">—</span>}
+        </div>
+        <div className="flex flex-1 items-center justify-end gap-7">
+          <Stat value={run.raw_hits} label="原始命中" className="text-text-secondary" />
+          <Stat value={run.unique_targets} label="唯一目标" className="text-text-secondary" />
+          <Stat value={run.final_verified} label="最终可用" className="text-success" />
+          <Stat value={run.suspicious_count} label="可疑" className="text-info" />
+          <Stat value={run.high_value_final} label="高价值" className="text-warning" />
+        </div>
+        <ChevronRight className="size-[17px] shrink-0 text-text-secondary" />
+      </button>
+      {run.deletable ? (
+        <Button variant="destructive" size="icon-sm" disabled={deleting} onClick={() => onDelete(run)} aria-label={`删除 ${run.run_id}`}>
+          {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
+        </Button>
+      ) : null}
+    </div>
   )
 }
 
@@ -101,6 +104,8 @@ function HistoryContent({
   days,
   hasSearch,
   onScan,
+  onDelete,
+  deletingRunId,
 }: Readonly<{
   isPending: boolean
   isError: boolean
@@ -108,6 +113,8 @@ function HistoryContent({
   days: RunDay[]
   hasSearch: boolean
   onScan: () => void
+  onDelete: (run: RunSummary) => void
+  deletingRunId: string
 }>) {
   if (isPending) {
     return (
@@ -158,7 +165,7 @@ function HistoryContent({
           </div>
           <div className="flex flex-col gap-3">
             {day.runs.map((run) => (
-              <RunRow key={run.run_id} run={run} />
+              <RunRow key={run.run_id} run={run} onDelete={onDelete} deleting={deletingRunId === run.run_id} />
             ))}
           </div>
         </section>
@@ -169,6 +176,26 @@ function HistoryContent({
 
 export default function HistoryPage() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const [deletingRunId, setDeletingRunId] = useState("")
+  const deleteMutation = useMutation({
+    mutationFn: api.deleteRun,
+    onSuccess: async () => {
+      toast.success("空扫描已删除")
+      await queryClient.invalidateQueries({ queryKey: ["runs"] })
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "删除失败"),
+    onSettled: () => setDeletingRunId(""),
+  })
+
+  const deleteEmptyRun = (run: RunSummary) => {
+    const confirmed = window.confirm(
+      `删除 ${run.run_id}？将级联删除该 run 的日志、候选和 HTTP ledger。`,
+    )
+    if (!confirmed) return
+    setDeletingRunId(run.run_id)
+    deleteMutation.mutate(run.run_id)
+  }
   const [query, setQuery] = useState("")
   const { data, isPending, isError, error } = useQuery({
     queryKey: ["runs"],
@@ -221,6 +248,8 @@ export default function HistoryPage() {
           days={days}
           hasSearch={needle.length > 0}
           onScan={() => navigate("/scan")}
+          onDelete={deleteEmptyRun}
+          deletingRunId={deletingRunId}
         />
       </div>
     </div>

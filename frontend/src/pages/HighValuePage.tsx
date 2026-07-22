@@ -8,6 +8,7 @@ import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
 import { extractKeyFields, formatBalance, providerOf } from "@/components/key-record"
+
 import { providerBrand, providerBrandColor } from "@/components/provider-badge"
 import { copyToClipboard } from "@/lib/utils"
 
@@ -285,6 +286,8 @@ export default function HighValuePage() {
               scope={fields.scope}
               // After a live balance probe, drop stale scan-time evidence (e.g. "unknown").
               tierEvidence={balanceInfo ? undefined : fields.tierEvidence}
+              createdAt={fields.savedAt ?? fields.createdAt}
+              evidence={fields.evidence}
               status={status}
               models={models[key]}
               modelsLoading={busy[key]?.models}

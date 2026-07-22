@@ -11,6 +11,7 @@ from aipocket.discovery.packs import (  # noqa: F401
     fireworks,
     glm,
     kimi,
+    longcat,
     minimax,
     openai,
     qwen,

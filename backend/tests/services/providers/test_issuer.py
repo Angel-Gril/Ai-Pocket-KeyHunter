@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from aipocket.services.providers.issuer import decide_issuer
+from aipocket.services.providers.issuer import _is_domain_suffix, decide_issuer
 
 GLM_KEY = "f7638a0d932046079d9900bda54cdde9.79EtThsVS0IEdssm"
 GLM_URL = "https://open.bigmodel.cn/api/paas/v4"
@@ -141,3 +141,16 @@ def test_additional_pack_providers_resolve_and_attribute_official_auth() -> None
         )
         assert decision.credential_issuer == provider
         assert "validated_endpoint" in decision.issuer_evidence
+
+
+def test_longcat_requires_exact_api_host() -> None:
+    exact = decide_issuer(
+        apikey=GENERIC_SK,
+        apiurl="https://api.longcat.chat/openai",
+        validation_provider="longcat",
+        models_available=["LongCat-2.0"],
+        auth_confirmed=True,
+    )
+    assert exact.credential_issuer == "longcat"
+    assert _is_domain_suffix("api.longcat.chat", "api.longcat.chat") is True
+    assert _is_domain_suffix("longcat.chat", "api.longcat.chat") is False

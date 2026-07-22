@@ -75,10 +75,23 @@ def _pg_load_kind(run_id: str, kind: str) -> list[dict[str, Any]]:
     pool = get_pool()
     with pool.connection() as conn:
         rows = conn.execute(
-            "SELECT record FROM results WHERE run_id = %s AND kind = %s ORDER BY seq",
+            """
+            SELECT id, created_at, record FROM results WHERE run_id = %s AND kind = %s ORDER BY seq
+            """,
             (run_id, kind),
         ).fetchall()
-    return [r["record"] for r in rows if isinstance(r.get("record"), dict)]
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        record = row.get("record")
+        if not isinstance(record, dict):
+            continue
+        item = dict(record)
+        if row.get("id") is not None:
+            item["result_id"] = int(row["id"])
+        created_at = row.get("created_at")
+        item["created_at"] = created_at.isoformat() if created_at else item.get("validated_at", "")
+        output.append(item)
+    return output
 
 
 def _pg_load_by_seq(run_id: str, kind: str, seq: int) -> dict[str, Any] | None:
@@ -88,13 +101,21 @@ def _pg_load_by_seq(run_id: str, kind: str, seq: int) -> dict[str, Any] | None:
     pool = get_pool()
     with pool.connection() as conn:
         row = conn.execute(
-            "SELECT record FROM results WHERE run_id = %s AND kind = %s AND seq = %s",
+            """
+            SELECT id, created_at, record
+            FROM results
+            WHERE run_id = %s AND kind = %s AND seq = %s
+            """,
             (run_id, kind, seq),
         ).fetchone()
-    if row is None:
+    if row is None or not isinstance(row.get("record"), dict):
         return None
-    rec = row.get("record")
-    return rec if isinstance(rec, dict) else None
+    item = dict(row["record"])
+    if row.get("id") is not None:
+        item["result_id"] = int(row["id"])
+    created_at = row.get("created_at")
+    item["created_at"] = created_at.isoformat() if created_at else item.get("validated_at", "")
+    return item
 
 
 def _day_from_run_id(run_id: str) -> str:
@@ -343,8 +364,6 @@ def _list_runs_pg() -> list[dict[str, Any]]:
             "valid_count": valid_n,
             "suspicious_count": susp_n,
             "has_log": bool(run["has_log"]),
-            # GitHub runs: raw_hits was historically left 0 (host-only counter);
-            # recover from hits_by_source / credential totals.
             "raw_hits": _positive_int(
                 run["raw_hits"], hbs, run["total_hosts"], run["total_credentials"]
             ),
@@ -363,6 +382,9 @@ def _list_runs_pg() -> list[dict[str, Any]]:
             "scan_mode": run.get("scan_mode") or "incremental",
             "high_value_final": high_value_final,
         }
+        from aipocket.services.result_operations import run_is_deletable
+
+        entry["deletable"] = run_is_deletable(entry)
         by_day.setdefault(_day_from_run_id(rid), []).append(entry)
     return [{"day": day, "runs": entries} for day, entries in by_day.items()]
 
@@ -545,7 +567,7 @@ def _load_all_kind_pg(kind: str) -> list[dict[str, Any]]:
     with pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT run_id, record
+            SELECT id, run_id, created_at, record
             FROM results
             WHERE kind = %s
             ORDER BY run_id DESC, seq ASC
@@ -559,6 +581,13 @@ def _load_all_kind_pg(kind: str) -> list[dict[str, Any]]:
         rec = r["record"]
         if not isinstance(rec, dict):
             continue
+        rec = dict(rec)
+        if r.get("id") is not None:
+            rec["result_id"] = int(r["id"])
+        created_at = r.get("created_at")
+        rec["created_at"] = (
+            created_at.isoformat() if created_at else rec.get("validated_at", "")
+        )
         run_id = str(r["run_id"])
         idx = run_pos.get(run_id, 0)
         run_pos[run_id] = idx + 1

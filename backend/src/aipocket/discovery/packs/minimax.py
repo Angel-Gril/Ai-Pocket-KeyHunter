@@ -8,7 +8,7 @@ from __future__ import annotations
 from aipocket.discovery.packs.base import ProviderDiscoveryPack
 from aipocket.discovery.packs.registry import register_pack
 
-MINIMAX_OFFICIAL_ENDPOINT = "https://api.minimax.chat/v1"
+MINIMAX_OFFICIAL_ENDPOINT = "https://api.minimax.io/v1"
 
 MINIMAX_PACK = ProviderDiscoveryPack(
     pack_id="minimax",

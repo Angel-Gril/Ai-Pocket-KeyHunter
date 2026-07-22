@@ -33,6 +33,13 @@ ProviderName = Literal[
     "azure_openai",
     "vertex",
     "gemini",
+    "minimax",
+    "nvidia",
+    "ksyun",
+    "longcat",
+    "newapi",
+    "oneapi",
+    "litellm",
     "gateway",
     "ambiguous",
     "unknown",
@@ -63,6 +70,9 @@ class ProviderInfo(BaseModel):
     credential_issuer: ProviderName | Literal["gateway", "unknown"] = "unknown"
     issuer_evidence: str = ""  # key_shape|official_domain|bundle_hint|validated_endpoint
     served_model_families: list[str] = Field(default_factory=list)
+    evidence_source: str = ""
+    evidence_kind: str = ""
+    evidence_observed_at: str = ""
 
 
 class Credential(BaseModel):
@@ -104,6 +114,11 @@ class ValidationResult(BaseModel):
     model_available: str = ""
     response_snippet: str = ""
     provider_info: ProviderInfo = Field(default_factory=ProviderInfo)
+    provider_evidence: dict[str, Any] = Field(default_factory=dict)
+    promoted_at: str = ""
+    promoted_by: str = ""
+    promotion_note: str = ""
+    previous_validation_state: str = ""
     validated_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     # Suspicious-host quarantine flag. Set by honeypot._quarantine_suspicious_hosts
     # when verify_no_auth sees a forged-key 429 (open-proxy signal) or a

@@ -314,6 +314,46 @@ class TestPersistRunPg:
         # No result rows → no executemany call.
         assert pool.executemany_rows == []
 
+    def test_direct_google_cached_valid_is_not_inserted(self, fake_pg):
+        pool = fake_pg()
+        from aipocket.services.writer import persist_run_pg
+
+        direct = ValidationResult(
+            credential=Credential(
+                apikey="AIzaSyD" + "a" * 32,
+                apiurl="https://generativelanguage.googleapis.com/v1beta",
+            ),
+            valid=True,
+            validation_state="final_verified",
+        )
+        persist_run_pg("run_google", {"started_at": "2026-07-22T00:00:00Z"}, [direct], [])
+
+        assert pool.executemany_rows == []
+        run_params = pool.sql_containing("INSERT INTO runs")[0][1]
+        assert run_params[9] == 0
+
+    def test_rejected_results_are_inserted_for_audit(self, fake_pg):
+        pool = fake_pg()
+        from aipocket.services.writer import persist_run_pg
+
+        rejected = ValidationResult(
+            credential=Credential(apikey="sk-rejected", apiurl="https://honeypot.example/v1"),
+            valid=False,
+            validation_state="auth_rejected",
+            error="honeypot:steganography",
+        )
+        persist_run_pg(
+            "run_rejected",
+            {"started_at": "2026-07-22T00:00:00Z"},
+            [],
+            [],
+            rejected=[rejected],
+        )
+
+        assert len(pool.executemany_rows) == 1
+        _sql, rows = pool.executemany_rows[0]
+        assert [(row[1], row[2]) for row in rows] == [("rejected", 0)]
+
     def test_query_metrics_are_replaced_atomically_without_additive_retry(self, fake_pg):
         pool = fake_pg()
         from aipocket.services.writer import persist_run_pg
@@ -461,6 +501,29 @@ class TestAppendResultsPg:
         updates = pool.sql_containing("UPDATE runs SET")
         assert len(updates) == 1
         assert "total_valid" in updates[0][0]
+
+    def test_append_supports_rejected_without_affecting_visible_counts(self, fake_pg):
+        pool = fake_pg(
+            {
+                "SELECT 1 FROM runs": [{"?column?": 1}],
+                "SELECT COALESCE(MAX(seq)": [{"m": 2}],
+            }
+        )
+        from aipocket.services.writer import append_results_pg
+
+        rejected = ValidationResult(
+            credential=Credential(apikey="sk-retry-rejected", apiurl="https://relay.example/v1"),
+            validation_state="auth_rejected",
+            error="unauthorized",
+        )
+        append_results_pg("run_retry", [], [], [rejected])
+
+        assert len(pool.executemany_rows) == 1
+        _sql, rows = pool.executemany_rows[0]
+        assert [(row[1], row[2]) for row in rows] == [("rejected", 3)]
+        update_sql = pool.sql_containing("UPDATE runs SET")[0][0]
+        assert "kind = 'valid'" in update_sql
+        assert "kind = 'suspicious'" in update_sql
 
     def test_missing_run_raises(self, fake_pg):
         pool = fake_pg({"SELECT 1 FROM runs": []})
@@ -750,11 +813,14 @@ class TestResultsReaderPg:
         assert entry["sources"] == ["github"]
 
     def test_load_kind_prefers_pg_when_run_exists(self, fake_pg):
+        import datetime as _dt
         fake_pg(
             {
                 "SELECT 1 FROM runs WHERE run_id": [{"?column?": 1}],
                 "FROM results WHERE run_id": [
-                    {"record": {"credential": {"apikey": "sk-proj-pgrec"}, "valid": True}}
+                    {"id": 101, "created_at": _dt.datetime(2026, 7, 22, tzinfo=_dt.UTC), "record": {"credential": {"apikey": "sk-proj-pgrec"}, "valid": True}},
+                    {"id": None, "created_at": None, "record": {"credential": {"apikey": "sk-proj-fallback"}, "validated_at": "2026-07-21T00:00:00Z"}},
+                    {"id": 102, "created_at": None, "record": "invalid"},
                 ],
             }
         )
@@ -764,20 +830,28 @@ class TestResultsReaderPg:
         assert recs[0]["credential"]["apikey"] == "sk-proj-pgrec"
 
     def test_load_all_stamps_dense_source_index_not_raw_seq(self, fake_pg):
+        import datetime as _dt
         """source_index must be 0..n-1 within each run, even when seq is sparse."""
         fake_pg(
             {
                 "FROM results": [
+                    {"run_id": "run_2026_07_15_14-44-29", "id": None, "created_at": None, "record": "invalid"},
                     {
                         "run_id": "run_2026_07_15_14-44-29",
+                        "id": 201,
+                        "created_at": _dt.datetime(2026, 7, 22, tzinfo=_dt.UTC),
                         "record": {"credential": {"apikey": "sk-proj-aaaa1111aaaa"}},
                     },
                     {
                         "run_id": "run_2026_07_15_14-44-29",
+                        "id": 202,
+                        "created_at": None,
                         "record": {"credential": {"apikey": "sk-proj-bbbb2222bbbb"}},
                     },
                     {
                         "run_id": "run_2026_07_15_14-44-29",
+                        "id": 203,
+                        "created_at": None,
                         "record": {"credential": {"apikey": "sk-proj-cccc3333cccc"}},
                     },
                 ],
@@ -804,8 +878,7 @@ class TestResultsReaderPg:
                 "ORDER BY seq": [
                     {"record": {"credential": {"apikey": "sk-proj-otherkey0000"}}},
                 ],
-                # Direct seq lookup for legacy index=1001
-                "AND seq =": [{"record": target}],
+                "AND seq =": [{"id": 301, "created_at": None, "record": target}],
             }
         )
         from aipocket.api import results_reader

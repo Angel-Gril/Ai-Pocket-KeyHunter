@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from aipocket.core.credentials import CredentialBundle, CredentialEvidence
-from aipocket.core.models import Credential
+from aipocket.core.models import Credential, ValidationResult
 from aipocket.services import candidate_store as cs
 
 
@@ -550,3 +550,20 @@ def test_mark_orphan_runs_handles_db_error(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr("aipocket.core.config.settings.database_url", "postgresql://t/db")
     monkeypatch.setattr("aipocket.core.db.get_pool", lambda: BoomPool())
     assert cs.mark_orphan_runs_interrupted() == 0
+
+
+def test_direct_google_never_enters_candidate_or_validation_spill(enable_pg: FakePool) -> None:
+    key = "AIzaSyD" + "a" * 32
+    credential = Credential(
+        apikey=key,
+        apiurl="https://generativelanguage.googleapis.com/v1beta",
+    )
+    result = ValidationResult(
+        credential=credential,
+        valid=True,
+        validation_state="final_verified",
+    )
+
+    assert cs.upsert_candidates("run_google", "extracted", [credential]) == 0
+    assert cs.upsert_validation_results("run_google", [result]) == 0
+    assert enable_pg.executemany_rows == []

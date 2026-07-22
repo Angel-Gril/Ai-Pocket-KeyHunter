@@ -24,6 +24,17 @@ export type ProviderName =
   | "azure_openai"
   | "vertex"
   | "gemini"
+  | "cohere"
+  | "replicate"
+  | "together"
+  | "fireworks"
+  | "minimax"
+  | "nvidia"
+  | "ksyun"
+  | "longcat"
+  | "newapi"
+  | "oneapi"
+  | "litellm"
   | "gateway"
   | "ambiguous"
   | "unknown"
@@ -42,6 +53,17 @@ const PROVIDER_BRAND: Record<ProviderName, { label: string; color: string }> = {
   azure_openai: { label: "Azure OpenAI", color: "#0078d4" },
   vertex: { label: "Vertex AI", color: "#1a73e8" },
   gemini: { label: "Gemini", color: "#8e75b2" },
+  cohere: { label: "Cohere", color: "#39594d" },
+  replicate: { label: "Replicate", color: "#6f7b91" },
+  together: { label: "Together", color: "#ff6b35" },
+  fireworks: { label: "Fireworks", color: "#ed3d7d" },
+  minimax: { label: "MiniMax", color: "#f59e0b" },
+  nvidia: { label: "NVIDIA NIM", color: "#76b900" },
+  ksyun: { label: "KSYUN MaaS", color: "#ff6a00" },
+  longcat: { label: "LongCat", color: "#8b5cf6" },
+  newapi: { label: "NewAPI", color: "#0ea5e9" },
+  oneapi: { label: "OneAPI", color: "#06b6d4" },
+  litellm: { label: "LiteLLM", color: "#6366f1" },
   gateway: { label: "Gateway", color: "#64748b" },
   ambiguous: { label: "Ambiguous", color: "#d97706" },
   unknown: { label: "Unknown", color: "#7d8db0" },

@@ -35,6 +35,10 @@ _KIMI_MODELS = (
 )
 # Cohere is first-party (Command family) — NOT a multi-model aggregator.
 _COHERE_MODELS = ("command-r-plus", "command-r", "command-a-03-2025")
+_MINIMAX_MODELS = ("MiniMax-M2.7", "MiniMax-M2.5")
+_NVIDIA_MODELS = ("meta/llama-3.3-70b-instruct", "nvidia/llama-3.1-nemotron-ultra-253b-v1")
+_KSYUN_MODELS = ("deepseek-v3", "qwen3-235b-a22b")
+_LONGCAT_MODELS = ("LongCat-2.0",)
 
 # ---------------------------------------------------------------------------
 # Multi-vendor gateways / aggregators — region-aware probe order
@@ -130,7 +134,9 @@ _REPLICATE_MODELS = (
 
 # Providers whose default probe order should put domestic high-value models first
 # when /v1/models is available (see validator.high_value_probe_order).
-DOMESTIC_PROBE_PROVIDERS = frozenset({"siliconflow", "deepseek", "kimi", "glm", "qwen"})
+DOMESTIC_PROBE_PROVIDERS = frozenset(
+    {"siliconflow", "deepseek", "kimi", "glm", "qwen", "minimax", "ksyun", "longcat"}
+)
 INTERNATIONAL_PROBE_PROVIDERS = frozenset(
     {
         "openai",
@@ -145,6 +151,7 @@ INTERNATIONAL_PROBE_PROVIDERS = frozenset(
         "gemini",
         "azure_openai",
         "vertex",
+        "nvidia",
     }
 )
 
@@ -194,6 +201,42 @@ _PROVIDER_SPECS = (
         default_model_hints=_GLM_MODELS,
         # OpenAI-compatible chat base (balance probe uses host + /api/paas/v4/...).
         official_api_url="https://open.bigmodel.cn/api/paas/v4",
+    ),
+    ProviderSpec(
+        name="minimax",
+        category="domestic",
+        domain_suffixes=("minimax.io", "minimaxi.com", "minimax.chat"),
+        key_prefixes=(),
+        protocol_family="openai_compatible",
+        default_model_hints=_MINIMAX_MODELS,
+        official_api_url="https://api.minimax.io/v1",
+    ),
+    ProviderSpec(
+        name="nvidia",
+        category="international",
+        domain_suffixes=("integrate.api.nvidia.com",),
+        key_prefixes=("nvapi-",),
+        protocol_family="openai_compatible",
+        default_model_hints=_NVIDIA_MODELS,
+        official_api_url="https://integrate.api.nvidia.com/v1",
+    ),
+    ProviderSpec(
+        name="ksyun",
+        category="domestic",
+        domain_suffixes=("kspmas.ksyun.com",),
+        key_prefixes=(),
+        protocol_family="openai_compatible",
+        default_model_hints=_KSYUN_MODELS,
+        official_api_url="https://kspmas.ksyun.com/v1",
+    ),
+    ProviderSpec(
+        name="longcat",
+        category="domestic",
+        domain_suffixes=("api.longcat.chat",),
+        key_prefixes=(),
+        protocol_family="openai_compatible",
+        default_model_hints=_LONGCAT_MODELS,
+        official_api_url="https://api.longcat.chat/openai",
     ),
     ProviderSpec(
         name="qwen",
@@ -313,6 +356,30 @@ _PROVIDER_SPECS = (
         default_model_hints=("gemini-3.5-flash", "gemini-3.1-pro-preview"),
     ),
     ProviderSpec(
+        name="newapi",
+        category="gateway",
+        domain_suffixes=(),
+        key_prefixes=(),
+        protocol_family="openai_compatible",
+        default_model_hints=_FALLBACK_MODELS,
+    ),
+    ProviderSpec(
+        name="oneapi",
+        category="gateway",
+        domain_suffixes=(),
+        key_prefixes=(),
+        protocol_family="openai_compatible",
+        default_model_hints=_FALLBACK_MODELS,
+    ),
+    ProviderSpec(
+        name="litellm",
+        category="gateway",
+        domain_suffixes=(),
+        key_prefixes=(),
+        protocol_family="openai_compatible",
+        default_model_hints=_FALLBACK_MODELS,
+    ),
+    ProviderSpec(
         name="gateway",
         category="gateway",
         domain_suffixes=(),
@@ -348,6 +415,8 @@ def _hostname(apiurl: str) -> str:
 
 
 def _is_domain_suffix(host: str, suffix: str) -> bool:
+    if suffix == "api.longcat.chat":
+        return host == suffix
     suffix = suffix.lower().rstrip(".")
     if host == suffix or host.endswith(f".{suffix}"):
         return True

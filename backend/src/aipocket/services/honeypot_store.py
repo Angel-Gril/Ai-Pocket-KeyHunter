@@ -323,14 +323,21 @@ def record_from_results(
         return 0
 
     written = 0
+    failed = 0
     for host_key, reason in to_save.items():
         try:
             if record_site(host_key, reason=reason, source="auto", run_id=run_id) is not None:
                 written += 1
         except Exception as e:  # noqa: BLE001 — never fail the scan for cache write
             log.warning("honeypot cache write failed for %s: %s", host_key, e)
-    if written:
-        log.info("Honeypot cache: recorded %d site(s) (run_id=%s)", written, run_id or "-")
+            failed += 1
+    log.info(
+        "Honeypot cache: eligible_hosts=%d written_hosts=%d failed_hosts=%d run_id=%s",
+        len(to_save),
+        written,
+        failed,
+        run_id or "-",
+    )
     return written
 
 

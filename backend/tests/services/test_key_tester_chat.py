@@ -10,6 +10,7 @@ import httpx
 import respx
 
 # Alias: bare `test_chat` would be collected by pytest as a test case.
+from aipocket.api.key_tester import list_models, query_key_balance
 from aipocket.api.key_tester import test_chat as run_key_chat
 
 OAI_KEY = "sk-proj-" + "a" * 40
@@ -164,3 +165,50 @@ async def test_anthropic_chat_401_is_not_success_despite_models_200() -> None:
     assert result.valid is False
     assert result.status_code == 401
     assert result.error == "unauthorized"
+
+
+@respx.mock
+async def test_list_models_routes_official_key_from_leak_endpoint() -> None:
+    route = respx.get(f"{OAI_BASE}/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "gpt-4o-mini"}]})
+    )
+    models = await list_models(OAI_KEY, "https://leak.example/v1")
+    assert route.called
+    assert models == ["gpt-4o-mini"]
+
+
+async def test_query_key_balance_excludes_direct_google() -> None:
+    result = await query_key_balance(
+        "AIzaSyD" + "a" * 32,
+        "https://generativelanguage.googleapis.com/v1beta",
+    )
+    assert result["reason"] == "excluded:google_generative_language"
+
+
+async def test_query_key_balance_returns_structured_probe(monkeypatch) -> None:
+    from aipocket.services.balance_dispatch import ProbeResult
+
+    async def fake_dispatch(_client, _result):
+        return ProbeResult(
+            matched=True,
+            provider="ksyun",
+            source="ksyun:models",
+            evidence_kind="entitlement",
+            entitlements={"models": ["deepseek-v3"]},
+        )
+
+    monkeypatch.setattr("aipocket.services.balance_dispatch.dispatch_probe", fake_dispatch)
+    result = await query_key_balance("sk-ksyun-test", "https://kspmas.ksyun.com/v1")
+    assert result["gateway"] == "ksyun"
+    assert result["entitlements"] == {"models": ["deepseek-v3"]}
+
+
+async def test_test_chat_excludes_google_and_rejects_empty_endpoint() -> None:
+    google = await run_key_chat(
+        "AIzaSyD" + "a" * 32,
+        "https://generativelanguage.googleapis.com/v1beta",
+        "gemini-2.0-flash",
+    )
+    assert google.error == "excluded:google_generative_language"
+    empty = await run_key_chat("sk-generic-test", "", "gpt-4o-mini")
+    assert empty.error == "no apiurl"

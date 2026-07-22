@@ -24,6 +24,7 @@ from aipocket.core.scan_policy import ScanPolicy, policy_from_mode
 from aipocket.core.targets import DiscoveryTarget, canonicalize_hits
 from aipocket.discovery import SourceBudgets, SourceRegistry, merge_fetch_results
 
+from .credential_policy import filter_credentials_by_policy
 from .dedup import DedupStore, get_dedup_store
 from .extractor import extract_credentials
 from .queries import build_queries
@@ -663,6 +664,7 @@ async def _run_scan_inner(
     if not skip_to_validate:
         pre_filtered_count = len(creds)
         creds = pre_filter_credentials(creds)
+        creds = filter_credentials_by_policy(creds, stage="scanner-prefilter")
         format_rejected = pre_filtered_count - len(creds)
         hp_cred_skipped = 0
         if known_honeypots:
@@ -912,6 +914,7 @@ async def _run_scan_inner(
         ):
             await dedup.clear_target("gpt", target)
     gpt_creds = list(gpt_report.credentials)
+    gpt_creds = filter_credentials_by_policy(gpt_creds, stage="gpt-prefilter")
     if gpt_creds:
         observe_credentials(ExtractionMethod.GPT, gpt_creds)
         seen = _merge_credentials(creds, gpt_creds, seen)
@@ -1267,12 +1270,12 @@ async def _run_scan_inner(
         len(suspicious),
     )
 
-    if valid:
+    enrichable = [*valid, *suspicious]
+    if enrichable:
         from .balance import enrich_results
 
-        log.info("Querying balance for %d valid credentials...", len(valid))
-        report_phase(f"查询余额 · {len(valid)} 个可用密钥")
-        enrichable = [r for r in results if r.valid and not r.suspicious]
+        log.info("Querying provider evidence for %d valid/suspicious credentials...", len(enrichable))
+        report_phase(f"查询余额与凭据证据 · {len(enrichable)} 个结果")
         await enrich_results(
             enrichable,
             dedup=dedup,
@@ -1283,7 +1286,7 @@ async def _run_scan_inner(
                 query_metadata,
             ),
         )
-        log.info("Balance enrichment done.")
+        log.info("Provider evidence enrichment done.")
 
     # Cache + persist high-value AFTER balance enrichment so saved records carry balance evidence.
     commit_report = await commit_final_results(valid, dedup=dedup)
@@ -1343,6 +1346,7 @@ async def _run_scan_inner(
             _snapshot_query_metrics(query_metrics, ledger, ledger_complete=ledger_complete),
             validation_outcomes,
             observation_counts,
+            rejected=finalized.rejected,
         )
 
     return ScanRunResult(

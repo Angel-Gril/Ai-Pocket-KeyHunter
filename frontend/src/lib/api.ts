@@ -21,6 +21,7 @@ export type GitHubPackId =
   | "anthropic"
   | "azure_openai"
   | "minimax"
+  | "longcat"
 export type ExportFormat = "json" | "csv"
 export type ExportDataset = "selected" | "run" | "high-value" | "all"
 export type ResultKind = "valid" | "suspicious"
@@ -229,6 +230,9 @@ export interface ProviderInfo {
   credential_issuer?: string
   issuer_evidence?: string
   served_model_families?: string[]
+  evidence_source?: string
+  evidence_kind?: string
+  evidence_observed_at?: string
 }
 
 /**
@@ -252,6 +256,10 @@ export interface KeyRecord {
   model_available: string
   response_snippet: string
   provider_info: ProviderInfo
+  provider_evidence?: ProviderEvidence
+  result_id?: number
+  created_at?: string
+  saved_at?: string
   validated_at: string
   suspicious: boolean
   suspicious_reason: string
@@ -259,6 +267,35 @@ export interface KeyRecord {
   source_run_id?: string
   source_index?: number
   [key: string]: unknown
+}
+
+export interface ProviderEvidence {
+  provider?: string
+  source?: string
+  evidence_kind?: string
+  balance_usd?: string | number
+  balance_native?: string | number
+  currency?: string
+  plan?: string
+  tier?: string
+  account_type?: string
+  quota?: Record<string, unknown>
+  usage?: Record<string, unknown>
+  entitlements?: Record<string, unknown>
+  identity?: Record<string, unknown>
+  observed_at?: string
+  detail?: Record<string, unknown>
+}
+
+export interface PromoteKeysResponse {
+  promoted: number[]
+  skipped: number[]
+}
+
+export interface DeleteRunResponse {
+  run_id: string
+  deleted: boolean
+  disk_removed: boolean
 }
 
 export interface AllKeysResponse {
@@ -281,6 +318,7 @@ export interface RunSummary {
   sources: string[]
   scan_mode: ScanMode
   high_value_final: number
+  deletable: boolean
 }
 
 export interface RunDay {
@@ -525,6 +563,8 @@ export const api = {
   getRuns: () => request<RunsResponse>("/runs"),
   getRunResults: (runId: string, kind: ResultKind) =>
     request<RunResultsResponse>(`/runs/${runId}/${kind}`),
+  deleteRun: (runId: string) =>
+    request<DeleteRunResponse>(`/runs/${encodeURIComponent(runId)}`, { method: "DELETE" }),
   getRunLog: (runId: string) => request<string>(`/runs/${runId}/log`),
   getGptFailed: (runId: string) =>
     request<GptFailedStatusResponse>(`/runs/${runId}/gpt-failed`),
@@ -538,6 +578,11 @@ export const api = {
 
   // Cross-run keys (deduped valid / suspicious)
   getAllKeys: (kind: ResultKind) => request<AllKeysResponse>(`/keys/${kind}`),
+  promoteKeys: (resultIds: number[], note = "") =>
+    request<PromoteKeysResponse>("/keys/promote", {
+      method: "POST",
+      body: { result_ids: resultIds, note },
+    }),
 
   // Single-key testing
   keyModels: (body: KeyRef) => request<ModelsResponse>("/key/models", { method: "POST", body }),

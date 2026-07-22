@@ -9,15 +9,13 @@ import {
 import { readColumnSizing, writeColumnSizing } from "@/lib/table-storage"
 
 /**
- * The five resizable data columns of the shared key table. The leading checkbox
- * spacer and trailing actions cell are laid out outside react-table (fixed spacer
- * + `flex-1`), so they are intentionally NOT columns here — only these five carry
- * a user-adjustable width. `size` values match the table's original pixel widths.
+ * The resizable data columns of the shared key table. The leading checkbox
+ * spacer and trailing actions cell are laid out outside react-table.
  *
  * react-table is used ONLY for column-sizing state + resize handlers; we render
  * the header/rows ourselves, so `data` is empty and no accessors are needed.
  */
-export const KEY_COLUMN_IDS = ["apikey", "endpoint", "provider", "balance", "status"] as const
+export const KEY_COLUMN_IDS = ["apikey", "endpoint", "provider", "balance", "createdAt", "status"] as const
 export type KeyColumnId = (typeof KEY_COLUMN_IDS)[number]
 
 export const KEY_COLUMNS: ColumnDef<unknown>[] = [
@@ -25,6 +23,7 @@ export const KEY_COLUMNS: ColumnDef<unknown>[] = [
   { id: "endpoint", size: 230, minSize: 140 },
   { id: "provider", size: 128, minSize: 96 },
   { id: "balance", size: 100, minSize: 80 },
+  { id: "createdAt", size: 160, minSize: 130 },
   { id: "status", size: 110, minSize: 90 },
 ]
 

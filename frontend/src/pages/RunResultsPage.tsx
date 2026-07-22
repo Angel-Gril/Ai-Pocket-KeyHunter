@@ -433,6 +433,8 @@ export default function RunResultsPage() {
               validationState={fields.validationState}
               scope={fields.scope}
               tierEvidence={balanceInfo ? undefined : fields.tierEvidence}
+              createdAt={fields.createdAt}
+              evidence={fields.evidence}
               status={status}
               models={models[key]}
               modelsLoading={busy[key]?.models}

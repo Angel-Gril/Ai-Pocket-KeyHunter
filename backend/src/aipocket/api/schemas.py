@@ -30,6 +30,7 @@ GitHubPackId = Literal[
     "anthropic",
     "azure_openai",
     "minimax",
+    "longcat",
 ]
 ExportFormat = Literal["json", "csv"]
 ExportDataset = Literal["selected", "run", "high-value", "all"]
@@ -105,6 +106,22 @@ class HighValueRevealRequest(BaseModel):
 
     masked: str
     apiurl: str | None = None
+
+class PromoteKeysRequest(BaseModel):
+    result_ids: list[int] = Field(min_length=1, max_length=500)
+    note: str = Field(default="", max_length=1000)
+
+
+class PromoteKeysResponse(BaseModel):
+    promoted: list[int] = Field(default_factory=list)
+    skipped: list[int] = Field(default_factory=list)
+
+
+class DeleteRunResponse(BaseModel):
+    run_id: str
+    deleted: bool
+    disk_removed: bool
+
 
 
 # ----------------------------------------------------------------------------

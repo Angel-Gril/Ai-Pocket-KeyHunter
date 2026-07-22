@@ -13,6 +13,7 @@ from aipocket.core.metrics import (
     ValidationOutcomeAggregate,
 )
 from aipocket.core.models import ScanRunResult, ValidationResult
+from aipocket.services.credential_policy import filter_results_by_policy
 
 log = logging.getLogger(__name__)
 
@@ -177,17 +178,20 @@ def persist_run_pg(
     query_metrics: list[QueryMetric] | None = None,
     validation_outcomes: list[ValidationOutcomeAggregate] | None = None,
     observation_counts: list[ExtractionMethodAggregate] | None = None,
+    *,
+    rejected: list[ValidationResult] | None = None,
 ) -> None:
-    """Write one run's metadata + valid/suspicious results in a SINGLE transaction.
+    """Write one run's metadata plus valid/suspicious/rejected rows transactionally.
 
-    Idempotent per run_id: an UPSERT on ``runs`` plus a delete-then-insert of the
-    run's ``results`` rows, so re-running a scan into an existing run_id (or a
-    dual-write replay) doesn't accumulate duplicates. ``seq`` is the 0-based
-    position within each (run_id, kind) — the identity reveal/export map onto.
+    Idempotent per run_id: the run is UPSERTed and its result rows are replaced.
+    ``seq`` is stable within each ``(run_id, kind)`` sequence.
     """
     from psycopg.types.json import Jsonb
 
     from aipocket.core.db import get_pool
+    valid = filter_results_by_policy(valid, stage="persist-run-valid")
+    suspicious = filter_results_by_policy(suspicious, stage="persist-run-suspicious")
+    rejected = filter_results_by_policy(rejected or [], stage="persist-run-rejected")
 
     active_requests = int(metadata.get("active_requests", 0))
     if validation_outcomes is not None:
@@ -266,9 +270,11 @@ def persist_run_pg(
         )
         # Replace this run's result rows so a re-persist is idempotent.
         conn.execute("DELETE FROM results WHERE run_id = %s", (run_id,))
-        rows = [(run_id, *_result_row(r, "valid", i)) for i, r in enumerate(valid)] + [
-            (run_id, *_result_row(r, "suspicious", i)) for i, r in enumerate(suspicious)
-        ]
+        rows = (
+            [(run_id, *_result_row(r, "valid", i)) for i, r in enumerate(valid)]
+            + [(run_id, *_result_row(r, "suspicious", i)) for i, r in enumerate(suspicious)]
+            + [(run_id, *_result_row(r, "rejected", i)) for i, r in enumerate(rejected)]
+        )
         if rows:
             with conn.cursor() as cur:
                 cur.executemany(
@@ -357,7 +363,13 @@ def persist_run_pg(
                     aggregate.count,
                 ),
             )
-    log.info("PG run persisted: %s (%d valid, %d suspicious)", run_id, len(valid), len(suspicious))
+    log.info(
+        "PG run persisted: %s (%d valid, %d suspicious, %d rejected)",
+        run_id,
+        len(valid),
+        len(suspicious),
+        len(rejected),
+    )
 
 
 def update_run_log_pg(run_id: str, log_text: str) -> None:
@@ -510,6 +522,7 @@ def append_results_pg(
     run_id: str,
     valid: list[ValidationResult],
     suspicious: list[ValidationResult],
+    rejected: list[ValidationResult] | None = None,
 ) -> None:
     """**Primary path**: append new rows into PostgreSQL for an existing run.
 
@@ -525,7 +538,11 @@ def append_results_pg(
     """
     if not settings.pg_enabled:
         return
-    if not valid and not suspicious:
+    rejected = rejected or []
+    valid = filter_results_by_policy(valid, stage="append-valid")
+    suspicious = filter_results_by_policy(suspicious, stage="append-suspicious")
+    rejected = filter_results_by_policy(rejected, stage="append-rejected")
+    if not valid and not suspicious and not rejected:
         return
 
     from aipocket.core.db import get_pool
@@ -536,7 +553,7 @@ def append_results_pg(
         if exists is None:
             raise LookupError(f"run not in PG: {run_id}")
 
-        for kind, items in (("valid", valid), ("suspicious", suspicious)):
+        for kind, items in (("valid", valid), ("suspicious", suspicious), ("rejected", rejected)):
             if not items:
                 continue
             row = conn.execute(
@@ -548,8 +565,11 @@ def append_results_pg(
             with conn.cursor() as cur:
                 cur.executemany(
                     """
-                    INSERT INTO results (run_id, kind, seq, apikey, apiurl, host, valid, record)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO results (
+                        run_id, kind, seq, apikey, apiurl, host, valid, record,
+                        credential_issuer, validation_provider
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     insert_rows,
                 )
@@ -573,15 +593,16 @@ def append_results_pg(
                 run_id,
                 run_id,
                 run_id,
-                len(valid) + len(suspicious),
+                len(valid) + len(suspicious) + len(rejected),
                 run_id,
             ),
         )
     log.info(
-        "PG append for %s: +%d valid, +%d suspicious (existing rows preserved)",
+        "PG append for %s: +%d valid, +%d suspicious, +%d rejected",
         run_id,
         len(valid),
         len(suspicious),
+        len(rejected),
     )
 
 

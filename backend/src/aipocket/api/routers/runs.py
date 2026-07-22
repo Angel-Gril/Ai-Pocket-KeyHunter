@@ -6,6 +6,7 @@ Also exposes GPT-failed-batch inspection + retry (append-only recovery).
 from __future__ import annotations
 
 import asyncio
+import re
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import PlainTextResponse
@@ -18,6 +19,7 @@ from ..results_reader import (
     read_run_log,
 )
 from ..schemas import (
+    DeleteRunResponse,
     GptFailedFileInfo,
     GptFailedStatusResponse,
     RetryGptFailedJobStatus,
@@ -32,6 +34,22 @@ async def get_runs() -> dict:
     """All runs grouped by day (newest first)."""
     # Reading + parsing the results tree is blocking I/O — keep it off the loop.
     return {"days": await asyncio.to_thread(list_runs)}
+
+@router.delete("/{run_id}", response_model=DeleteRunResponse)
+async def remove_run(run_id: str) -> DeleteRunResponse:
+    if not re.fullmatch(r"run_\d{4}_\d{2}_\d{2}_\d{2}-\d{2}-\d{2}", run_id):
+        raise ApiError("invalid run id", status_code=400, code="bad_request")
+    from aipocket.services.result_operations import delete_run
+
+    try:
+        report = await asyncio.to_thread(delete_run, run_id)
+    except RuntimeError as exc:
+        raise ApiError(str(exc), status_code=409, code="postgres_required") from exc
+    except LookupError as exc:
+        raise ApiError(f"run not found: {run_id}", status_code=404, code="not_found") from exc
+    except ValueError as exc:
+        raise ApiError(str(exc), status_code=409, code="run_not_empty") from exc
+    return DeleteRunResponse(**report)
 
 
 @router.get("/{run_id}/valid")

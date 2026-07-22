@@ -32,6 +32,14 @@ import {
   type ScanStatusResponse,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import {
+  ALL_SCAN_SOURCES,
+  parseSourceLabel,
+  serializeSources,
+  toCanonicalSourceLabel,
+  toggleAllSources,
+  toggleSource as toggleSourceSelection,
+} from "@/lib/scan-sources"
 
 const MAX_LINES = 200
 const POLL_MS = 2000
@@ -42,30 +50,6 @@ const SOURCE_ITEMS: { value: ScanSourceItem; label: string; icon: typeof Globe }
   { value: "github", label: "GitHub", icon: GitBranch },
 ]
 
-const ALL_SOURCE_IDS: ScanSourceItem[] = SOURCE_ITEMS.map((s) => s.value)
-
-/** Parse status.source label (`all` | `fofa` | `fofa,shodan`) into a multi-select list. */
-function parseSourceLabel(label: string | null | undefined): ScanSourceItem[] {
-  if (!label || label === "all") return [...ALL_SOURCE_IDS]
-  const parts = label
-    .split(",")
-    .map((p) => p.trim())
-    .filter((p): p is ScanSourceItem => ALL_SOURCE_IDS.includes(p as ScanSourceItem))
-  return parts.length > 0 ? parts : [...ALL_SOURCE_IDS]
-}
-
-/** Collapse multi-select → status label (`all` | `fofa` | `fofa,shodan`). */
-function toCanonicalSourceLabel(selected: readonly ScanSourceItem[]): string {
-  if (selected.length === 0) return "all"
-  if (
-    selected.length === ALL_SOURCE_IDS.length &&
-    ALL_SOURCE_IDS.every((id) => selected.includes(id))
-  ) {
-    return "all"
-  }
-  if (selected.length === 1) return selected[0]
-  return [...selected].sort().join(",")
-}
 
 /** Individual provider packs (excludes the "all" shortcut). */
 const GITHUB_PACK_OPTIONS: readonly { value: Exclude<GitHubPackId, "all">; label: string }[] = [
@@ -77,6 +61,7 @@ const GITHUB_PACK_OPTIONS: readonly { value: Exclude<GitHubPackId, "all">; label
   { value: "kimi", label: "Kimi" },
   { value: "qwen", label: "Qwen" },
   { value: "minimax", label: "MiniMax" },
+  { value: "longcat", label: "LongCat" },
   { value: "cohere", label: "Cohere" },
   { value: "replicate", label: "Replicate" },
   { value: "together", label: "Together" },
@@ -168,7 +153,7 @@ export function ScanConsole({
   /** Multi-select data sources (FOFA / Shodan / GitHub). Empty is invalid at start. */
   const [selectedSources, setSelectedSources] = useState<ScanSourceItem[]>(() => {
     if (fixedSource && fixedSource !== "all") return [fixedSource]
-    return [...ALL_SOURCE_IDS]
+    return [...ALL_SCAN_SOURCES]
   })
   const [mode, setMode] = useState<ScanMode>("incremental")
   /** Multi-select provider packs. Empty + "all" shortcut both mean every pack. */
@@ -314,13 +299,10 @@ export function ScanConsole({
   const launchSources: ScanSourceItem[] = useMemo(() => {
     if (fixedSource && fixedSource !== "all") return [fixedSource]
     // Stable order for API + labels.
-    return ALL_SOURCE_IDS.filter((id) => selectedSources.includes(id))
+    return ALL_SCAN_SOURCES.filter((id) => selectedSources.includes(id))
   }, [fixedSource, selectedSources])
 
   const includesGitHub = launchSources.includes("github")
-  const allSourcesSelected =
-    launchSources.length === ALL_SOURCE_IDS.length &&
-    ALL_SOURCE_IDS.every((id) => launchSources.includes(id))
 
   const resolvedGithubPackIds = useMemo((): GitHubPackId[] => {
     if (!includesGitHub) return []
@@ -342,19 +324,11 @@ export function ScanConsole({
   }, [includesGitHub, githubPacks])
 
   const toggleSource = useCallback((id: ScanSourceItem) => {
-    setSelectedSources((prev) => {
-      if (prev.includes(id)) {
-        // Keep at least one source selected.
-        if (prev.length <= 1) return prev
-        return prev.filter((s) => s !== id)
-      }
-      return [...prev, id]
-    })
+    setSelectedSources((prev) => toggleSourceSelection(prev, id))
   }, [])
 
-  /** Select all sources. Second click does nothing special — all stay selected. */
   const selectAllSources = useCallback(() => {
-    setSelectedSources([...ALL_SOURCE_IDS])
+    setSelectedSources((prev) => toggleAllSources(prev))
   }, [])
 
   const toggleGithubPack = useCallback((packId: Exclude<GitHubPackId, "all">) => {
@@ -388,14 +362,16 @@ export function ScanConsole({
       if (includesGitHub && resolvedGithubPackIds.length === 0) {
         return Promise.reject(new Error("请至少选择一个 GitHub Provider 包"))
       }
-      // `source` stays BC for single / all; non-empty `sources` is preferred by backend.
-      const legacySource: ScanSource = allSourcesSelected
-        ? "all"
-        : launchSources.length === 1
-          ? launchSources[0]
-          : "all"
-      const multiSources = allSourcesSelected ? [] : launchSources
-      return api.scanStart(legacySource, mode, resolvedGithubPackIds, multiSources)
+      const serialized = serializeSources(launchSources)
+      if (!serialized) {
+        return Promise.reject(new Error("请至少选择一个数据源"))
+      }
+      return api.scanStart(
+        serialized.source,
+        mode,
+        resolvedGithubPackIds,
+        serialized.sources,
+      )
     },
     onSuccess: applyStatus,
     onError: (err) => {
@@ -444,8 +420,8 @@ export function ScanConsole({
     ? parseSourceLabel(status?.source ?? toCanonicalSourceLabel(launchSources))
     : launchSources
   const activeAllSources =
-    activeSources.length === ALL_SOURCE_IDS.length &&
-    ALL_SOURCE_IDS.every((id) => activeSources.includes(id))
+    activeSources.length === ALL_SCAN_SOURCES.length &&
+    ALL_SCAN_SOURCES.every((id) => activeSources.includes(id))
   // While editing, drive UI from local githubPacks so empty ≠ "all".
   // While running, prefer server-reported pack ids.
   const activeGithubPackIds = running
@@ -511,7 +487,7 @@ export function ScanConsole({
           <button
             type="button"
             onClick={() => startMutation.mutate()}
-            disabled={startMutation.isPending}
+            disabled={startMutation.isPending || launchSources.length === 0}
             className="inline-flex items-center gap-[7px] rounded-[4px] bg-accent px-4 py-[9px] text-[13px] font-semibold text-accent-text transition-opacity hover:opacity-90 disabled:opacity-50"
           >
             {startMutation.isPending ? (
@@ -584,7 +560,9 @@ export function ScanConsole({
             })}
             {!running ? (
               <span className="font-mono text-[11px] text-text-muted">
-                可多选 · 例如只跑 FOFA + Shodan 全量
+                {launchSources.length === 0
+                  ? "请至少选择一个数据源"
+                  : "可多选 · 例如只跑 FOFA + Shodan 全量"}
               </span>
             ) : null}
             {running ? (

@@ -8,13 +8,14 @@ We may add more terms, but must not drop any reference term (case-insensitive).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import aipocket.discovery.packs  # noqa: F401 — register packs
 from aipocket.discovery.packs import list_packs
 from aipocket.services.github_queries import (
     GitHubPackView,
     build_commit_message_shards,
 )
-from datetime import UTC, datetime
 
 # Exact query *terms* from gh_stream_v10_r3 Q list, without DATE_FILTER.
 # Case variants listed as in the script; coverage is checked casefold.

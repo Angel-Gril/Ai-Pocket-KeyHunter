@@ -5,8 +5,9 @@ from __future__ import annotations
 import httpx
 import respx
 
-from aipocket.core.models import Credential, ValidationResult
+from aipocket.core.models import Credential, ProviderInfo, ValidationResult
 from aipocket.services.balance import enrich_results, query_balance
+from aipocket.services.balance_dispatch import ProbeResult
 
 OR_BASE = "https://openrouter.ai/api/v1"
 OR_KEY = "sk-or-v1-" + "a" * 64
@@ -483,3 +484,63 @@ async def test_enrich_results_isolates_unexpected_peer_failure(monkeypatch) -> N
 
     assert enriched is results
     assert [result.balance for result in results] == ["1", "", "1"]
+
+
+async def test_enrich_results_never_runs_gateway_fallback_for_official_provider(monkeypatch) -> None:
+    result = ValidationResult(
+        credential=Credential(
+            apikey="glm-key-provider-isolation",
+            apiurl="https://open.bigmodel.cn/api/paas/v4",
+        ),
+        valid=True,
+        validation_state="authentication_confirmed",
+        provider_info=ProviderInfo(validation_provider="glm", provider="glm", category="domestic"),
+    )
+    legacy_called = False
+
+    async def no_evidence(_client, _result):
+        return ProbeResult()
+
+    async def forbidden_fallback(_client, _credential):
+        nonlocal legacy_called
+        legacy_called = True
+        return {"gateway": "litellm", "balance_usd": 0}
+
+    monkeypatch.setattr("aipocket.services.balance.dispatch_probe", no_evidence)
+    monkeypatch.setattr("aipocket.services.balance.query_balance", forbidden_fallback)
+
+    await enrich_results([result])
+
+    assert legacy_called is False
+    assert result.balance == ""
+
+
+async def test_enrich_results_restores_structured_cached_evidence(monkeypatch) -> None:
+    result = ValidationResult(
+        credential=Credential(apikey="cached-evidence-key", apiurl="https://kspmas.ksyun.com/v1"),
+        valid=True,
+        validation_state="authentication_confirmed",
+        provider_info=ProviderInfo(validation_provider="ksyun", provider="ksyun", category="domestic"),
+    )
+
+    class Cache:
+        async def get_cached_balance(self, _credential):
+            return {
+                "matched": True,
+                "provider": "ksyun",
+                "source": "ksyun:models",
+                "evidence_kind": "entitlement",
+                "entitlements": {"models": ["deepseek-v3"]},
+                "alive": True,
+                "observed_at": "2026-07-22T00:00:00Z",
+            }
+
+    async def unexpected_dispatch(_client, _result):
+        raise AssertionError("cache hit must not probe")
+
+    monkeypatch.setattr("aipocket.services.balance.dispatch_probe", unexpected_dispatch)
+    await enrich_results([result], dedup=Cache())
+
+    assert result.provider_evidence["entitlements"] == {"models": ["deepseek-v3"]}
+    assert result.provider_info.evidence_observed_at == "2026-07-22T00:00:00Z"
+    assert "balance_detail" not in result.rate_limit_headers

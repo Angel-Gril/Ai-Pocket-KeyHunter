@@ -12,8 +12,9 @@ from rich.table import Table
 from aipocket.core.config import settings
 from aipocket.core.models import Credential, ValidationResult
 from aipocket.core.request_ledger import RequestAttribution
+from aipocket.services.balance_dispatch import ProbeResult, apply_probe_result, dispatch_probe
 from aipocket.services.http_transport import is_http_header_value_safe
-from aipocket.services.providers import uses_openai_adapter
+from aipocket.services.providers import resolve_provider, uses_openai_adapter
 
 _BALANCE_BATCH_SIZE = 100
 _CACHE_WARNING_LIMIT = 3
@@ -30,6 +31,16 @@ def _credential_label(cred: Credential) -> str:
     from aipocket.core.observations import credential_identity
 
     return credential_identity(cred).secret_fingerprint[:12]
+
+
+def _evidence_provider(result: ValidationResult) -> str:
+    provider = result.provider_info.validation_provider
+    if provider in {"", "unknown", "ambiguous"}:
+        provider = resolve_provider(
+            apiurl=result.credential.apiurl,
+            apikey=result.credential.apikey,
+        ).provider
+    return provider
 
 
 def _log_cache_failure(operation: str, cred: Credential, exc: Exception, count: int) -> None:
@@ -118,6 +129,24 @@ async def query_balance(client: httpx.AsyncClient, cred: Credential) -> dict[str
     if not is_http_header_value_safe(cred.apikey):
         return {"gateway": "unsupported", "balance_usd": ""}
     client = _balance_client(client, cred)
+    probe_context = ValidationResult(credential=cred)
+    resolution = __import__(
+        "aipocket.services.providers", fromlist=["resolve_provider"]
+    ).resolve_provider(apiurl=cred.apiurl, apikey=cred.apikey)
+    probe_context.provider_info.validation_provider = resolution.provider
+    probe_context.provider_info.provider = resolution.provider
+    dispatched = await dispatch_probe(client, probe_context)
+    if dispatched.matched:
+        data = dispatched.model_dump()
+        data["gateway"] = "dashscope" if dispatched.provider == "qwen" else dispatched.provider
+        data["balance_usd"] = dispatched.balance_usd
+        legacy_source = dispatched.detail.get("source")
+        if legacy_source:
+            data["source"] = legacy_source
+        data.update(dispatched.detail)
+        if dispatched.balance_native != "":
+            data["balance_native"] = dispatched.balance_native
+        return data
     # Official OpenAI keys: force platform host (billing lives on the account,
     # not a reverse-proxy leak host). Runs before generic gateway probes.
     if uses_openai_adapter(apiurl=cred.apiurl, apikey=cred.apikey) or _is_openai_official_key(
@@ -1312,6 +1341,8 @@ async def enrich_results(
             try:
                 if not r.valid:
                     return r
+                # Suspicious rows are intentionally enriched with provider-specific
+                # read-only evidence; rejected rows never reach this function.
                 # Redis is an optional cache. A saturated/unavailable pool must
                 # never abort enrichment or the scan's final persistence.
                 if dedup is not None and use_cache:
@@ -1322,39 +1353,61 @@ async def enrich_results(
                         _log_cache_failure("read", r.credential, exc, cache_failures)
                         cached = None
                     if cached:
+                        try:
+                            cached_probe = ProbeResult.model_validate(cached)
+                        except (TypeError, ValueError):
+                            cached_probe = ProbeResult()
+                        if cached_probe.matched:
+                            apply_probe_result(r, cached_probe)
+                            cached_observed_at = str(cached.get("observed_at") or "")
+                            if cached_observed_at:
+                                r.provider_info.evidence_observed_at = cached_observed_at
+                                r.provider_evidence["observed_at"] = cached_observed_at
+                            return r
                         r.balance = str(cached.get("balance_usd", ""))
                         r.gateway = cached.get("gateway", "") or r.gateway
                         if cached.get("tier"):
                             r.tier = r.tier or cached["tier"]
-                        r.rate_limit_headers["balance_detail"] = str(cached)
-                        r.provider_info.balance_provider = (
-                            cached.get("gateway", "") or r.provider_info.balance_provider
-                        )
                         return r
                 try:
                     async with sem:
-                        bal = await query_balance(client, r.credential)
+                        probe = await dispatch_probe(client, r)
+                        if not probe.matched:
+                            if _evidence_provider(r) not in {"gateway", "unknown", "ambiguous"}:
+                                return r
+                            legacy_bal = await query_balance(client, r.credential)
+                            if legacy_bal.get("gateway") == "unsupported":
+                                return r
+                            r.balance = str(legacy_bal.get("balance_usd", ""))
+                            r.gateway = str(legacy_bal.get("gateway", ""))
+                            if legacy_bal.get("tier"):
+                                r.tier = r.tier or str(legacy_bal["tier"])
+                            if dedup is not None:
+                                try:
+                                    await dedup.cache_balance(r.credential, legacy_bal)
+                                except Exception as exc:  # noqa: BLE001 - cache is best-effort
+                                    cache_failures += 1
+                                    _log_cache_failure("write", r.credential, exc, cache_failures)
+                            return r
                 except Exception as exc:  # noqa: BLE001 - per-credential isolation
                     log.warning(
-                        "Balance query failed for credential fingerprint=%s (%s): %s",
+                        "Provider evidence failed for credential fingerprint=%s (%s): %s",
                         _credential_label(r.credential),
                         type(exc).__name__,
                         exc,
                     )
                     return r
-                if bal:
-                    r.balance = str(bal.get("balance_usd", ""))
-                    r.gateway = bal.get("gateway", "")
-                    if bal.get("tier"):
-                        r.tier = r.tier or bal["tier"]
-                    r.rate_limit_headers["balance_detail"] = str(bal)
-                    r.provider_info.balance_provider = bal.get("gateway", "")
-                    if dedup is not None:
-                        try:
-                            await dedup.cache_balance(r.credential, bal)
-                        except Exception as exc:  # noqa: BLE001 - cache is best-effort
-                            cache_failures += 1
-                            _log_cache_failure("write", r.credential, exc, cache_failures)
+                apply_probe_result(r, probe)
+                bal = probe.model_dump()
+                bal["gateway"] = probe.provider
+                bal["balance_usd"] = probe.balance_usd
+                bal["observed_at"] = r.provider_info.evidence_observed_at
+                if dedup is not None:
+                    try:
+                        await dedup.cache_balance(r.credential, bal)
+                    except Exception as exc:  # noqa: BLE001 - cache is best-effort
+                        cache_failures += 1
+                        _log_cache_failure("write", r.credential, exc, cache_failures)
                 return r
             except Exception as exc:  # noqa: BLE001 - final task isolation boundary
                 log.warning(

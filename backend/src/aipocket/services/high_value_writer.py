@@ -101,6 +101,10 @@ def should_save(result: ValidationResult) -> bool:
     Never persists rate-limited quarantine. Accepts authenticated provider
     states, or legacy valid=True rows that never advanced past discovered.
     """
+    from aipocket.services.credential_policy import is_google_direct_result
+
+    if is_google_direct_result(result):
+        return False
     state = result.validation_state
     if state == "rate_limited_unconfirmed" or result.suspicious:
         return False
@@ -132,6 +136,10 @@ def save_high_value_key(result: ValidationResult, run_id: str | None = None) -> 
     enclosing scan's id (from the current_run_id ContextVar) for attribution.
     """
     key = result.credential.apikey
+    from aipocket.services.credential_policy import is_google_direct_result
+
+    if is_google_direct_result(result):
+        return False
 
     with _write_lock:
         if key in _seen_keys:
@@ -195,6 +203,8 @@ def _build_entry(result: ValidationResult, run_id: str | None = None) -> dict[st
         "tier": result.tier,
         "balance": result.balance,
         "gateway": result.gateway,
+        "provider_info": result.provider_info.model_dump(),
+        "provider_evidence": result.provider_evidence,
         "model_available": result.model_available,
         "error": result.error,
         "saved_at": datetime.now(UTC).isoformat(),

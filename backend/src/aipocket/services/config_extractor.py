@@ -38,6 +38,10 @@ _DEFAULTS = {
     "replicate": "https://api.replicate.com/v1",
     "together": "https://api.together.xyz/v1",
     "fireworks": "https://api.fireworks.ai/inference/v1",
+    "minimax": "https://api.minimax.io/v1",
+    "nvidia": "https://integrate.api.nvidia.com/v1",
+    "ksyun": "https://kspmas.ksyun.com/v1",
+    "longcat": "https://api.longcat.chat/openai",
 }
 # Dual-segment GLM exclusive shape (same as KEY_PATTERNS "glm").
 _GLM_KEY_RE = re.compile(r"^[a-f0-9]{32}\.[A-Za-z0-9]{16}$")
@@ -173,6 +177,10 @@ def _provider(entry: _Entry) -> str:
         ("replicate", "replicate"),
         ("together", "together"),
         ("fireworks", "fireworks"),
+        ("minimax", "minimax"),
+        ("nvidia", "nvidia"),
+        ("ksyun", "ksyun"),
+        ("longcat", "longcat"),
         ("openai", "openai"),
         ("anthropic", "anthropic"),
         ("google", "google"),

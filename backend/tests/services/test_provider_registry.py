@@ -30,6 +30,13 @@ EXPECTED_PROVIDERS = {
     "azure_openai",
     "vertex",
     "gemini",
+    "minimax",
+    "nvidia",
+    "ksyun",
+    "longcat",
+    "newapi",
+    "oneapi",
+    "litellm",
     "gateway",
     "ambiguous",
     "unknown",
@@ -216,7 +223,7 @@ def test_together_hints_prioritize_international_open_models():
     hints = resolve_provider(apiurl="https://api.together.ai/v1").default_model_hints
     assert hints[0].startswith("meta-llama/")
     deepseek_idx = next((i for i, h in enumerate(hints) if "deepseek" in h.lower()), len(hints))
-    assert 0 < deepseek_idx  # Llama before DeepSeek
+    assert deepseek_idx > 0  # Llama before DeepSeek
 
 
 @pytest.mark.parametrize(
