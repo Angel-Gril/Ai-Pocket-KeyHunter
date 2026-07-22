@@ -52,7 +52,7 @@ function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) 
 
 /**
  * Column-aligned table header matching the shared `KeyRow` layout.
- * Data columns keep explicit widths; the trailing action area absorbs free space.
+ * Data and action columns stay adjacent; unused viewport width remains after them.
  */
 export function KeyTableHeader({ table }: Readonly<{ table: Table<unknown> }>) {
   return (
@@ -61,8 +61,8 @@ export function KeyTableHeader({ table }: Readonly<{ table: Table<unknown> }>) {
       {table.getFlatHeaders().map((header) => (
         <HeaderCell key={header.id} header={header} />
       ))}
-      {/* Free width belongs after the data columns, so every boundary stays aligned. */}
-      <span className="min-w-max flex-1 whitespace-nowrap text-right">测试 / 操作</span>
+      {/* Keep this adjacent to STATUS, matching the row action cluster. */}
+      <span className="shrink-0 whitespace-nowrap">测试 / 操作</span>
     </div>
   )
 }
