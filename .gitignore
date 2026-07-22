@@ -30,6 +30,10 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+coverage/
 
 # uv
 
@@ -37,6 +41,7 @@ dist/
 frontend/node_modules/
 frontend/dist/
 frontend/.pnpm-store/
+frontend/coverage/
 
 # IDE
 .vscode/
@@ -64,4 +69,3 @@ preview/*.js
 
 # Design files
 *.pen
-.coverage
