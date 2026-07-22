@@ -1,6 +1,6 @@
 import type { ColumnSizingState } from "@tanstack/react-table"
 
-const COL_SIZES_KEY = "aipocket.key-table.col-sizes.v1"
+const COL_SIZES_KEY = "aipocket.key-table.col-sizes.v2"
 
 /** Read the persisted key-table column widths, or `{}` when unset/unavailable. */
 export function readColumnSizing(): ColumnSizingState {

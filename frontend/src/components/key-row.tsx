@@ -41,6 +41,7 @@ export interface KeyRowProps {
   onPromote?: () => void
   promotePending?: boolean
   busy?: { models?: boolean; balance?: boolean; chat?: boolean }
+  actionWidth?: number
   className?: string
 }
 
@@ -135,7 +136,7 @@ interface RowActionsProps {
   onToggleExpand: () => void
 }
 
-/** Right-aligned per-row actions: models / balance / chat / expand. */
+/** Per-row actions constrained to the shared page action width. */
 function RowActions({
   onLoadModels,
   onBalance,
@@ -146,9 +147,10 @@ function RowActions({
   canExpand,
   isExpanded,
   onToggleExpand,
-}: Readonly<RowActionsProps>) {
+  actionWidth,
+}: Readonly<RowActionsProps & { actionWidth: number }>) {
   return (
-    <div className="flex shrink-0 flex-nowrap items-center gap-1.5">
+    <div className="flex shrink-0 flex-nowrap items-center gap-1.5" style={{ width: actionWidth }}>
       {onLoadModels ? (
         <ActionButton icon={<List className="size-3.5 shrink-0" />} label="模型列表" onClick={onLoadModels} loading={busy?.models} />
       ) : null}
@@ -270,6 +272,7 @@ export function KeyRow({
   promotePending,
   busy,
   className,
+  actionWidth = 280,
 }: Readonly<KeyRowProps>) {
   const [internalExpanded, setInternalExpanded] = useState(false)
   const isExpanded = expanded ?? internalExpanded
@@ -291,7 +294,7 @@ export function KeyRow({
         className,
       )}
     >
-      {/* w-full min-w-max: fill wide viewports; scroll when columns exceed the port. */}
+      {/* Match the responsive header track; the outer container scrolls if needed. */}
       <div className="flex w-full min-w-max flex-nowrap items-center gap-3.5 px-4 py-3.5">
         {onSelectedChange ? (
           <Checkbox
@@ -376,6 +379,7 @@ export function KeyRow({
           onPromote={onPromote}
           promotePending={promotePending}
           busy={busy}
+          actionWidth={actionWidth}
           canExpand={canExpand}
           isExpanded={isExpanded}
           onToggleExpand={toggleExpanded}

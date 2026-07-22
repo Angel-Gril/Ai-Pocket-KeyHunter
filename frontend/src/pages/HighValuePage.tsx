@@ -28,7 +28,8 @@ export default function HighValuePage() {
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
 
-  const { table, columnSizeVars } = useKeyTableSizing()
+  const actionWidth = 280
+  const { table, columnSizeVars, sizingContainerRef } = useKeyTableSizing(actionWidth)
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["high-value"],
@@ -294,6 +295,7 @@ export default function HighValuePage() {
               selected={selected.has(originalIndex)}
               expanded={expanded.has(key)}
               busy={busy[key]}
+              actionWidth={actionWidth}
               onSelectedChange={handleSelectedChange}
               onExpandedChange={handleExpandedChange}
               onReveal={handleReveal}
@@ -366,11 +368,11 @@ export default function HighValuePage() {
       />
 
       {/* @container lets expanded KeyRow panels size to the scrollport (100cqw). */}
-      <div className="@container min-h-0 flex-1 overflow-auto" style={columnSizeVars}>
-        {/* min-w-full: fill viewport; w-max: grow with columns and enable horizontal scroll. */}
+      <div ref={sizingContainerRef} className="@container min-h-0 flex-1 overflow-auto" style={columnSizeVars}>
+        {/* Fill the viewport while preserving intrinsic width for horizontal overflow. */}
         <div className="w-max min-w-full">
           <div className="sticky top-0 z-10">
-            <KeyTableHeader table={table} />
+            <KeyTableHeader table={table} actionWidth={actionWidth} />
           </div>
           {body}
         </div>

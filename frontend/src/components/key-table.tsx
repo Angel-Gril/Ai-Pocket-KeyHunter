@@ -3,7 +3,7 @@ import { Braces, Loader2, Table as TableIcon } from "lucide-react"
 import type { Header, Table } from "@tanstack/react-table"
 import { BalanceHelpButton } from "@/components/balance-help"
 import { KeyRow, type KeyRowProps } from "@/components/key-row"
-import { colCellClass, colStyle, type KeyColumnId } from "@/components/key-table-columns"
+import { colWidthStyle, type KeyColumnId } from "@/components/key-table-columns"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 
@@ -22,8 +22,8 @@ function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) 
   const canResize = header.column.getCanResize()
   return (
     <span
-      className={cn("relative flex items-center gap-1 overflow-visible", colCellClass(id))}
-      style={colStyle(id)}
+      className="relative flex shrink-0 items-center gap-1 overflow-visible"
+      style={colWidthStyle(id)}
     >
       <span className="truncate">{COLUMN_LABELS[id] ?? id}</span>
       {id === "balance" ? <BalanceHelpButton /> : null}
@@ -50,19 +50,16 @@ function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) 
   )
 }
 
-/**
- * Column-aligned table header matching the shared `KeyRow` layout.
- * Data and action columns stay adjacent; unused viewport width remains after them.
- */
-export function KeyTableHeader({ table }: Readonly<{ table: Table<unknown> }>) {
+/** Column-aligned table header using the shared computed column widths. */
+export function KeyTableHeader({ table, actionWidth }: Readonly<{ table: Table<unknown>; actionWidth: number }>) {
   return (
     <div className="flex w-full min-w-max flex-nowrap items-center gap-3.5 border-b border-border-primary bg-surface-base px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.4px] text-text-muted">
       <span className="size-4 shrink-0" aria-hidden />
       {table.getFlatHeaders().map((header) => (
         <HeaderCell key={header.id} header={header} />
       ))}
-      {/* Keep this adjacent to STATUS, matching the row action cluster. */}
-      <span className="shrink-0 whitespace-nowrap">测试 / 操作</span>
+      {/* Match the page's widest row action cluster so all rows end together. */}
+      <span className="shrink-0 whitespace-nowrap" style={{ width: actionWidth }}>测试 / 操作</span>
     </div>
   )
 }

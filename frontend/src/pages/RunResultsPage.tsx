@@ -65,7 +65,8 @@ export default function RunResultsPage() {
    */
   const toastOnRetryFinishRef = useRef(false)
 
-  const { table, columnSizeVars } = useKeyTableSizing()
+  const actionWidth = 280
+  const { table, columnSizeVars, sizingContainerRef } = useKeyTableSizing(actionWidth)
 
   const validQuery = useQuery({
     queryKey: ["run", runId, "valid"],
@@ -441,6 +442,7 @@ export default function RunResultsPage() {
               selected={selected.has(originalIndex)}
               expanded={expanded.has(key)}
               busy={busy[key]}
+              actionWidth={actionWidth}
               onSelectedChange={handleSelectedChange}
               onExpandedChange={handleExpandedChange}
               onReveal={handleReveal}
@@ -557,11 +559,11 @@ export default function RunResultsPage() {
       />
 
       {/* @container lets expanded KeyRow panels size to the scrollport (100cqw). */}
-      <div className="@container min-h-0 flex-1 overflow-auto" style={columnSizeVars}>
-        {/* min-w-full: fill viewport; w-max: grow with columns and enable horizontal scroll. */}
+      <div ref={sizingContainerRef} className="@container min-h-0 flex-1 overflow-auto" style={columnSizeVars}>
+        {/* Fill the viewport while preserving intrinsic width for horizontal overflow. */}
         <div className="w-max min-w-full">
           <div className="sticky top-0 z-10">
-            <KeyTableHeader table={table} />
+            <KeyTableHeader table={table} actionWidth={actionWidth} />
           </div>
           {body}
         </div>

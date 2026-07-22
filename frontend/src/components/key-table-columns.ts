@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   getCoreRowModel,
   useReactTable,
@@ -31,13 +31,12 @@ export const KEY_COLUMNS: ColumnDef<unknown>[] = [
 export function colSizeVar(id: KeyColumnId): string {
   return `--col-${id}-size`
 }
-
-/** Fixed-width column driven by TanStack's column sizing state. */
+/** Fixed-width column driven by the shared computed sizing variables. */
 export function colWidthStyle(id: KeyColumnId): React.CSSProperties {
   return { width: `calc(var(${colSizeVar(id)}) * 1px)` }
 }
 
-/** Every data column is fixed-width so headers and rows share exact boundaries. */
+/** Every data cell is fixed to its computed shared width. */
 export function colCellClass(_id: KeyColumnId): string {
   return "shrink-0"
 }
@@ -47,10 +46,13 @@ export function colStyle(id: KeyColumnId): React.CSSProperties {
   return colWidthStyle(id)
 }
 
+
 export interface KeyTableSizing {
   table: Table<unknown>
   /** `{ '--col-<id>-size': number }` map to spread onto the shared container. */
   columnSizeVars: Record<string, number>
+  /** Attach to the scrollport so surplus width is folded into the shared sizes. */
+  sizingContainerRef: React.RefObject<HTMLDivElement | null>
 }
 
 /**
@@ -60,8 +62,18 @@ export interface KeyTableSizing {
  * so widths propagate via inherited CSS vars — the memoized rows never re-render
  * on a drag frame.
  */
-export function useKeyTableSizing(): KeyTableSizing {
+export function useKeyTableSizing(actionWidth = 280): KeyTableSizing {
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(readColumnSizing)
+  const [containerWidth, setContainerWidth] = useState(0)
+  const sizingContainerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const element = sizingContainerRef.current
+    if (!element) return
+    const observer = new ResizeObserver(([entry]) => setContainerWidth(entry.contentRect.width))
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
 
   const table = useReactTable({
     data: EMPTY_DATA,
@@ -80,17 +92,43 @@ export function useKeyTableSizing(): KeyTableSizing {
   })
 
   const columnSizeVars = useMemo(() => {
+    const headers = table.getFlatHeaders()
+    // Fit the default schema to the viewport once, then add user drag deltas on
+    // top. This keeps the action cluster visible without making one column fluid.
+    const defaults = KEY_COLUMNS.map((column) => Number(column.size ?? 150))
+    const minimums = KEY_COLUMNS.map((column) => Number(column.minSize ?? 20))
+    const flexibleCount = headers.length - 1
+    const defaultFlexibleTotal = defaults.slice(0, flexibleCount).reduce((sum, size) => sum + size, 0)
+    const minimumFlexibleTotal = minimums.slice(0, flexibleCount).reduce((sum, size) => sum + size, 0)
+    // 32px horizontal padding + 16px checkbox + seven 14px inter-cell gaps +
+    // the current page's action cluster width.
+    const chromeWidth = 146 + actionWidth
+    const targetFlexibleTotal = Math.max(
+      minimumFlexibleTotal,
+      containerWidth - chromeWidth - defaults[headers.length - 1],
+    )
+    const shrinkRatio = Math.min(
+      1,
+      Math.max(0, defaultFlexibleTotal - targetFlexibleTotal) /
+        (defaultFlexibleTotal - minimumFlexibleTotal),
+    )
+    const growRatio = Math.max(0, targetFlexibleTotal - defaultFlexibleTotal) / defaultFlexibleTotal
     const vars: Record<string, number> = {}
-    for (const header of table.getFlatHeaders()) {
-      vars[`--col-${header.column.id}-size`] = header.getSize()
-    }
+    headers.forEach((header, index) => {
+      const baselineAdjustment = index < flexibleCount
+        ? targetFlexibleTotal < defaultFlexibleTotal
+          ? -(defaults[index] - minimums[index]) * shrinkRatio
+          : defaults[index] * growRatio
+        : 0
+      vars[`--col-${header.column.id}-size`] = header.getSize() + baselineAdjustment
+    })
     return vars
     // Recompute on committed sizing changes AND on live drag frames
     // (`columnSizingInfo` updates continuously in `onChange` resize mode).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [table, columnSizing, table.getState().columnSizingInfo])
+  }, [table, columnSizing, containerWidth, actionWidth, table.getState().columnSizingInfo])
 
-  return { table, columnSizeVars }
+  return { table, columnSizeVars, sizingContainerRef }
 }
 
 const EMPTY_DATA: unknown[] = []
