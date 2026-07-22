@@ -16,32 +16,49 @@ const COLUMN_LABELS: Record<KeyColumnId, string> = {
   status: "STATUS",
 }
 
-/** A single resizable header cell with its drag grip on the right edge. */
-function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) {
+/** Drag grip shared by mid-column edges and the STATUS↔操作 boundary. */
+function ColumnResizeHandle({
+  header,
+  className,
+}: Readonly<{ header: Header<unknown, unknown>; className?: string }>) {
   const id = header.column.id as KeyColumnId
-  const canResize = header.column.getCanResize()
+  if (!header.column.getCanResize()) return null
+  return (
+    <span
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={`Resize ${COLUMN_LABELS[id] ?? id} column`}
+      onMouseDown={header.getResizeHandler()}
+      onTouchStart={header.getResizeHandler()}
+      onDoubleClick={() => header.column.resetSize()}
+      className={cn(
+        "group flex h-full w-3.5 cursor-col-resize touch-none items-center justify-center select-none",
+        className,
+      )}
+    >
+      <span
+        className={cn(
+          "h-4 w-0.5 rounded-full transition-colors",
+          "bg-border-primary group-hover:bg-accent",
+          header.column.getIsResizing() && "bg-accent",
+        )}
+      />
+    </span>
+  )
+}
+
+/** A single resizable header cell with its drag grip on the right edge. */
+function HeaderCell({
+  header,
+  showResizeHandle = true,
+}: Readonly<{ header: Header<unknown, unknown>; showResizeHandle?: boolean }>) {
+  const id = header.column.id as KeyColumnId
   return (
     <span className="relative flex shrink-0 items-center gap-1" style={colWidthStyle(id)}>
       <span className="truncate">{COLUMN_LABELS[id] ?? id}</span>
       {id === "balance" ? <BalanceHelpButton /> : null}
-      {canResize ? (
-        <span
-          role="separator"
-          aria-orientation="vertical"
-          aria-label={`Resize ${COLUMN_LABELS[id] ?? id} column`}
-          onMouseDown={header.getResizeHandler()}
-          onTouchStart={header.getResizeHandler()}
-          onDoubleClick={() => header.column.resetSize()}
-          className="group absolute -right-3.5 top-0 flex h-full w-3.5 cursor-col-resize touch-none items-center justify-center select-none"
-        >
-          <span
-            className={cn(
-              "h-4 w-0.5 rounded-full transition-colors",
-              "bg-border-primary group-hover:bg-accent",
-              header.column.getIsResizing() && "bg-accent",
-            )}
-          />
-        </span>
+      {showResizeHandle ? (
+        <ColumnResizeHandle header={header} className="absolute -right-3.5 top-0" />
       ) : null}
     </span>
   )
@@ -49,13 +66,27 @@ function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) 
 
 /** Column-aligned table header matching the shared `KeyRow` layout. */
 export function KeyTableHeader({ table }: Readonly<{ table: Table<unknown> }>) {
+  const headers = table.getFlatHeaders()
+  const lastHeader = headers[headers.length - 1]
   return (
     <div className="flex min-w-max flex-nowrap items-center gap-3.5 border-b border-border-primary bg-surface-base px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.4px] text-text-muted">
       <span className="size-4 shrink-0" aria-hidden />
-      {table.getFlatHeaders().map((header) => (
-        <HeaderCell key={header.id} header={header} />
+      {headers.map((header, index) => (
+        <HeaderCell
+          key={header.id}
+          header={header}
+          // Last data column (STATUS): grip sits on the flex spacer so it lands
+          // at the STATUS↔操作 boundary instead of hugging the STATUS label.
+          showResizeHandle={index < headers.length - 1}
+        />
       ))}
-      <span className="ml-auto shrink-0 whitespace-nowrap text-right">测试 / 操作</span>
+      {/* Fills the gap before right-aligned actions; hosts STATUS resize grip. */}
+      <span className="relative min-h-4 min-w-3.5 flex-1 self-stretch">
+        {lastHeader ? (
+          <ColumnResizeHandle header={lastHeader} className="absolute top-0 right-0" />
+        ) : null}
+      </span>
+      <span className="shrink-0 whitespace-nowrap text-right">测试 / 操作</span>
     </div>
   )
 }
