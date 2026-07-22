@@ -40,8 +40,16 @@ def _parse_url(raw_url: str) -> SplitResult | None:
         return None
     if "://" not in value:
         value = f"https://{value}"
-    parsed = urlsplit(value)
-    if not parsed.hostname:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        # urllib raises ValueError for invalid IPv6 / bracketed netlocs.
+        return None
+    try:
+        host = parsed.hostname
+    except ValueError:
+        return None
+    if not host:
         return None
     return parsed
 

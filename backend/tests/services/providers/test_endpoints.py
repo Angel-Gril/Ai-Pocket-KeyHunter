@@ -72,3 +72,9 @@ def test_invalid_endpoint_and_unknown_operation_are_empty() -> None:
 def test_invalid_port_is_treated_as_no_explicit_port() -> None:
     endpoint = canonicalize_endpoint("https://example.com:invalid/v1", provider="gateway")
     assert endpoint.origin == "https://example.com"
+
+
+def test_invalid_ipv6_url_does_not_raise() -> None:
+    endpoint = canonicalize_endpoint("http://[::1", provider="gateway")
+    assert endpoint.api_base == ""
+    assert endpoint.origin == ""

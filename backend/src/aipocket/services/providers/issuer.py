@@ -218,7 +218,10 @@ def _hostname(apiurl: str) -> str:
     candidate = (apiurl or "").strip().lower()
     if not candidate:
         return ""
-    parsed = urlparse(candidate if "://" in candidate else f"//{candidate}")
+    try:
+        parsed = urlparse(candidate if "://" in candidate else f"//{candidate}")
+    except ValueError:
+        return ""
     return (parsed.hostname or "").rstrip(".")
 
 

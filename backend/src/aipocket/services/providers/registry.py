@@ -410,7 +410,11 @@ def _hostname(apiurl: str) -> str:
     candidate = apiurl.strip().lower()
     if not candidate:
         return ""
-    parsed = urlparse(candidate if "://" in candidate else f"//{candidate}")
+    try:
+        parsed = urlparse(candidate if "://" in candidate else f"//{candidate}")
+    except ValueError:
+        # Historical junk (unbalanced brackets, invalid IPv6 netloc, etc.).
+        return ""
     return (parsed.hostname or "").rstrip(".")
 
 

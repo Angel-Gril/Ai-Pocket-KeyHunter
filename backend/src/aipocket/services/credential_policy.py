@@ -18,22 +18,27 @@ def _hostname(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
         return ""
-    parsed = urlsplit(raw if "://" in raw else f"//{raw}")
-    return (parsed.hostname or "").lower().rstrip(".")
+    try:
+        parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+        host = parsed.hostname
+    except ValueError:
+        return ""
+    return (host or "").lower().rstrip(".")
 
 
 def _authority(value: str) -> tuple[str, int | None]:
     raw = (value or "").strip()
     if not raw:
         return "", None
-    parsed = urlsplit(raw if "://" in raw else f"//{raw}")
     try:
+        parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+        host = (parsed.hostname or "").lower().rstrip(".")
         port = parsed.port
     except ValueError:
-        port = None
+        return "", None
     if port in {80, 443}:
         port = None
-    return (parsed.hostname or "").lower().rstrip("."), port
+    return host, port
 
 
 def is_google_direct_credential(credential: Credential) -> bool:

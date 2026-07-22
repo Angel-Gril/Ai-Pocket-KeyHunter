@@ -301,6 +301,13 @@ def test_no_signal_resolves_to_unknown_spec():
     assert decision.reason == "unmatched"
 
 
+def test_invalid_ipv6_url_does_not_raise():
+    """Historical junk netlocs must not crash resolve_provider."""
+    decision = resolve_provider(apiurl="http://[::1", apikey="sk-" + "a" * 40)
+    assert decision.provider == "gateway"
+    assert decision.reason == "unmatched-endpoint"
+
+
 def test_provider_spec_requires_immutable_tuple_fields():
     with pytest.raises(TypeError):
         ProviderSpec(  # type: ignore[arg-type]
