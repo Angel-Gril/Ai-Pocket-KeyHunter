@@ -681,20 +681,76 @@ async def _probe_newapi_billing(client: httpx.AsyncClient, base: str, key: str) 
     }
 
 
+def _litellm_key_info_blob(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract LiteLLM key budget object from known response envelopes.
+
+    Observed shapes:
+    * ``{"key_info": {...}}`` (older/proxy docs)
+    * ``{"key": "...", "info": {...}}`` (current proxy, e.g. llm.alem.ai)
+    """
+    for field in ("key_info", "info"):
+        blob = data.get(field)
+        if isinstance(blob, dict):
+            return blob
+    return None
+
+
 async def _probe_litellm(client: httpx.AsyncClient, base: str, key: str) -> dict[str, Any]:
     data = await _safe_get(client, f"{base}/key/info", key, params={"key": key})
     if data is None:
         return {}
-    key_info = data.get("key_info", data)
-    spend = key_info.get("spend", 0)
-    max_budget = key_info.get("max_budget", 0) or key_info.get("max_budget_soft", 0)
+    if data.get("success") is False or "error" in data:
+        return {}
+    key_info = _litellm_key_info_blob(data)
+    if key_info is None:
+        return {}
+    # Require at least one real budget field so error HTML/JSON cannot match.
+    budget_fields = ("spend", "max_budget", "max_budget_soft")
+    has_numeric_budget = any(
+        isinstance(key_info.get(field), int | float) and not isinstance(key_info.get(field), bool)
+        for field in budget_fields
+    )
+    # Null-only max_budget rows need spend or models[] to claim LiteLLM contract.
+    if not has_numeric_budget and key_info.get("spend") is None and key_info.get("max_budget") is None:
+        return {}
+
+    spend_raw = key_info.get("spend")
+    spend = (
+        float(spend_raw)
+        if isinstance(spend_raw, int | float) and not isinstance(spend_raw, bool)
+        else 0.0
+    )
+    maximum = key_info.get("max_budget")
+    if not (isinstance(maximum, int | float) and not isinstance(maximum, bool)):
+        soft = key_info.get("max_budget_soft")
+        maximum = soft if isinstance(soft, int | float) and not isinstance(soft, bool) else None
+
+    models = key_info.get("models") if isinstance(key_info.get("models"), list) else []
+    tier = str(key_info.get("tier") or "")
+
+    # LiteLLM: max_budget=null means unlimited (not $0 remaining).
+    if maximum is None:
+        return {
+            "spend": spend,
+            "max_budget": None,
+            "remaining": "",
+            "balance_usd": "N/A",
+            "source": "key_no_limit",
+            "tier": tier,
+            "models": models,
+            "note": "LiteLLM max_budget is null (unlimited); spend is cumulative usage",
+            "raw": key_info,
+        }
+
+    remaining = max(float(maximum) - spend, 0.0)
     return {
         "spend": spend,
-        "max_budget": max_budget,
-        "remaining": max_budget - spend if max_budget else 0,
-        "balance_usd": round(max_budget - spend, 2) if max_budget else 0,
-        "tier": key_info.get("tier", ""),
-        "models": key_info.get("models", []),
+        "max_budget": float(maximum),
+        "remaining": remaining,
+        "balance_usd": round(remaining, 2),
+        "source": "litellm:key_info",
+        "tier": tier,
+        "models": models,
         "raw": key_info,
     }
 

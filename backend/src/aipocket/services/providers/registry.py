@@ -241,7 +241,14 @@ _PROVIDER_SPECS = (
     ProviderSpec(
         name="qwen",
         category="domestic",
-        domain_suffixes=("dashscope.aliyuncs.com", "baidu.com"),
+        # CN + intl + coding-plan hosts. dashscope-intl is NOT a suffix of
+        # dashscope.aliyuncs.com (hyphenated label), so list both explicitly.
+        domain_suffixes=(
+            "dashscope.aliyuncs.com",
+            "dashscope-intl.aliyuncs.com",
+            "dashscope-us.aliyuncs.com",
+            "baidu.com",
+        ),
         key_prefixes=(),
         protocol_family="openai_compatible",
         default_model_hints=_QWEN_MODELS,

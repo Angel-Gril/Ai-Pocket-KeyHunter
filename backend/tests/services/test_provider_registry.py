@@ -96,6 +96,10 @@ CURRENT_DOMAIN_ROUTES = {
         "qwen",
         ("qwen3.7-max", "qwen3-max", "qwen-turbo"),
     ),
+    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1": (
+        "qwen",
+        ("qwen3.7-max", "qwen3-max", "qwen-turbo"),
+    ),
     "https://qianfan.baidu.com/v2": (
         "qwen",
         ("ernie-bot-turbo", "ernie-4.0-8k"),
@@ -199,7 +203,11 @@ def test_openrouter_hints_prioritize_international_models():
     assert hints[0].startswith("openai/")
     assert any(h.startswith("anthropic/") for h in hints)
     first_domestic = next(
-        (i for i, h in enumerate(hints) if h.startswith(("deepseek/", "qwen/", "z-ai/", "moonshotai/"))),
+        (
+            i
+            for i, h in enumerate(hints)
+            if h.startswith(("deepseek/", "qwen/", "z-ai/", "moonshotai/"))
+        ),
         len(hints),
     )
     first_intl = next(

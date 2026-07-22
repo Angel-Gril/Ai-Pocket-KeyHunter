@@ -114,7 +114,11 @@ def _model_ids(payload: dict[str, Any] | None) -> list[str] | None:
 def _probe_glm_passive(result: ValidationResult) -> ProbeResult:
     evidence_text = " ".join(part for part in (result.error, result.response_snippet) if part)
     code = next(
-        (candidate for candidate in _GLM_PASSIVE_CODES if re.search(rf"(?<!\d){candidate}(?!\d)", evidence_text)),
+        (
+            candidate
+            for candidate in _GLM_PASSIVE_CODES
+            if re.search(rf"(?<!\d){candidate}(?!\d)", evidence_text)
+        ),
         "",
     )
     if not code:
@@ -258,7 +262,11 @@ async def _probe_cohere(
         payload = response.json()
     except ValueError:
         return ProbeResult()
-    if response.status_code != 200 or not isinstance(payload, dict) or payload.get("valid") is not True:
+    if (
+        response.status_code != 200
+        or not isinstance(payload, dict)
+        or payload.get("valid") is not True
+    ):
         return ProbeResult()
     identity = {
         field: payload[field]
@@ -377,9 +385,7 @@ async def _probe_models(
 def _fireworks_tier(max_value: float, account_type: str) -> str:
     if account_type.upper() == "ENTERPRISE":
         return "enterprise"
-    return {50.0: "tier1", 500.0: "tier2", 5000.0: "tier3", 50000.0: "tier4"}.get(
-        max_value, ""
-    )
+    return {50.0: "tier1", 500.0: "tier2", 5000.0: "tier3", 50000.0: "tier4"}.get(max_value, "")
 
 
 async def _probe_fireworks(
@@ -410,7 +416,11 @@ async def _probe_fireworks(
             account_type = str(account.get("accountType") or account_type)
             suspend_state = str(account.get("suspendState") or suspend_state)
         quota_rows = quotas.get("quotas") if quotas else None
-        if quota_response is None or quota_response.status_code != 200 or not isinstance(quota_rows, list):
+        if (
+            quota_response is None
+            or quota_response.status_code != 200
+            or not isinstance(quota_rows, list)
+        ):
             continue
         for quota in quota_rows:
             if not isinstance(quota, dict) or quota.get("name") != "monthly-spend-usd":
@@ -437,36 +447,83 @@ async def _probe_fireworks(
     )
 
 
+def _litellm_key_info_blob(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """LiteLLM key budget object: ``key_info`` or nested ``info`` (proxy default)."""
+    if not isinstance(payload, dict):
+        return None
+    for field in ("key_info", "info"):
+        blob = payload.get(field)
+        if isinstance(blob, dict):
+            return blob
+    return None
+
+
 async def _probe_litellm(
     client: httpx.AsyncClient, credential: Credential, endpoint: str
 ) -> ProbeResult:
     response, payload = await _json_get(
         client, f"{endpoint.rstrip('/')}/key/info", credential, params={"key": credential.apikey}
     )
-    key_info = payload.get("key_info") if payload else None
-    if response is None or response.status_code != 200 or not isinstance(key_info, dict):
+    key_info = _litellm_key_info_blob(payload)
+    if response is None or response.status_code != 200 or key_info is None:
+        return ProbeResult()
+    if payload is not None and (payload.get("success") is False or "error" in payload):
         return ProbeResult()
     budget_fields = ("spend", "max_budget", "max_budget_soft")
-    if not any(_numeric(key_info.get(field)) for field in budget_fields):
+    has_budget_signal = any(_numeric(key_info.get(field)) for field in budget_fields)
+    # Explicit null max_budget + models list is still a valid LiteLLM key_info
+    # envelope (unlimited budget), but only when spend is numeric or present as 0.
+    spend_raw = key_info.get("spend")
+    has_spend = (
+        _numeric(spend_raw)
+        or spend_raw is None
+        and ("max_budget" in key_info or "models" in key_info)
+    )
+    if not has_budget_signal and not (
+        "max_budget" in key_info and isinstance(key_info.get("models"), list)
+    ):
         return ProbeResult()
-    if payload.get("success") is False or "error" in payload:
+    if not has_spend and not has_budget_signal:
         return ProbeResult()
-    spend = float(key_info.get("spend") or 0)
+    spend = float(spend_raw) if _numeric(spend_raw) else 0.0
     maximum = key_info.get("max_budget")
-    maximum = maximum if _numeric(maximum) else key_info.get("max_budget_soft")
+    if not _numeric(maximum):
+        soft = key_info.get("max_budget_soft")
+        maximum = soft if _numeric(soft) else None
+    models = key_info.get("models") if isinstance(key_info.get("models"), list) else []
     quota: dict[str, Any] = {"spend": spend}
     if _numeric(maximum):
+        remaining = max(float(maximum) - spend, 0.0)
         quota["max_budget"] = float(maximum)
-        quota["remaining"] = max(float(maximum) - spend, 0.0)
+        quota["remaining"] = remaining
+        return ProbeResult(
+            matched=True,
+            provider="litellm",
+            source="litellm:key_info",
+            evidence_kind="quota",
+            balance_usd=round(remaining, 2),
+            quota=quota,
+            tier=str(key_info.get("tier") or ""),
+            alive=True,
+            detail={"models": models},
+        )
+    # max_budget=null → unlimited; do not invent balance=0.
+    quota["max_budget"] = None
+    quota["unlimited"] = True
     return ProbeResult(
         matched=True,
         provider="litellm",
-        source="litellm:key_info",
+        source="litellm:key_no_limit",
         evidence_kind="quota",
+        balance_usd="N/A",
         quota=quota,
+        usage={"spend": spend},
         tier=str(key_info.get("tier") or ""),
         alive=True,
-        detail={"models": key_info.get("models") if isinstance(key_info.get("models"), list) else []},
+        detail={
+            "models": models,
+            "note": "LiteLLM max_budget is null (unlimited); spend is cumulative usage",
+        },
     )
 
 
@@ -547,7 +604,9 @@ async def _probe_gateway(
             quota=quota,
             usage=usage,
             alive=True,
-            detail={"signals": {"status": status_signal, "self": self_signal, "billing": billing_signal}},
+            detail={
+                "signals": {"status": status_signal, "self": self_signal, "billing": billing_signal}
+            },
         )
     if oneapi_status_signal and self_signal:
         return ProbeResult(
@@ -588,9 +647,7 @@ async def _probe_legacy_provider(
     elif provider == "qwen":
         legacy_result = await legacy._probe_dashscope(client, base, credential.apikey)
     elif provider == "siliconflow":
-        legacy_result = await legacy._probe_siliconflow(
-            client, endpoint.origin, credential.apikey
-        )
+        legacy_result = await legacy._probe_siliconflow(client, endpoint.origin, credential.apikey)
     if not legacy_result:
         return ProbeResult()
     balance = legacy_result.get("balance_usd", "")
@@ -628,9 +685,7 @@ async def _probe_legacy_provider(
     )
 
 
-_LEGACY_PROVIDER_PROBES = frozenset(
-    {"openai", "anthropic", "openrouter", "qwen", "siliconflow"}
-)
+_LEGACY_PROVIDER_PROBES = frozenset({"openai", "anthropic", "openrouter", "qwen", "siliconflow"})
 
 
 _PROBES = {

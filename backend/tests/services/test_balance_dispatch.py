@@ -16,7 +16,9 @@ def _result(provider: str, apiurl: str) -> ValidationResult:
         provider_info=ProviderInfo(
             validation_provider=provider,  # type: ignore[arg-type]
             provider=provider,  # type: ignore[arg-type]
-            category="gateway" if provider in {"gateway", "newapi", "oneapi", "litellm"} else "domestic",
+            category="gateway"
+            if provider in {"gateway", "newapi", "oneapi", "litellm"}
+            else "domestic",
         ),
     )
 
@@ -128,7 +130,9 @@ async def test_fireworks_unknown_quota_has_no_fake_tier() -> None:
         )
     )
     async with httpx.AsyncClient() as client:
-        probe = await dispatch_probe(client, _result("fireworks", "https://api.fireworks.ai/inference/v1"))
+        probe = await dispatch_probe(
+            client, _result("fireworks", "https://api.fireworks.ai/inference/v1")
+        )
     assert probe.matched is True
     assert probe.tier == ""
     assert probe.account_type == "STANDARD"
@@ -174,10 +178,14 @@ async def test_newapi_requires_product_status_even_when_self_and_billing_match()
     base = "https://ambiguous.example"
     respx.get(f"{base}/api/status").mock(return_value=httpx.Response(404))
     respx.get(f"{base}/api/user/self").mock(
-        return_value=httpx.Response(200, json={"success": True, "data": {"quota": 10, "used_quota": 1}})
+        return_value=httpx.Response(
+            200, json={"success": True, "data": {"quota": 10, "used_quota": 1}}
+        )
     )
     respx.get(f"{base}/dashboard/billing/subscription").mock(
-        return_value=httpx.Response(200, json={"object": "billing_subscription", "hard_limit_usd": 20})
+        return_value=httpx.Response(
+            200, json={"object": "billing_subscription", "hard_limit_usd": 20}
+        )
     )
     respx.get(f"{base}/key/info").mock(return_value=httpx.Response(404))
     async with httpx.AsyncClient() as client:
@@ -205,7 +213,9 @@ async def test_newapi_billing_usage_requires_strict_list_schema() -> None:
     )
     respx.get(f"{base}/api/user/self").mock(return_value=httpx.Response(401))
     respx.get(f"{base}/dashboard/billing/subscription").mock(
-        return_value=httpx.Response(200, json={"object": "billing_subscription", "hard_limit_usd": 20})
+        return_value=httpx.Response(
+            200, json={"object": "billing_subscription", "hard_limit_usd": 20}
+        )
     )
     usage_route = respx.get(f"{base}/dashboard/billing/usage").mock(
         return_value=httpx.Response(200, json={"object": "list", "total_usage": 250})
@@ -228,7 +238,9 @@ async def test_oneapi_requires_status_and_self_signals() -> None:
         )
     )
     respx.get(f"{base}/api/user/self").mock(
-        return_value=httpx.Response(200, json={"success": True, "data": {"quota": 9, "used_quota": 2}})
+        return_value=httpx.Response(
+            200, json={"success": True, "data": {"quota": 9, "used_quota": 2}}
+        )
     )
     respx.get(f"{base}/dashboard/billing/subscription").mock(return_value=httpx.Response(404))
     async with httpx.AsyncClient() as client:
@@ -277,7 +289,9 @@ async def test_cohere_and_replicate_return_identity_not_plan() -> None:
     )
     async with httpx.AsyncClient() as client:
         cohere = await dispatch_probe(client, _result("cohere", "https://api.cohere.com/v1"))
-        replicate = await dispatch_probe(client, _result("replicate", "https://api.replicate.com/v1"))
+        replicate = await dispatch_probe(
+            client, _result("replicate", "https://api.replicate.com/v1")
+        )
     assert cohere.evidence_kind == "identity"
     assert cohere.identity == {"organization_id": "org-1"}
     assert cohere.plan == ""
@@ -300,7 +314,9 @@ async def test_longcat_uses_validated_liveness_and_preserves_depleted_state() ->
 async def test_fireworks_unauthorized_account_list_produces_no_evidence() -> None:
     respx.get("https://api.fireworks.ai/v1/accounts").mock(return_value=httpx.Response(403))
     async with httpx.AsyncClient() as client:
-        probe = await dispatch_probe(client, _result("fireworks", "https://api.fireworks.ai/inference/v1"))
+        probe = await dispatch_probe(
+            client, _result("fireworks", "https://api.fireworks.ai/inference/v1")
+        )
     assert probe.matched is False
 
 
@@ -358,7 +374,9 @@ async def test_models_rate_limit_is_liveness_without_fake_quota() -> None:
         return_value=httpx.Response(429, headers={"x-ratelimit-reset-requests": "2s"})
     )
     async with httpx.AsyncClient() as client:
-        probe = await dispatch_probe(client, _result("nvidia", "https://integrate.api.nvidia.com/v1"))
+        probe = await dispatch_probe(
+            client, _result("nvidia", "https://integrate.api.nvidia.com/v1")
+        )
     assert probe.matched is True
     assert probe.evidence_kind == "liveness"
     assert probe.quota == {}
@@ -385,6 +403,38 @@ async def test_litellm_valid_budget_schema_returns_quota() -> None:
     assert probe.provider == "litellm"
     assert probe.quota == {"spend": 3.0, "max_budget": 10.0, "remaining": 7.0}
     assert probe.tier == "team"
+    assert probe.balance_usd == 7.0
+
+
+@respx.mock
+async def test_litellm_info_envelope_null_max_budget_is_unlimited() -> None:
+    """Current LiteLLM proxy returns ``info`` (not ``key_info``); null budget = unlimited."""
+    base = "https://llm.alem.ai"
+    respx.get(f"{base}/api/status").mock(return_value=httpx.Response(404))
+    respx.get(f"{base}/api/user/self").mock(return_value=httpx.Response(404))
+    respx.get(f"{base}/dashboard/billing/subscription").mock(return_value=httpx.Response(404))
+    respx.get(f"{base}/key/info").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "key": "hashed",
+                "info": {
+                    "spend": 0.0,
+                    "max_budget": None,
+                    "models": ["qwen3-6"],
+                    "budget_duration": "30d",
+                },
+            },
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        probe = await dispatch_probe(client, _result("gateway", f"{base}/v1"))
+    assert probe.matched is True
+    assert probe.provider == "litellm"
+    assert probe.balance_usd == "N/A"
+    assert probe.quota.get("unlimited") is True
+    assert probe.quota.get("spend") == 0.0
+    assert probe.source == "litellm:key_no_limit"
 
 
 def test_apply_probe_result_updates_cash_balance_and_attribution() -> None:
