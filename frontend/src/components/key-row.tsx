@@ -148,7 +148,7 @@ function RowActions({
   onToggleExpand,
 }: Readonly<RowActionsProps>) {
   return (
-    <div className="ml-auto flex shrink-0 flex-nowrap items-center justify-end gap-1.5">
+    <div className="flex shrink-0 flex-nowrap items-center justify-end gap-1.5">
       {onLoadModels ? (
         <ActionButton icon={<List className="size-3.5 shrink-0" />} label="模型列表" onClick={onLoadModels} loading={busy?.models} />
       ) : null}
