@@ -556,7 +556,8 @@ export default function RunResultsPage() {
         exporting={exporting}
       />
 
-      <div className="min-h-0 flex-1 overflow-auto" style={columnSizeVars}>
+      {/* @container lets expanded KeyRow panels size to the scrollport (100cqw). */}
+      <div className="@container min-h-0 flex-1 overflow-auto" style={columnSizeVars}>
         <div className="w-max min-w-full">
           <div className="sticky top-0 z-10">
             <KeyTableHeader table={table} />

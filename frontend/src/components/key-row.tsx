@@ -176,22 +176,30 @@ function RowActions({
   )
 }
 
+/**
+ * Expanded panels live under the wide `min-w-max` row track. Pin to the scrollport
+ * (`sticky left-0` + `100cqw` from the key-list `@container`) so chips can wrap
+ * to the visible width instead of one endless horizontal line.
+ */
+const EXPANDED_PANEL =
+  "sticky left-0 box-border w-[100cqw] max-w-[100cqw] bg-surface-inset"
+
 /** Expanded panel listing the key's available models. */
 function ModelsPanel({
   models,
   modelsLoading,
 }: Readonly<Pick<KeyRowProps, "models" | "modelsLoading">>) {
   return (
-    <div className="flex flex-col gap-2 bg-surface-inset px-13 py-3">
+    <div className={cn(EXPANDED_PANEL, "flex flex-col gap-2 px-4 py-3 sm:px-8 xl:px-13")}>
       <span className="font-mono text-[11px] text-text-muted">
         {modelsLoading ? "加载模型中…" : `可用模型 (${models?.length ?? 0})`}
       </span>
       {models && models.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap content-start gap-1.5">
           {models.map((model) => (
             <span
               key={model}
-              className="rounded-sm border border-border-subtle bg-surface-overlay px-2 py-0.5 font-mono text-[11px] text-text-secondary"
+              className="max-w-full break-all rounded-sm border border-border-subtle bg-surface-overlay px-2 py-0.5 font-mono text-[11px] text-text-secondary"
             >
               {model}
             </span>
@@ -360,8 +368,8 @@ export function KeyRow({
 
       {isExpanded ? <ModelsPanel models={models} modelsLoading={modelsLoading} /> : null}
       {isExpanded && evidence ? (
-        <div className="border-t border-border-subtle bg-surface-inset px-8 py-3 text-xs">
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+        <div className={cn(EXPANDED_PANEL, "border-t border-border-subtle px-4 py-3 text-xs sm:px-8")}>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
             {evidenceItems.map(([label, value]) => (
               <div key={label} className="min-w-0">
                 <div className="font-mono text-[10px] uppercase tracking-wide text-text-muted">{label}</div>
