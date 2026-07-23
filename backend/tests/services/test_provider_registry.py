@@ -70,6 +70,10 @@ CURRENT_DOMAIN_ROUTES = {
         "kimi",
         ("kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "moonshot-v1-8k"),
     ),
+    "https://api.moonshot.ai/v1": (
+        "kimi",
+        ("kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "moonshot-v1-8k"),
+    ),
     "https://open.bigmodel.cn/api/paas/v4": (
         "glm",
         ("glm-5.2", "glm-5.1", "glm-5", "glm-4-flash"),

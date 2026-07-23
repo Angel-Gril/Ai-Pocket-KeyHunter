@@ -186,7 +186,9 @@ _PROVIDER_SPECS = (
     ProviderSpec(
         name="kimi",
         category="domestic",
-        domain_suffixes=("moonshot.cn",),
+        # Domestic platform.kimi.com → api.moonshot.cn; international
+        # platform.kimi.ai → api.moonshot.ai (keys are independent).
+        domain_suffixes=("moonshot.cn", "moonshot.ai"),
         key_prefixes=(),
         protocol_family="openai_compatible",
         default_model_hints=_KIMI_MODELS,

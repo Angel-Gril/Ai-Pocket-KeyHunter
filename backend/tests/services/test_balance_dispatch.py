@@ -407,20 +407,86 @@ async def test_deepseek_usd_wallet_sets_balance_usd() -> None:
 
 
 @respx.mock
-async def test_kimi_domestic_balance_and_international_liveness_are_separate() -> None:
+async def test_kimi_domestic_balance_is_cny_native() -> None:
+    """Official domestic schema: code/status envelope + CNY available_balance."""
     respx.get("https://api.moonshot.cn/v1/users/me/balance").mock(
-        return_value=httpx.Response(200, json={"data": {"available_balance": 8.5}})
-    )
-    respx.get("https://api.moonshot.ai/v1/models").mock(
-        return_value=httpx.Response(200, json={"data": [{"id": "kimi-k2"}]})
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "available_balance": 49.58894,
+                    "voucher_balance": 46.58893,
+                    "cash_balance": 3.00001,
+                },
+                "scode": "0x0",
+                "status": True,
+            },
+        )
     )
     async with httpx.AsyncClient() as client:
         domestic = await dispatch_probe(client, _result("kimi", "https://api.moonshot.cn/v1"))
-        international = await dispatch_probe(client, _result("kimi", "https://api.moonshot.ai/v1"))
-    assert domestic.balance_native == 8.5
+    assert domestic.matched is True
+    assert domestic.balance_native == 49.5889
+    assert domestic.balance_usd == ""
+    assert domestic.currency == "CNY"
     assert domestic.evidence_kind == "cash_balance"
+    assert domestic.detail["voucher_balance"] == 46.58893
+
+
+@respx.mock
+async def test_kimi_accepts_string_available_balance() -> None:
+    respx.get("https://api.moonshot.cn/v1/users/me/balance").mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": 0, "status": True, "data": {"available_balance": "8.50"}},
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        probe = await dispatch_probe(client, _result("kimi", "https://api.moonshot.cn/v1"))
+    assert probe.matched is True
+    assert probe.balance_native == 8.5
+    assert probe.currency == "CNY"
+
+
+@respx.mock
+async def test_kimi_international_balance_is_usd() -> None:
+    """Official international docs: same path, unit is USD."""
+    respx.get("https://api.moonshot.ai/v1/users/me/balance").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "available_balance": 12.5,
+                    "voucher_balance": 2.5,
+                    "cash_balance": 10.0,
+                },
+                "scode": "0x0",
+                "status": True,
+            },
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        international = await dispatch_probe(client, _result("kimi", "https://api.moonshot.ai/v1"))
+    assert international.matched is True
+    assert international.balance_usd == 12.5
     assert international.balance_native == ""
-    assert international.evidence_kind == "liveness"
+    assert international.currency == "USD"
+    assert international.evidence_kind == "cash_balance"
+
+
+@respx.mock
+async def test_kimi_rejects_unsuccessful_envelope() -> None:
+    respx.get("https://api.moonshot.cn/v1/users/me/balance").mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": 401, "status": False, "data": {"available_balance": 99.0}},
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        probe = await dispatch_probe(client, _result("kimi", "https://api.moonshot.cn/v1"))
+    assert probe.matched is False
 
 
 @respx.mock

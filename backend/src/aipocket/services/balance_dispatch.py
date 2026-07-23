@@ -229,11 +229,24 @@ async def _probe_deepseek(
     )
 
 
+_KIMI_BALANCE_HOSTS = frozenset({"api.moonshot.cn", "api.moonshot.ai"})
+
+
 async def _probe_kimi(
     client: httpx.AsyncClient, credential: Credential, provider: str
 ) -> ProbeResult:
+    """GET /v1/users/me/balance on official Moonshot hosts.
+
+    Domestic (api.moonshot.cn) and international (api.moonshot.ai) share the
+    same envelope; units differ: CNY vs USD per official docs.
+
+    Domestic: https://platform.moonshot.cn/docs/api/balance
+    International: https://platform.moonshot.ai/docs/api/balance
+    """
     endpoint = canonicalize_endpoint(credential.apiurl, provider=provider)
-    if "api.moonshot.cn" not in endpoint.origin:
+    origin = (endpoint.origin or "").lower()
+    host = next((h for h in _KIMI_BALANCE_HOSTS if h in origin), "")
+    if not host:
         return await _probe_models(client, credential, provider)
     response, payload = await _json_get(
         client,
@@ -241,21 +254,45 @@ async def _probe_kimi(
         credential,
     )
     data = payload.get("data") if payload else None
-    if (
-        response is None
-        or response.status_code != 200
-        or not isinstance(data, dict)
-        or not _numeric(data.get("available_balance"))
-    ):
+    if response is None or response.status_code != 200 or not isinstance(data, dict):
         return ProbeResult()
+    # Official success: code == 0 and/or status == true. Only reject when the
+    # envelope is present *and* clearly unsuccessful.
+    if payload is not None:
+        if "status" in payload and payload.get("status") is False:
+            return ProbeResult()
+        if "code" in payload and payload.get("code") not in (0, "0"):
+            return ProbeResult()
+    available = _coerce_number(data.get("available_balance"))
+    if available is None:
+        return ProbeResult()
+    # .cn → CNY native; .ai → USD (docs: unit is USD on international platform).
+    is_domestic = host == "api.moonshot.cn"
+    detail = {
+        "data": data,
+        "host": host,
+        "voucher_balance": _coerce_number(data.get("voucher_balance")),
+        "cash_balance": _coerce_number(data.get("cash_balance")),
+    }
+    if is_domestic:
+        return ProbeResult(
+            matched=True,
+            provider="kimi",
+            source="kimi:users_me_balance",
+            evidence_kind="cash_balance",
+            balance_native=round(available, 4),
+            currency="CNY",
+            detail=detail,
+            alive=True,
+        )
     return ProbeResult(
         matched=True,
         provider="kimi",
         source="kimi:users_me_balance",
         evidence_kind="cash_balance",
-        balance_native=float(data["available_balance"]),
-        currency="CNY",
-        detail={"data": data},
+        balance_usd=round(available, 4),
+        currency="USD",
+        detail=detail,
         alive=True,
     )
 
