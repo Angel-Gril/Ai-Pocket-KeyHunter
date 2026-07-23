@@ -16,6 +16,24 @@ from aipocket.services.candidate_store import spill_enabled
 
 log = logging.getLogger(__name__)
 
+# PostgreSQL text / jsonb reject U+0000. Shodan/FOFA banners sometimes embed
+# raw NUL bytes (e.g. React Flight / binary-ish HTML), which then abort the
+# whole discovery source if we spill the hit as-is.
+_NUL = "\x00"
+
+
+def _strip_nul(value: Any) -> Any:
+    """Recursively remove NUL bytes so payloads are safe for PG text/jsonb."""
+    if isinstance(value, str):
+        return value.replace(_NUL, "") if _NUL in value else value
+    if isinstance(value, dict):
+        return {k: _strip_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_nul(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_nul(v) for v in value)
+    return value
+
 
 def entry_id_for_hit(hit: dict[str, Any]) -> str:
     """Stable identity for a host hit (SHA1 of scheme://host:port)."""
@@ -35,17 +53,22 @@ def entry_id_for_hit(hit: dict[str, Any]) -> str:
 def _row(run_id: str, source: str, hit: dict[str, Any]) -> tuple:
     from psycopg.types.json import Jsonb
 
-    entry_id = entry_id_for_hit(hit)
+    # Sanitize before identity/text columns and jsonb so a single poisoned
+    # banner cannot abort an entire FOFA/Shodan spill batch.
+    clean = _strip_nul(hit)
+    if not isinstance(clean, dict):
+        clean = hit
+    entry_id = entry_id_for_hit(clean)
     return (
         run_id,
-        source or str(hit.get("_source") or ""),
+        source or str(clean.get("_source") or ""),
         entry_id,
-        str(hit.get("_query_id") or hit.get("query") or ""),
-        str(hit.get("host") or hit.get("link") or ""),
-        str(hit.get("ip") or ""),
-        str(hit.get("port") or ""),
-        str(hit.get("protocol") or ""),
-        Jsonb(hit),
+        str(clean.get("_query_id") or clean.get("query") or ""),
+        str(clean.get("host") or clean.get("link") or ""),
+        str(clean.get("ip") or ""),
+        str(clean.get("port") or ""),
+        str(clean.get("protocol") or ""),
+        Jsonb(clean),
     )
 
 

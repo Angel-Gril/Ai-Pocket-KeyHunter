@@ -475,8 +475,8 @@ async def _run_scan_inner(
                 all_hits, targets, cred_observations
             )
         if not sources_used:
+            source_errors = [error for result in fetch_results for error in result.errors]
             if sources == {"github"}:
-                source_errors = [error for result in fetch_results for error in result.errors]
                 detail = (
                     source_errors[0]
                     if source_errors
@@ -486,6 +486,15 @@ async def _run_scan_inner(
                     )
                 )
                 raise RuntimeError(detail)
+            # Keys may be set but every source threw (e.g. PG reject of NUL in
+            # Shodan banners). Prefer the real failure over a "not configured"
+            # message that sends operators hunting for missing env vars.
+            if source_errors:
+                joined = "; ".join(source_errors[:5])
+                more = f" (+{len(source_errors) - 5} more)" if len(source_errors) > 5 else ""
+                raise RuntimeError(
+                    f"Discovery source(s) failed with no usable results: {joined}{more}"
+                )
             raise RuntimeError(
                 "No discovery source configured. Set FOFA_KEYS and/or SHODAN_KEYS "
                 "(and optionally GITHUB_TOKENS + DATABASE_URL) in .env"
@@ -1274,7 +1283,9 @@ async def _run_scan_inner(
     if enrichable:
         from .balance import enrich_results
 
-        log.info("Querying provider evidence for %d valid/suspicious credentials...", len(enrichable))
+        log.info(
+            "Querying provider evidence for %d valid/suspicious credentials...", len(enrichable)
+        )
         report_phase(f"查询余额与凭据证据 · {len(enrichable)} 个结果")
         await enrich_results(
             enrichable,

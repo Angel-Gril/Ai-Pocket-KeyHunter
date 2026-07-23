@@ -75,6 +75,14 @@ def enable_pg(monkeypatch: pytest.MonkeyPatch) -> FakePool:
     return pool
 
 
+def _jsonb_payload(record: Any) -> dict[str, Any]:
+    payload = getattr(record, "obj", record)
+    if hasattr(payload, "obj"):
+        payload = payload.obj
+    assert isinstance(payload, dict)
+    return payload
+
+
 def test_upsert_hits_writes_full_body_banner_header(enable_pg: FakePool) -> None:
     body = "x" * 100_000
     hits = [
@@ -96,15 +104,49 @@ def test_upsert_hits_writes_full_body_banner_header(enable_pg: FakePool) -> None
     sql, rows = enable_pg.executemany_rows[0]
     assert "INSERT INTO scan_discovery_hits" in sql
     # Jsonb wrapper — extract underlying dict
-    record = rows[0][-1]
-    payload = getattr(record, "obj", record)
-    if hasattr(payload, "obj"):
-        payload = payload.obj
-    assert isinstance(payload, dict)
+    payload = _jsonb_payload(rows[0][-1])
     assert payload["body"] == body
     assert payload["banner"] == "HTTP/1.1 200"
     assert payload["header"] == "Server: nginx"
     assert len(payload["body"]) == 100_000
+
+
+def test_upsert_hits_strips_nul_bytes_for_postgres(enable_pg: FakePool) -> None:
+    """PG text/jsonb reject \\u0000; Shodan banners sometimes embed raw NULs."""
+    hits = [
+        {
+            "host": "https://nul.example.com",
+            "ip": "9.9.9.9",
+            "port": "443",
+            "protocol": "https",
+            "title": "ok\x00title",
+            "banner": 'matches:$R[90]=[$R[91]={i:"__root__\x00flight"}',
+            "body": "line1\x00line2",
+            "nested": {"html": "a\x00b", "items": ["c\x00d", 1]},
+            "_source": "shodan",
+            "_query_id": 'http.html:".env"',
+        }
+    ]
+    n = ds.upsert_hits("run_nul", "shodan", hits)
+    assert n == 1
+    _sql, rows = enable_pg.executemany_rows[0]
+    # Text columns must not carry NULs either.
+    assert "\x00" not in rows[0][4]  # host
+    payload = _jsonb_payload(rows[0][-1])
+    assert "\x00" not in payload["title"]
+    assert payload["title"] == "oktitle"
+    assert "\x00" not in payload["banner"]
+    assert "__root__flight" in payload["banner"]
+    assert payload["body"] == "line1line2"
+    assert payload["nested"]["html"] == "ab"
+    assert payload["nested"]["items"] == ["cd", 1]
+
+
+def test_strip_nul_preserves_non_string_types() -> None:
+    assert ds._strip_nul(None) is None
+    assert ds._strip_nul(42) == 42
+    assert ds._strip_nul(True) is True
+    assert ds._strip_nul(b"raw\x00bytes") == b"raw\x00bytes"
 
 
 def test_upsert_hits_noop_when_pg_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
