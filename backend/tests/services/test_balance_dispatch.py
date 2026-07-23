@@ -352,6 +352,61 @@ async def test_deepseek_aggregates_native_cash_balance() -> None:
 
 
 @respx.mock
+async def test_deepseek_accepts_official_string_total_balance() -> None:
+    """Official API types total_balance as string (see DeepSeek docs example)."""
+    respx.get("https://api.deepseek.com/user/balance").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {
+                        "currency": "CNY",
+                        "total_balance": "110.00",
+                        "granted_balance": "10.00",
+                        "topped_up_balance": "100.00",
+                    }
+                ],
+            },
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        probe = await dispatch_probe(client, _result("deepseek", "https://api.deepseek.com"))
+    assert probe.matched is True
+    assert probe.evidence_kind == "cash_balance"
+    assert probe.balance_native == 110.0
+    assert probe.balance_usd == ""
+    assert probe.currency == "CNY"
+    assert probe.source == "deepseek:user_balance"
+
+
+@respx.mock
+async def test_deepseek_usd_wallet_sets_balance_usd() -> None:
+    respx.get("https://api.deepseek.com/user/balance").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "is_available": True,
+                "balance_infos": [
+                    {
+                        "currency": "USD",
+                        "total_balance": "12.50",
+                        "granted_balance": "0.00",
+                        "topped_up_balance": "12.50",
+                    }
+                ],
+            },
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        probe = await dispatch_probe(client, _result("deepseek", "https://api.deepseek.com"))
+    assert probe.matched is True
+    assert probe.balance_usd == 12.5
+    assert probe.balance_native == ""
+    assert probe.currency == "USD"
+
+
+@respx.mock
 async def test_kimi_domestic_balance_and_international_liveness_are_separate() -> None:
     respx.get("https://api.moonshot.cn/v1/users/me/balance").mock(
         return_value=httpx.Response(200, json={"data": {"available_balance": 8.5}})
@@ -451,7 +506,7 @@ def test_apply_probe_result_updates_cash_balance_and_attribution() -> None:
         alive=True,
     )
     apply_probe_result(result, probe)
-    assert result.balance == "6.5"
+    assert result.balance == "¥6.5"
     assert result.tier == "provider-returned-tier"
     assert result.gateway == "deepseek"
     assert result.provider_info.credential_issuer == "deepseek"

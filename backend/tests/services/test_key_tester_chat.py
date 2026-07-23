@@ -203,6 +203,29 @@ async def test_query_key_balance_returns_structured_probe(monkeypatch) -> None:
     assert result["entitlements"] == {"models": ["deepseek-v3"]}
 
 
+async def test_query_key_balance_surfaces_deepseek_native_cny(monkeypatch) -> None:
+    """DeepSeek cash is CNY native; UI only reads balance_usd — must not drop it."""
+    from aipocket.services.balance_dispatch import ProbeResult
+
+    async def fake_dispatch(_client, _result):
+        return ProbeResult(
+            matched=True,
+            provider="deepseek",
+            source="deepseek:user_balance",
+            evidence_kind="cash_balance",
+            balance_native=110.0,
+            currency="CNY",
+            alive=True,
+        )
+
+    monkeypatch.setattr("aipocket.services.balance_dispatch.dispatch_probe", fake_dispatch)
+    result = await query_key_balance("sk-test-deepseek", "https://api.deepseek.com")
+    assert result["gateway"] == "deepseek"
+    assert result["balance_usd"] == "¥110.0"
+    assert result["balance_native"] == 110.0
+    assert result["currency"] == "CNY"
+
+
 async def test_test_chat_excludes_google_and_rejects_empty_endpoint() -> None:
     google = await run_key_chat(
         "AIzaSyD" + "a" * 32,

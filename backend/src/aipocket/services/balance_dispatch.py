@@ -100,6 +100,28 @@ def _numeric(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
+def _coerce_number(value: object) -> float | None:
+    """Parse JSON numbers that may arrive as int/float *or* decimal strings.
+
+    Official DeepSeek balance docs type ``total_balance`` as string
+    (e.g. ``"110.00"``). Strict ``_numeric`` rejects those and makes the
+    probe look like an unsupported provider.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip().replace(",", "")
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
+
+
 def _model_ids(payload: dict[str, Any] | None) -> list[str] | None:
     if payload is None or not isinstance(payload.get("data"), list):
         return None
@@ -160,6 +182,17 @@ def _longcat_liveness(result: ValidationResult) -> ProbeResult:
 async def _probe_deepseek(
     client: httpx.AsyncClient, credential: Credential, provider: str
 ) -> ProbeResult:
+    """GET /user/balance — official schema uses string decimal balances.
+
+    See https://api-docs.deepseek.com/api/get-user-balance/ ::
+
+        {"is_available": true, "balance_infos": [
+            {"currency": "CNY", "total_balance": "110.00", ...}
+        ]}
+
+    Currency may be ``CNY`` or ``USD``. CNY → ``balance_native``; USD →
+    ``balance_usd``. Empty ``balance_infos`` is treated as zero cash.
+    """
     endpoint = canonicalize_endpoint(credential.apiurl, provider=provider)
     response, payload = await _json_get(
         client,
@@ -171,19 +204,27 @@ async def _probe_deepseek(
         return ProbeResult()
     totals: dict[str, float] = {}
     for item in infos:
-        if not isinstance(item, dict) or not _numeric(item.get("total_balance")):
+        if not isinstance(item, dict):
+            return ProbeResult()
+        amount = _coerce_number(item.get("total_balance"))
+        if amount is None:
             return ProbeResult()
         currency = str(item.get("currency") or "CNY").upper()
-        totals[currency] = totals.get(currency, 0.0) + float(item["total_balance"])
-    native = totals.get("CNY", 0.0)
+        totals[currency] = totals.get(currency, 0.0) + amount
+    cny = totals.get("CNY")
+    usd = totals.get("USD")
+    # Empty list → zero available cash (key is valid; wallet is empty).
+    if cny is None and usd is None:
+        cny = 0.0
     return ProbeResult(
         matched=True,
         provider="deepseek",
         source="deepseek:user_balance",
         evidence_kind="cash_balance",
-        balance_native=round(native, 4),
-        currency="CNY",
-        detail={"balance_infos": infos},
+        balance_usd=round(usd, 4) if usd is not None else "",
+        balance_native=round(cny, 4) if cny is not None else "",
+        currency="CNY" if cny is not None else "USD",
+        detail={"balance_infos": infos, "totals": totals},
         alive=True,
     )
 
@@ -758,7 +799,14 @@ def apply_probe_result(result: ValidationResult, probe: ProbeResult) -> None:
     if probe.balance_usd != "":
         result.balance = str(probe.balance_usd)
     elif probe.balance_native != "":
-        result.balance = str(probe.balance_native)
+        currency = (probe.currency or "").upper()
+        # Avoid formatBalance() prepending "$" to CNY native cash.
+        if currency == "CNY":
+            result.balance = f"¥{probe.balance_native}"
+        elif currency and currency != "USD":
+            result.balance = f"{probe.balance_native} {currency}"
+        else:
+            result.balance = str(probe.balance_native)
     if probe.tier:
         result.tier = probe.tier
     result.gateway = probe.provider

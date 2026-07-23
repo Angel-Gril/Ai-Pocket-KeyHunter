@@ -107,7 +107,19 @@ async def query_key_balance(apikey: str, apiurl: str) -> dict:
             apply_probe_result(result, probe)
             evidence = dict(result.provider_evidence)
             evidence["gateway"] = probe.provider
-            evidence["balance_usd"] = probe.balance_usd
+            # UI BalanceResponse only surfaces ``balance_usd``. Providers that
+            # report native cash (DeepSeek CNY, Kimi CNY) leave balance_usd
+            # empty — fall back so the amount is not silently dropped.
+            display = probe.balance_usd
+            if display == "" and probe.balance_native != "":
+                currency = (probe.currency or "").upper()
+                if currency == "CNY":
+                    display = f"¥{probe.balance_native}"
+                elif currency and currency != "USD":
+                    display = f"{probe.balance_native} {currency}"
+                else:
+                    display = probe.balance_native
+            evidence["balance_usd"] = display
             return evidence
         if resolution.provider in {"unknown", "gateway", "ambiguous"}:
             return await query_balance(client, cred)
