@@ -353,6 +353,44 @@ class TestPersistRunPg:
 
         assert pool.executemany_rows == []
 
+    def test_suspicious_auth_rejected_and_no_auth_are_not_persisted(self, fake_pg):
+        pool = fake_pg()
+        from aipocket.services.writer import persist_run_pg
+
+        noise = [
+            ValidationResult(
+                credential=Credential(apikey="sk-noauth", apiurl="https://open.example/v1"),
+                valid=False,
+                validation_state="no_auth_endpoint",
+                error="no-auth",
+            ),
+            ValidationResult(
+                credential=Credential(apikey="sk-authfail", apiurl="https://api.example/v1"),
+                valid=False,
+                validation_state="auth_rejected",
+                error="unauthorized",
+            ),
+        ]
+        keep = ValidationResult(
+            credential=Credential(apikey="sk-rl", apiurl="https://api.openai.com/v1"),
+            valid=True,
+            validation_state="rate_limited_unconfirmed",
+            suspicious=True,
+            status_code=429,
+        )
+        persist_run_pg(
+            "run_noise",
+            {"started_at": "2026-07-22T00:00:00Z"},
+            [],
+            [*noise, keep],
+        )
+
+        assert len(pool.executemany_rows) == 1
+        _sql, rows = pool.executemany_rows[0]
+        assert len(rows) == 1
+        assert rows[0][1] == "suspicious"
+        assert rows[0][3] == "sk-rl"
+
     def test_query_metrics_are_replaced_atomically_without_additive_retry(self, fake_pg):
         pool = fake_pg()
         from aipocket.services.writer import persist_run_pg

@@ -22,9 +22,37 @@ log = logging.getLogger(__name__)
 # 纯写入时统一替换成普通空格；中文、emoji 等正常字符不受影响。
 _UNSAFE_LINE_TERMINATORS = str.maketrans({"\u2028": " ", "\u2029": " "})
 
+# Product UI only wants usable / rate-limit-quarantined keys. Auth failures and
+# open/no-auth endpoints are scan noise — never store them as valid or suspicious.
+_NON_PRODUCT_VALIDATION_STATES: frozenset[str] = frozenset(
+    {
+        "auth_rejected",
+        "no_auth_endpoint",
+    }
+)
+
 
 def _sanitize_json_text(text: str) -> str:
     return text.translate(_UNSAFE_LINE_TERMINATORS)
+
+
+def _drop_non_product_results(
+    results: list[ValidationResult],
+    *,
+    stage: str,
+    run_id: str = "",
+) -> list[ValidationResult]:
+    """Remove auth_rejected / no_auth_endpoint rows before any PG or JSONL write."""
+    kept = [r for r in results if r.validation_state not in _NON_PRODUCT_VALIDATION_STATES]
+    dropped = len(results) - len(kept)
+    if dropped:
+        log.info(
+            "Dropping %d non-product result(s) at %s%s (auth_rejected/no_auth_endpoint)",
+            dropped,
+            stage,
+            f" run={run_id}" if run_id else "",
+        )
+    return kept
 
 
 def _jsonl_line(obj: Any) -> str:
@@ -192,8 +220,16 @@ def persist_run_pg(
     from psycopg.types.json import Jsonb
 
     from aipocket.core.db import get_pool
-    valid = filter_results_by_policy(valid, stage="persist-run-valid")
-    suspicious = filter_results_by_policy(suspicious, stage="persist-run-suspicious")
+    valid = _drop_non_product_results(
+        filter_results_by_policy(valid, stage="persist-run-valid"),
+        stage="persist-run-valid",
+        run_id=run_id,
+    )
+    suspicious = _drop_non_product_results(
+        filter_results_by_policy(suspicious, stage="persist-run-suspicious"),
+        stage="persist-run-suspicious",
+        run_id=run_id,
+    )
     # Intentionally discarded — do not bloat results with 401/no-auth rejects.
     if rejected:
         log.info(
@@ -513,7 +549,9 @@ def write_suspicious_results(results: list[ValidationResult], run_dir: Path) -> 
     don't consume balance-enrichment budget or pollute the high-confidence set.
 
     No-op in PG-only mode (results go to the ``results`` table, kind='suspicious').
+    auth_rejected / no_auth_endpoint are filtered out (not product data).
     """
+    results = _drop_non_product_results(results, stage="write-suspicious-jsonl")
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = run_dir / f"suspicious_{ts}.jsonl"
     if not settings.write_jsonl:
@@ -553,8 +591,16 @@ def append_results_pg(
             len(rejected),
             run_id,
         )
-    valid = filter_results_by_policy(valid, stage="append-valid")
-    suspicious = filter_results_by_policy(suspicious, stage="append-suspicious")
+    valid = _drop_non_product_results(
+        filter_results_by_policy(valid, stage="append-valid"),
+        stage="append-valid",
+        run_id=run_id,
+    )
+    suspicious = _drop_non_product_results(
+        filter_results_by_policy(suspicious, stage="append-suspicious"),
+        stage="append-suspicious",
+        run_id=run_id,
+    )
     if not valid and not suspicious:
         return
 
