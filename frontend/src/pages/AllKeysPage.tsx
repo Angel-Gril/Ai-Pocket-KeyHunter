@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button"
 import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
-import { extractKeyFields } from "@/components/key-record"
+import { extractKeyFields, formatBalance } from "@/components/key-record"
 import { cn, copyToClipboard } from "@/lib/utils"
 
 type Revealed = { apikey: string; apiurl: string }
@@ -231,22 +231,60 @@ export default function AllKeysPage() {
   const handleBalance = useCallback(
     async (index: number) => {
       const key = rowKeyOf(stateRef.current.kind, index)
+      const rec = stateRef.current.records[index]
       setRowBusy(key, { balance: true })
       try {
         const { apikey, apiurl } = await ensureRevealed(index)
-        const res = await balanceAsync({ apikey, apiurl })
+        const resultId = typeof rec?.result_id === "number" ? rec.result_id : undefined
+        const res = await balanceAsync({
+          apikey,
+          apiurl,
+          result_id: resultId,
+        })
+        const balanceLabel = formatBalance(res.balance_usd)
+        const tierLabel = res.tier?.trim() || undefined
         setBalances((prev) => ({
           ...prev,
-          [key]: { balance: res.balance_usd ? `$${res.balance_usd}` : undefined, tier: res.tier || undefined },
+          [key]: { balance: balanceLabel, tier: tierLabel },
         }))
-        toast.success("余额已更新", { description: `${res.gateway || "gateway"} · ${res.balance_usd || "?"}` })
+        // Patch react-query cache so a re-render without full refetch keeps the value.
+        if (resultId != null) {
+          queryClient.setQueryData<{ kind: ResultKind; results: KeyRecord[] }>(
+            ["keys", stateRef.current.kind],
+            (old) => {
+              if (!old) return old
+              return {
+                ...old,
+                results: old.results.map((r) =>
+                  r.result_id === resultId
+                    ? {
+                        ...r,
+                        balance: res.balance_usd || "",
+                        tier: res.tier || r.tier,
+                        gateway: res.gateway || r.gateway,
+                        provider_evidence:
+                          (res.detail as KeyRecord["provider_evidence"]) ?? r.provider_evidence,
+                      }
+                    : r,
+                ),
+              }
+            },
+          )
+        }
+        const detailParts = [
+          res.gateway || "gateway",
+          balanceLabel || "N/A",
+          tierLabel,
+          res.persisted ? "已落库" : undefined,
+        ].filter(Boolean)
+        toast.success("余额已更新", { description: detailParts.join(" · ") })
       } catch (err) {
         toast.error("查询余额失败", { description: errorMessage(err, "无法获取余额") })
       } finally {
         setRowBusy(key, { balance: false })
       }
     },
-    [ensureRevealed, balanceAsync, setRowBusy],
+    [ensureRevealed, balanceAsync, setRowBusy, queryClient],
   )
 
   const handleExpandedChange = useCallback((index: number, isExpanded: boolean) => {

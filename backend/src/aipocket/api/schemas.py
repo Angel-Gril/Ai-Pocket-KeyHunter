@@ -57,6 +57,17 @@ class KeyRef(BaseModel):
     apiurl: str = ""
 
 
+class BalanceRequest(BaseModel):
+    """Live balance probe, optionally persisted onto a stored result/high-value row."""
+
+    apikey: str
+    apiurl: str = ""
+    # PostgreSQL results.id — when set, write balance/tier/gateway/evidence back.
+    result_id: int | None = None
+    # When true, also (or only) update the high_value_keys row for this apikey.
+    high_value: bool = False
+
+
 class ModelsResponse(BaseModel):
     models: list[str]
 
@@ -66,6 +77,10 @@ class BalanceResponse(BaseModel):
     balance_usd: str = ""
     tier: str = ""
     detail: dict[str, Any] = Field(default_factory=dict)
+    # True when the probe was written back to PostgreSQL (or high-value JSONL).
+    persisted: bool = False
+    result_id: int | None = None
+    high_value_updated: bool = False
 
 
 class ChatRequest(BaseModel):
@@ -107,6 +122,7 @@ class HighValueRevealRequest(BaseModel):
     masked: str
     apiurl: str | None = None
 
+
 class PromoteKeysRequest(BaseModel):
     result_ids: list[int] = Field(min_length=1, max_length=500)
     note: str = Field(default="", max_length=1000)
@@ -121,7 +137,6 @@ class DeleteRunResponse(BaseModel):
     run_id: str
     deleted: bool
     disk_removed: bool
-
 
 
 # ----------------------------------------------------------------------------

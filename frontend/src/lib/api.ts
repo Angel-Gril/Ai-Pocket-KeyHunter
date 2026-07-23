@@ -37,6 +37,14 @@ export interface KeyRef {
   apiurl?: string
 }
 
+/** Live balance probe; pass result_id / high_value to persist onto stored rows. */
+export interface BalanceRequest {
+  apikey: string
+  apiurl?: string
+  result_id?: number
+  high_value?: boolean
+}
+
 export interface ModelsResponse {
   models: string[]
 }
@@ -46,6 +54,9 @@ export interface BalanceResponse {
   balance_usd: string
   tier: string
   detail: Record<string, unknown>
+  persisted?: boolean
+  result_id?: number | null
+  high_value_updated?: boolean
 }
 
 export interface ChatRequest {
@@ -586,7 +597,8 @@ export const api = {
 
   // Single-key testing
   keyModels: (body: KeyRef) => request<ModelsResponse>("/key/models", { method: "POST", body }),
-  keyBalance: (body: KeyRef) => request<BalanceResponse>("/key/balance", { method: "POST", body }),
+  keyBalance: (body: BalanceRequest) =>
+    request<BalanceResponse>("/key/balance", { method: "POST", body }),
   keyChat: (body: ChatRequest) => request<ChatResponse>("/key/chat", { method: "POST", body }),
   keyReveal: (body: RevealRequest) => request<RevealResponse>("/key/reveal", { method: "POST", body }),
 

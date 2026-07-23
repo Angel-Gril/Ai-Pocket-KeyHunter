@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react"
-import { useMutation, useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { api, type ChatResponse, type ExportFormat, type KeyRecord } from "@/lib/api"
@@ -17,6 +17,7 @@ type RowBusy = { models?: boolean; balance?: boolean; chat?: boolean }
 type BalanceInfo = { balance?: string; tier?: string }
 
 export default function HighValuePage() {
+  const queryClient = useQueryClient()
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [exporting, setExporting] = useState(false)
   // Per-row state, keyed by the record's masked apikey (stable across renders).
@@ -145,14 +146,41 @@ export default function HighValuePage() {
       setRowBusy(key, { balance: true })
       try {
         const { apikey, apiurl } = await ensureRevealed(index)
-        const res = await balanceAsync({ apikey, apiurl })
+        const res = await balanceAsync({
+          apikey,
+          apiurl,
+          high_value: true,
+        })
         const balanceLabel = formatBalance(res.balance_usd)
         const tierLabel = res.tier?.trim() || undefined
         setBalances((prev) => ({
           ...prev,
           [key]: { balance: balanceLabel, tier: tierLabel },
         }))
-        const detailParts = [res.gateway || "gateway", balanceLabel || "N/A", tierLabel].filter(Boolean)
+        queryClient.setQueryData<{ results: KeyRecord[] }>(["high-value"], (old) => {
+          if (!old) return old
+          return {
+            ...old,
+            results: old.results.map((r) => {
+              const masked = extractKeyFields(r).maskedKey
+              if (masked !== key) return r
+              return {
+                ...r,
+                balance: res.balance_usd || "",
+                tier: res.tier || r.tier,
+                gateway: res.gateway || r.gateway,
+                provider_evidence:
+                  (res.detail as KeyRecord["provider_evidence"]) ?? r.provider_evidence,
+              }
+            }),
+          }
+        })
+        const detailParts = [
+          res.gateway || "gateway",
+          balanceLabel || "N/A",
+          tierLabel,
+          res.persisted || res.high_value_updated ? "已落库" : undefined,
+        ].filter(Boolean)
         toast.success("余额已更新", { description: detailParts.join(" · ") })
       } catch (err) {
         toast.error("查询余额失败", { description: errorMessage(err, "无法获取余额") })
@@ -160,7 +188,7 @@ export default function HighValuePage() {
         setRowBusy(key, { balance: false })
       }
     },
-    [ensureRevealed, balanceAsync, maskedAt, setRowBusy],
+    [ensureRevealed, balanceAsync, maskedAt, setRowBusy, queryClient],
   )
 
   const handleExpandedChange = useCallback(
