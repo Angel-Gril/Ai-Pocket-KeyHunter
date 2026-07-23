@@ -181,17 +181,27 @@ def persist_run_pg(
     *,
     rejected: list[ValidationResult] | None = None,
 ) -> None:
-    """Write one run's metadata plus valid/suspicious/rejected rows transactionally.
+    """Write one run's metadata plus valid/suspicious rows transactionally.
 
     Idempotent per run_id: the run is UPSERTed and its result rows are replaced.
     ``seq`` is stable within each ``(run_id, kind)`` sequence.
+
+    ``rejected`` is accepted for call-site compatibility but **never** written to
+    ``results`` (auth_rejected / no_auth_endpoint noise is not product data).
     """
     from psycopg.types.json import Jsonb
 
     from aipocket.core.db import get_pool
     valid = filter_results_by_policy(valid, stage="persist-run-valid")
     suspicious = filter_results_by_policy(suspicious, stage="persist-run-suspicious")
-    rejected = filter_results_by_policy(rejected or [], stage="persist-run-rejected")
+    # Intentionally discarded — do not bloat results with 401/no-auth rejects.
+    if rejected:
+        log.info(
+            "Skipping persist of %d rejected result(s) for run %s (not stored)",
+            len(rejected),
+            run_id,
+        )
+    rejected = []
 
     active_requests = int(metadata.get("active_requests", 0))
     if validation_outcomes is not None:
@@ -270,11 +280,9 @@ def persist_run_pg(
         )
         # Replace this run's result rows so a re-persist is idempotent.
         conn.execute("DELETE FROM results WHERE run_id = %s", (run_id,))
-        rows = (
-            [(run_id, *_result_row(r, "valid", i)) for i, r in enumerate(valid)]
-            + [(run_id, *_result_row(r, "suspicious", i)) for i, r in enumerate(suspicious)]
-            + [(run_id, *_result_row(r, "rejected", i)) for i, r in enumerate(rejected)]
-        )
+        rows = [(run_id, *_result_row(r, "valid", i)) for i, r in enumerate(valid)] + [
+            (run_id, *_result_row(r, "suspicious", i)) for i, r in enumerate(suspicious)
+        ]
         if rows:
             with conn.cursor() as cur:
                 cur.executemany(
@@ -364,11 +372,10 @@ def persist_run_pg(
                 ),
             )
     log.info(
-        "PG run persisted: %s (%d valid, %d suspicious, %d rejected)",
+        "PG run persisted: %s (%d valid, %d suspicious)",
         run_id,
         len(valid),
         len(suspicious),
-        len(rejected),
     )
 
 
@@ -533,16 +540,22 @@ def append_results_pg(
     - Does **not** ``DELETE`` existing rows (unlike :func:`persist_run_pg`)
     - Recounts ``runs.total_valid`` / ``final_verified`` / ``suspicious``
 
+    ``rejected`` is accepted for call-site compatibility but **never** inserted.
+
     Raises ``LookupError`` if ``run_id`` is missing from ``runs``.
     No-op when PG is disabled or both lists are empty.
     """
     if not settings.pg_enabled:
         return
-    rejected = rejected or []
+    if rejected:
+        log.info(
+            "Skipping append of %d rejected result(s) for run %s (not stored)",
+            len(rejected),
+            run_id,
+        )
     valid = filter_results_by_policy(valid, stage="append-valid")
     suspicious = filter_results_by_policy(suspicious, stage="append-suspicious")
-    rejected = filter_results_by_policy(rejected, stage="append-rejected")
-    if not valid and not suspicious and not rejected:
+    if not valid and not suspicious:
         return
 
     from aipocket.core.db import get_pool
@@ -553,7 +566,7 @@ def append_results_pg(
         if exists is None:
             raise LookupError(f"run not in PG: {run_id}")
 
-        for kind, items in (("valid", valid), ("suspicious", suspicious), ("rejected", rejected)):
+        for kind, items in (("valid", valid), ("suspicious", suspicious)):
             if not items:
                 continue
             row = conn.execute(
@@ -593,16 +606,15 @@ def append_results_pg(
                 run_id,
                 run_id,
                 run_id,
-                len(valid) + len(suspicious) + len(rejected),
+                len(valid) + len(suspicious),
                 run_id,
             ),
         )
     log.info(
-        "PG append for %s: +%d valid, +%d suspicious, +%d rejected",
+        "PG append for %s: +%d valid, +%d suspicious",
         run_id,
         len(valid),
         len(suspicious),
-        len(rejected),
     )
 
 

@@ -332,7 +332,8 @@ class TestPersistRunPg:
         run_params = pool.sql_containing("INSERT INTO runs")[0][1]
         assert run_params[9] == 0
 
-    def test_rejected_results_are_inserted_for_audit(self, fake_pg):
+    def test_rejected_results_are_not_persisted(self, fake_pg):
+        """auth_rejected / no_auth noise must not bloat the results table."""
         pool = fake_pg()
         from aipocket.services.writer import persist_run_pg
 
@@ -350,9 +351,7 @@ class TestPersistRunPg:
             rejected=[rejected],
         )
 
-        assert len(pool.executemany_rows) == 1
-        _sql, rows = pool.executemany_rows[0]
-        assert [(row[1], row[2]) for row in rows] == [("rejected", 0)]
+        assert pool.executemany_rows == []
 
     def test_query_metrics_are_replaced_atomically_without_additive_retry(self, fake_pg):
         pool = fake_pg()
@@ -502,7 +501,7 @@ class TestAppendResultsPg:
         assert len(updates) == 1
         assert "total_valid" in updates[0][0]
 
-    def test_append_supports_rejected_without_affecting_visible_counts(self, fake_pg):
+    def test_append_skips_rejected_entirely(self, fake_pg):
         pool = fake_pg(
             {
                 "SELECT 1 FROM runs": [{"?column?": 1}],
@@ -516,14 +515,11 @@ class TestAppendResultsPg:
             validation_state="auth_rejected",
             error="unauthorized",
         )
+        # Rejected-only append is a no-op (not product data).
         append_results_pg("run_retry", [], [], [rejected])
 
-        assert len(pool.executemany_rows) == 1
-        _sql, rows = pool.executemany_rows[0]
-        assert [(row[1], row[2]) for row in rows] == [("rejected", 3)]
-        update_sql = pool.sql_containing("UPDATE runs SET")[0][0]
-        assert "kind = 'valid'" in update_sql
-        assert "kind = 'suspicious'" in update_sql
+        assert pool.executemany_rows == []
+        assert pool.sql_containing("UPDATE runs SET") == []
 
     def test_missing_run_raises(self, fake_pg):
         pool = fake_pg({"SELECT 1 FROM runs": []})
