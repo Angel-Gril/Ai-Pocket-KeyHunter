@@ -6,44 +6,35 @@ Scan for exposed AI infrastructure (FOFA + Shodan + GitHub artifact source), ext
 
 Monorepo with two deployable services:
 
-- **backend/** — Python 3.11+, FastAPI + Typer CLI, managed by `uv`. Source lives in `backend/src/aipocket/`.
-- **frontend/** — React 19 + Vite + Tailwind v4 + shadcn/ui, managed by `pnpm`. Source lives in `frontend/src/`.
+- **crates/** — Rust 2024 workspace. Axum HTTP API + Clap CLI, SQLx PostgreSQL, redis-rs, Reqwest.
+- **frontend/** — React 19 + Vite + Tailwind v4 + shadcn/ui, managed by `pnpm`.
 
-Infra: PostgreSQL 16 (persistent store), Redis 7 (cross-run dedup cache). Both defined in `docker-compose.yml`.
+Infra: PostgreSQL 16 (persistent store), Redis 7 (cross-run dedup cache). Existing `.env`, `/data/aipocket`, PG, and Redis data remain unchanged during replacement.
 
 ## Key Directories
 
 ```
-backend/
-  src/aipocket/
-    api/           # FastAPI app, routers, schemas, scan manager
-    clients/       # FOFA, Shodan, Tavily HTTP clients
-    core/          # config, db, models, key_patterns
-    prober/        # Platform-specific probers (Dify, LiteLLM, NewAPI, etc.)
-    services/      # Business logic: scanner, validator, analyzer, dedup, balance, honeypot, writer
-    cli.py         # Typer CLI entry point
-    scheduler.py   # Periodic scan scheduler
-  scripts/
-    oneoff/        # Migration / backfill scripts
-    reports/       # HTML report generators
-  tests/           # pytest suite (mirrors src/ structure)
-frontend/
-  src/
-    components/    # UI components + shadcn/ui primitives
-    pages/         # Route pages (Login, Scan, History, HighValue, CVE, Settings, RunResults)
-    lib/           # API client, auth, utils
-    providers/     # Auth context provider
-docs/              # FINGERPRINTS.md and other reference docs
+crates/
+  aipocket/            # binary: Clap CLI and Axum server assembly
+  aipocket-core/       # compatible Settings, domain models, URL normalization
+  aipocket-db/         # SQLx repositories, idempotent schema, Redis dedup/lease
+  aipocket-clients/    # FOFA, Shodan, GitHub, Tavily clients
+  aipocket-discovery/  # discovery traits, source adapters, provider packs
+  aipocket-prober/     # risk-gated probes, provider registry, validator
+  aipocket-services/   # scanner, balance, scheduler
+  aipocket-api/        # Axum routes, JWT, settings, SSE, ScanManager
+frontend/              # React application
+docs/
 ```
 
 ## Development
 
 ```bash
-# Backend
-cd backend
-uv sync                              # install deps
-uv run aipocket --help               # CLI
-uv run pytest tests/ -x -q           # tests
+# Rust backend
+cargo build --workspace
+cargo run -p aipocket -- --help
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Frontend
 cd frontend
@@ -63,7 +54,7 @@ docker compose -f docker-compose.yml up -d
 | Command | Description |
 |---------|-------------|
 | `aipocket scan` | Run a full scan (FOFA + Shodan + optional GitHub + extract + validate + balance). Opt-in resume: `--resume-run run_YYYY_...` (requires PostgreSQL spill tables) |
-| `aipocket serve` | Start FastAPI web API |
+| `aipocket serve` | Start the Axum web API |
 | `aipocket watch` | Periodic scanner (scheduler loop) |
 | `aipocket queries` | Print current FOFA/Shodan query sets |
 | `aipocket config` | Show resolved config |
@@ -73,11 +64,11 @@ docker compose -f docker-compose.yml up -d
 
 ## Code Conventions
 
-- Backend formatter/linter: `ruff`. Run `uv run ruff check --fix .` and `uv run ruff format .`.
+- Backend formatter/linter: `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings`.
 - Frontend linter: `oxlint`. Run `pnpm lint`.
-- Tests use `pytest` + `pytest-asyncio` (auto mode). HTTP mocking via `respx`, Redis via `fakeredis`.
-- Pydantic v2 for config (`pydantic-settings`) and data models.
-- All async I/O uses `httpx.AsyncClient`.
+- Tests use Rust unit/integration tests; PostgreSQL/Redis compatibility cases run through ignored tests in CI.
+- Config and DTOs use Serde; SQL uses SQLx.
+- All async I/O uses Tokio and a shared `reqwest::Client`.
 - Frontend uses `@tanstack/react-query` for server state, `react-router-dom` v6 for routing.
 
 ## Environment
@@ -93,5 +84,5 @@ All config via `.env` (see `.env.example`). Key variables:
 
 - Never commit `.env` or real API keys. Use `.env.example` for documentation.
 - Prefer small, reviewable changes with clear verification steps.
-- Run `uv run pytest tests/ -x -q` before submitting backend changes.
+- Run `cargo test --workspace` and the PostgreSQL/Redis ignored integration tests before submitting backend changes.
 - Run `pnpm build` to verify frontend compiles before submitting.
