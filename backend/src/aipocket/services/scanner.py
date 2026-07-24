@@ -170,6 +170,7 @@ async def run_scan(
     github_pack_ids: tuple[str, ...] = (),
     policy: ScanPolicy | None = None,
     resume_run_id: str | None = None,
+    manual_enrich: frozenset[str] | set[str] | tuple[str, ...] | list[str] | None = None,
 ) -> ScanRunResult:
     started = datetime.now(UTC).isoformat()
     scan_policy = policy or policy_from_mode(mode)
@@ -280,6 +281,7 @@ async def run_scan(
                     ledger=ledger,
                     resume_phase=resume_phase,
                     resume_detail=resume_detail,
+                    manual_enrich=manual_enrich,
                 )
             )
     except BaseException as exc:
@@ -317,6 +319,7 @@ async def _run_scan_inner(
     ledger: RequestLedger | None = None,
     resume_phase: str = "",
     resume_detail: dict | None = None,
+    manual_enrich: frozenset[str] | set[str] | tuple[str, ...] | list[str] | None = None,
 ) -> ScanRunResult:
     from aipocket.core.db import current_run_id as _current_run_id
 
@@ -409,6 +412,16 @@ async def _run_scan_inner(
         source_names = ", ".join(s.name for s in resolved) or "none"
         report_phase(f"发现中 · 数据源 {source_names}")
         await asyncio.to_thread(mark_phase, run_id, PHASE_DISCOVERY)
+        # Manual-only: optional FOFA/Shodan hostname reverse-lookup for banners.
+        from aipocket.services.manual_enrich import normalize_enrich_engines
+
+        enrich_engines = normalize_enrich_engines(manual_enrich)
+        if enrich_engines and sources is not None and "manual" not in sources:
+            log.info(
+                "Ignoring manual_enrich=%s (manual source not selected)",
+                ",".join(sorted(enrich_engines)),
+            )
+            enrich_engines = frozenset()
         fetch_results = await registry.fetch_all(
             resolved,
             budgets=source_budgets,
@@ -417,6 +430,7 @@ async def _run_scan_inner(
             skip_direct=skip_direct,
             strict_sources=frozenset(sources or ()),
             pack_ids=github_pack_ids,
+            manual_enrich=enrich_engines,
         )
         (
             all_hits,

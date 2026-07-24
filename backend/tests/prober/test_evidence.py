@@ -177,6 +177,48 @@ def test_allowlisted_product_hint_selects_product_prober() -> None:
     ]
 
 
+def test_manual_runs_generic_and_product_prober_when_identified() -> None:
+    """Operator-supplied manual targets get full product plan + generic leak pass.
+
+    Not generic-only: product Specs still follow RiskPolicy (L0/L1/…); CVE
+    allowlist is not required because the URL was explicitly listed.
+    """
+    target = DiscoveryTarget(
+        identity=TargetIdentity("https", "relay.example", 443),
+        sources=frozenset({"manual"}),
+        product_hints=frozenset({"new-api"}),
+        content_evidence=("New API",),
+        hit={
+            "host": "https://relay.example",
+            "title": "New API",
+            "_source": "manual",
+            "_requires_content_refetch": True,
+        },
+    )
+
+    # Empty discovery allowlist — still executable for manual.
+    assignments, rejected = runner._build_assignments([target], frozenset())
+
+    assert rejected == []
+    assert len(assignments) == 1
+    names = [p.product_name for p in assignments[0].probers]
+    assert names == ["generic", "new-api"]
+
+
+def test_non_manual_still_requires_allowlist_for_product() -> None:
+    target = DiscoveryTarget(
+        identity=TargetIdentity("https", "open.example", 443),
+        sources=frozenset({"shodan"}),
+        product_hints=frozenset({"new-api"}),
+        content_evidence=("New API",),
+        hit={"host": "https://open.example", "title": "New API", "_source": "shodan"},
+    )
+
+    assignments, rejected = runner._build_assignments([target], frozenset())
+    assert rejected == []
+    assert [[p.product_name for p in a.probers] for a in assignments] == [["generic"]]
+
+
 @pytest.mark.asyncio
 async def test_probe_report_distinguishes_attempted_and_evidence_rejected() -> None:
     attempted = DiscoveryTarget(

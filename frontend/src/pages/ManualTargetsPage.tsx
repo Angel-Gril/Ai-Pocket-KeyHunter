@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Loader2, Save, Server, Trash2 } from "lucide-react"
+import { ChevronDown, Loader2, Save, Server, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { api, ApiError, type ManualTarget } from "@/lib/api"
 import { ScanConsole } from "@/pages/ScanPage"
 import { cn } from "@/lib/utils"
+
+const TARGETS_PANEL_KEY = "aipocket.manual-targets.panel-open"
 
 function formatTime(iso: string): string {
   if (!iso) return "—"
@@ -13,6 +15,16 @@ function formatTime(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso
   const pad = (n: number) => String(n).padStart(2, "0")
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function readPanelOpen(): boolean {
+  try {
+    const raw = window.localStorage.getItem(TARGETS_PANEL_KEY)
+    if (raw === null) return true
+    return raw !== "0"
+  } catch {
+    return true
+  }
 }
 
 /**
@@ -25,6 +37,7 @@ export default function ManualTargetsPage() {
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState("")
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [panelOpen, setPanelOpen] = useState(readPanelOpen)
 
   const listQuery = useQuery({
     queryKey: ["manual-targets"],
@@ -32,6 +45,7 @@ export default function ManualTargetsPage() {
   })
 
   const targets = listQuery.data?.results ?? []
+  const storedTotal = listQuery.data?.total ?? targets.length
 
   // Seed the textarea from stored targets once loaded (so users see prior input).
   useEffect(() => {
@@ -41,6 +55,14 @@ export default function ManualTargetsPage() {
     // Only seed when the list first arrives with empty draft.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot seed
   }, [listQuery.isSuccess, listQuery.dataUpdatedAt])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TARGETS_PANEL_KEY, panelOpen ? "1" : "0")
+    } catch {
+      // ignore quota / private mode
+    }
+  }, [panelOpen])
 
   const saveMutation = useMutation({
     mutationFn: (replace: boolean) =>
@@ -125,155 +147,184 @@ export default function ManualTargetsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-border-primary px-8 py-5">
-        <div className="mb-4 flex flex-col gap-[3px]">
-          <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">
-            自定义狩猎
-          </h1>
-          <p className="font-mono text-xs text-text-muted">
-            填入中转站 / 网关地址（每行一个）· 自动清洗 path · 入库后可重复扫描 ·
-            source=manual 跳过 FOFA / Shodan / GitHub
-          </p>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="flex flex-col gap-2">
-            <label
-              htmlFor="manual-urls"
-              className="font-mono text-[11px] tracking-[0.3px] text-text-muted"
-            >
-              地址列表（每行一个）
-            </label>
-            <textarea
-              id="manual-urls"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder={"https://web.example.com\nhttps://web1.example.com\nhttps://web2.example.com"}
-              spellCheck={false}
+      <div className="shrink-0 border-b border-border-primary px-8 py-4">
+        <button
+          type="button"
+          aria-expanded={panelOpen}
+          aria-controls="manual-targets-panel"
+          onClick={() => setPanelOpen((o) => !o)}
+          className="flex w-full items-start gap-3 text-left"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">
+                自定义狩猎
+              </h1>
+              <span className="rounded-full border border-border-primary bg-surface-raised px-2 py-0.5 font-mono text-[11px] text-text-muted">
+                已入库 {storedTotal}
+              </span>
+            </div>
+            <p className="mt-[3px] font-mono text-xs text-text-muted">
+              {panelOpen
+                ? "填入中转站 / 网关地址（每行一个）· 自动清洗 path · 入库后可重复扫描 · 可域名反查 FOFA / Shodan 补指纹"
+                : "点击展开编辑地址列表 · source=manual · 可域名反查 FOFA / Shodan"}
+            </p>
+          </div>
+          <span
+            className={cn(
+              "mt-1 inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border-primary bg-surface-raised text-text-secondary transition-colors hover:text-text-primary",
+            )}
+            aria-hidden
+          >
+            <ChevronDown
               className={cn(
-                "min-h-[140px] resize-y rounded-md border border-border-primary bg-surface-raised",
-                "px-3 py-2.5 font-mono text-[13px] leading-relaxed text-text-primary",
-                "placeholder:text-text-muted focus:border-accent focus:outline-none",
+                "size-4 transition-transform duration-200",
+                panelOpen && "rotate-180",
               )}
             />
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                disabled={saveMutation.isPending || lineCount === 0}
-                onClick={() => saveMutation.mutate(false)}
-                className="inline-flex items-center gap-1.5 rounded-[4px] bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-text transition-opacity hover:opacity-90 disabled:opacity-50"
-              >
-                {saveMutation.isPending ? (
-                  <Loader2 className="size-3.5 animate-spin" />
-                ) : (
-                  <Save className="size-3.5" />
-                )}
-                保存 / 追加
-              </button>
-              <button
-                type="button"
-                disabled={saveMutation.isPending || lineCount === 0}
-                onClick={() => saveMutation.mutate(true)}
-                className="inline-flex items-center gap-1.5 rounded-[4px] border border-border-primary bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
-              >
-                替换全部
-              </button>
-              <span className="font-mono text-[11px] text-text-muted">
-                {lineCount > 0 ? `${lineCount} 行待保存` : "粘贴后保存入库"}
-                {" · "}
-                path / query 会被剥离（如 /login/xxx）
-              </span>
-            </div>
-          </div>
+          </span>
+        </button>
 
-          <div className="flex min-h-0 flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <span className="font-mono text-[11px] tracking-[0.3px] text-text-muted">
-                已入库（{listQuery.data?.total ?? targets.length}）
-              </span>
-              {selected.size > 0 ? (
+        {panelOpen ? (
+          <div id="manual-targets-panel" className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div className="flex flex-col gap-2">
+              <label
+                htmlFor="manual-urls"
+                className="font-mono text-[11px] tracking-[0.3px] text-text-muted"
+              >
+                地址列表（每行一个）
+              </label>
+              <textarea
+                id="manual-urls"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder={"https://web.example.com\nhttps://web1.example.com\nhttps://web2.example.com"}
+                spellCheck={false}
+                className={cn(
+                  "min-h-[140px] resize-y rounded-md border border-border-primary bg-surface-raised",
+                  "px-3 py-2.5 font-mono text-[13px] leading-relaxed text-text-primary",
+                  "placeholder:text-text-muted focus:border-accent focus:outline-none",
+                )}
+              />
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  disabled={deleteMutation.isPending}
-                  onClick={() => deleteMutation.mutate([...selected])}
-                  className="inline-flex items-center gap-1.5 rounded-[4px] border border-danger bg-danger-dim px-2.5 py-1 text-[11px] font-semibold text-danger disabled:opacity-50"
+                  disabled={saveMutation.isPending || lineCount === 0}
+                  onClick={() => saveMutation.mutate(false)}
+                  className="inline-flex items-center gap-1.5 rounded-[4px] bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-text transition-opacity hover:opacity-90 disabled:opacity-50"
                 >
-                  {deleteMutation.isPending ? (
-                    <Loader2 className="size-3 animate-spin" />
+                  {saveMutation.isPending ? (
+                    <Loader2 className="size-3.5 animate-spin" />
                   ) : (
-                    <Trash2 className="size-3" />
+                    <Save className="size-3.5" />
                   )}
-                  删除选中 ({selected.size})
+                  保存 / 追加
                 </button>
-              ) : null}
+                <button
+                  type="button"
+                  disabled={saveMutation.isPending || lineCount === 0}
+                  onClick={() => saveMutation.mutate(true)}
+                  className="inline-flex items-center gap-1.5 rounded-[4px] border border-border-primary bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
+                >
+                  替换全部
+                </button>
+                <span className="font-mono text-[11px] text-text-muted">
+                  {lineCount > 0 ? `${lineCount} 行待保存` : "粘贴后保存入库"}
+                  {" · "}
+                  path / query 会被剥离（如 /login/xxx）
+                </span>
+              </div>
             </div>
-            <div className="max-h-[180px] overflow-y-auto rounded-md border border-border-primary bg-surface-raised">
-              {listQuery.isLoading ? (
-                <div className="flex items-center justify-center gap-2 py-10 text-text-muted">
-                  <Loader2 className="size-4 animate-spin" />
-                  <span className="font-mono text-xs">加载中…</span>
-                </div>
-              ) : targets.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 py-10 text-text-muted">
-                  <Server className="size-5 opacity-50" />
-                  <span className="font-mono text-xs">暂无入库地址</span>
-                </div>
-              ) : (
-                <table className="w-full text-left text-[12px]">
-                  <thead className="sticky top-0 bg-surface-raised">
-                    <tr className="border-b border-border-subtle font-mono text-[11px] text-text-muted">
-                      <th className="w-8 px-2 py-2">
-                        <input
-                          type="checkbox"
-                          checked={selected.size === targets.length && targets.length > 0}
-                          onChange={toggleAll}
-                          aria-label="全选"
-                        />
-                      </th>
-                      <th className="px-2 py-2 font-medium">URL</th>
-                      <th className="px-2 py-2 font-medium">更新</th>
-                      <th className="w-10 px-2 py-2" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {targets.map((t: ManualTarget) => (
-                      <tr
-                        key={t.url}
-                        className="border-b border-border-subtle last:border-0 hover:bg-surface-inset/50"
-                      >
-                        <td className="px-2 py-1.5">
+
+            <div className="flex min-h-0 flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-[11px] tracking-[0.3px] text-text-muted">
+                  已入库（{storedTotal}）
+                </span>
+                {selected.size > 0 ? (
+                  <button
+                    type="button"
+                    disabled={deleteMutation.isPending}
+                    onClick={() => deleteMutation.mutate([...selected])}
+                    className="inline-flex items-center gap-1.5 rounded-[4px] border border-danger bg-danger-dim px-2.5 py-1 text-[11px] font-semibold text-danger disabled:opacity-50"
+                  >
+                    {deleteMutation.isPending ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <Trash2 className="size-3" />
+                    )}
+                    删除选中 ({selected.size})
+                  </button>
+                ) : null}
+              </div>
+              <div className="max-h-[180px] overflow-y-auto rounded-md border border-border-primary bg-surface-raised">
+                {listQuery.isLoading ? (
+                  <div className="flex items-center justify-center gap-2 py-10 text-text-muted">
+                    <Loader2 className="size-4 animate-spin" />
+                    <span className="font-mono text-xs">加载中…</span>
+                  </div>
+                ) : targets.length === 0 ? (
+                  <div className="flex flex-col items-center gap-2 py-10 text-text-muted">
+                    <Server className="size-5 opacity-50" />
+                    <span className="font-mono text-xs">暂无入库地址</span>
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-[12px]">
+                    <thead className="sticky top-0 bg-surface-raised">
+                      <tr className="border-b border-border-subtle font-mono text-[11px] text-text-muted">
+                        <th className="w-8 px-2 py-2">
                           <input
                             type="checkbox"
-                            checked={selected.has(t.url)}
-                            onChange={() => toggleRow(t.url)}
-                            aria-label={`选择 ${t.url}`}
+                            checked={selected.size === targets.length && targets.length > 0}
+                            onChange={toggleAll}
+                            aria-label="全选"
                           />
-                        </td>
-                        <td className="max-w-[1px] truncate px-2 py-1.5 font-mono text-text-primary">
-                          {t.url}
-                        </td>
-                        <td className="whitespace-nowrap px-2 py-1.5 font-mono text-text-muted">
-                          {formatTime(t.last_seen)}
-                        </td>
-                        <td className="px-2 py-1.5">
-                          <button
-                            type="button"
-                            title="删除"
-                            disabled={deleteMutation.isPending}
-                            onClick={() => deleteMutation.mutate([t.url])}
-                            className="rounded p-1 text-text-muted transition-colors hover:bg-danger-dim hover:text-danger"
-                          >
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        </td>
+                        </th>
+                        <th className="px-2 py-2 font-medium">URL</th>
+                        <th className="px-2 py-2 font-medium">更新</th>
+                        <th className="w-10 px-2 py-2" />
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                    </thead>
+                    <tbody>
+                      {targets.map((t: ManualTarget) => (
+                        <tr
+                          key={t.url}
+                          className="border-b border-border-subtle last:border-0 hover:bg-surface-inset/50"
+                        >
+                          <td className="px-2 py-1.5">
+                            <input
+                              type="checkbox"
+                              checked={selected.has(t.url)}
+                              onChange={() => toggleRow(t.url)}
+                              aria-label={`选择 ${t.url}`}
+                            />
+                          </td>
+                          <td className="max-w-[1px] truncate px-2 py-1.5 font-mono text-text-primary">
+                            {t.url}
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-1.5 font-mono text-text-muted">
+                            {formatTime(t.last_seen)}
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <button
+                              type="button"
+                              title="删除"
+                              disabled={deleteMutation.isPending}
+                              onClick={() => deleteMutation.mutate([t.url])}
+                              className="rounded p-1 text-text-muted transition-colors hover:bg-danger-dim hover:text-danger"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1">
@@ -281,7 +332,7 @@ export default function ManualTargetsPage() {
           fixedSource="manual"
           title="自定义狩猎"
           startLabel="开始自定义狩猎"
-          subtitle="source=manual · 使用上方已入库地址 · 与全量扫描共用流水线 · 结果在「扫描历史 / 全部密钥 / 高价值」统一展示"
+          subtitle="source=manual · 使用上方已入库地址 · 可域名反查 FOFA/Shodan 补指纹 · 与全量扫描共用流水线 · 结果统一入库"
         />
       </div>
     </div>

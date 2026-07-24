@@ -175,6 +175,9 @@ def urls_to_host_hits(urls: list[SanitizedUrl] | list[str]) -> list[dict]:
                 "link": cleaned.url,
                 "_source": "manual",
                 "_query_id": "manual-target",
+                # Same as FOFA body= hits: no passive banner body — run Generic
+                # leak paths alongside the product prober when one is identified.
+                "_requires_content_refetch": True,
             }
         )
     return hits

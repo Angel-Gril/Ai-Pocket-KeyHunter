@@ -160,12 +160,19 @@ class ExportRequest(BaseModel):
 # ----------------------------------------------------------------------------
 # Scan
 # ----------------------------------------------------------------------------
+ManualEnrichEngine = Literal["fofa", "shodan"]
+
+
 class ScanStartRequest(BaseModel):
     """Start a scan.
 
     Prefer ``sources`` for multi-select (e.g. FOFA + Shodan without GitHub).
     Legacy single-value ``source`` remains accepted; when both are set,
     non-empty ``sources`` wins.
+
+    ``manual_enrich`` only applies when ``manual`` is among the selected
+    sources: reverse-lookup each stored hostname on FOFA/Shodan to attach
+    title/header/banner for product prober routing.
     """
 
     source: ScanSource = "all"
@@ -174,6 +181,7 @@ class ScanStartRequest(BaseModel):
     github_pack_ids: list[GitHubPackId] = Field(default_factory=list, max_length=16)
     # Opt-in resume of an interrupted run (C8). Empty/default = new run_id.
     resume_run_id: str = ""
+    manual_enrich: list[ManualEnrichEngine] = Field(default_factory=list, max_length=2)
 
     def resolved_source_label(self) -> str:
         """Canonical status label: ``all`` | ``fofa`` | ``fofa,shodan`` | …"""
@@ -183,6 +191,14 @@ class ScanStartRequest(BaseModel):
                 return "all"
             return ",".join(items)
         return self.source
+
+    def resolved_manual_enrich(self) -> tuple[str, ...]:
+        """Deduped FOFA/Shodan enrich engines (empty when manual not selected)."""
+        label = self.resolved_source_label()
+        parts = {p.strip() for p in label.split(",") if p.strip()}
+        if "manual" not in parts and label != "manual":
+            return ()
+        return tuple(sorted(set(self.manual_enrich)))
 
 
 class ScanProgress(BaseModel):
@@ -200,6 +216,7 @@ class ScanStatusResponse(BaseModel):
     source: str | None = None
     mode: ScanMode = "incremental"
     github_pack_ids: list[GitHubPackId] = Field(default_factory=list)
+    manual_enrich: list[ManualEnrichEngine] = Field(default_factory=list)
     run_id: str | None = None
     started_at: str | None = None
     finished_at: str | None = None

@@ -211,7 +211,20 @@ def _allowed_product_names(allowed_products: frozenset[str]) -> frozenset[str]:
 def _build_assignments(
     targets: list[DiscoveryTarget], allowed_products: frozenset[str]
 ) -> tuple[list[ProbeAssignment], list[ProbeTargetOutcome]]:
-    """Assign evidence-qualified targets without treating the allowlist as evidence."""
+    """Assign evidence-qualified targets without treating the allowlist as evidence.
+
+    Product routing (which prober) comes from hit fingerprints / hints only.
+    Execution gates:
+
+    * FOFA / Shodan / other discovery: product prober only when the product is
+      on the advisory safe-recipe allowlist (same as full-scan policy).
+    * Manual (operator-supplied URLs): once a product is identified, run that
+      product prober under the shared :class:`RiskPolicy` (L0/L1/L2 settings) —
+      explicit targets are already in scope; do **not** collapse to generic-only.
+    * Sparse body / FOFA ``body=`` / manual seeds: also run
+      :class:`GenericPageProber` alongside the product adapter (independent
+      request budgets) so leak-path + product Specs both execute.
+    """
     from .probers import GenericPageProber
 
     prober_classes = _all_probers()
@@ -239,16 +252,19 @@ def _build_assignments(
             if evidence.score >= HIGH_EVIDENCE_SCORE
             else None
         )
-        requires_refetch = bool(target.hit.get("_requires_content_refetch"))
-        if (
-            requires_refetch
-            and selected is not None
-            and selected.product_name.lower() in normalized_allowed
-        ):
-            probers = (GenericPageProber, selected)
-            product_count += 1
-        elif selected is not None and selected.product_name.lower() in normalized_allowed:
-            probers = (selected,)
+        is_manual = "manual" in target.sources
+        requires_refetch = bool(target.hit.get("_requires_content_refetch")) or is_manual
+        product_name = (selected.product_name if selected is not None else "").lower()
+        # Discovery-wide allowlist for unsolicited hosts; manual is operator scope.
+        product_executable = selected is not None and (
+            product_name in normalized_allowed or is_manual
+        )
+
+        if product_executable and selected is not None:
+            # Full product Spec plan (unauth / weak-password / IDOR / …) under
+            # RiskPolicy — same path FOFA/Shodan take when allowlisted.
+            # Sparse/manual: Generic leak paths + product Specs (independent budgets).
+            probers = (GenericPageProber, selected) if requires_refetch else (selected,)
             product_count += 1
         else:
             probers = (GenericPageProber,)

@@ -1,4 +1,4 @@
-"""Manual host discovery — user-supplied relay/gateway URLs (no FOFA/Shodan/GitHub)."""
+"""Manual host discovery — user-supplied relay/gateway URLs (+ optional FOFA/Shodan enrich)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import Any
 from aipocket.core.models import ScanMode
 from aipocket.core.scan_policy import ScanPolicy
 from aipocket.discovery.base import SourceBudgets, SourceFetchResult
+from aipocket.services.manual_enrich import enrich_manual_hits, normalize_enrich_engines
 from aipocket.services.manual_target_store import load_enabled_urls
 from aipocket.services.url_sanitize import urls_to_host_hits
 
@@ -22,6 +23,9 @@ class ManualSource:
     selects ``source=manual`` (dedicated page). The registry still retains
     an unconfigured-but-requested source so ``fetch`` can load targets or
     return a clear error.
+
+    Optional ``manual_enrich`` (fofa / shodan) reverse-looks up each hostname
+    to attach title/header/banner so product probers can identify gateways.
     """
 
     name = "manual"
@@ -54,9 +58,33 @@ class ManualSource:
             if isinstance(h, dict):
                 h.setdefault("_source", self.name)
 
-        log.info("Manual source: %d host hit(s) from stored targets", len(hits))
+        engines = normalize_enrich_engines(
+            kwargs.get("manual_enrich") or (budgets.extra or {}).get("manual_enrich") or ()
+        )
+        usage: tuple = ()
+        soft_errors: tuple[str, ...] = ()
+        if engines:
+            log.info(
+                "Manual source: enriching %d seed hit(s) via %s",
+                len(hits),
+                ",".join(sorted(engines)),
+            )
+            hits, usage, soft_errors = enrich_manual_hits(hits, engines=engines)
+            for h in hits:
+                if isinstance(h, dict):
+                    h.setdefault("_source", self.name)
+
+        log.info(
+            "Manual source: %d host hit(s) from stored targets%s",
+            len(hits),
+            f" (enrich={','.join(sorted(engines))})" if engines else "",
+        )
+        # Soft enrich errors (missing keys / per-host failures) are warnings —
+        # seed targets still proceed. Surface them in the result for the console.
         return SourceFetchResult(
             source=self.name,
             host_hits=tuple(hits),
             host_hit_count=len(hits),
+            query_usage=usage,
+            errors=soft_errors,
         )

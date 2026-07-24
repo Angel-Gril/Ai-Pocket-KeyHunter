@@ -37,6 +37,7 @@ def _to_status(raw: dict) -> ScanStatusResponse:
         mode=raw.get("mode", "incremental"),
         run_id=raw.get("run_id"),
         github_pack_ids=raw.get("github_pack_ids", []),
+        manual_enrich=raw.get("manual_enrich", []),
         started_at=raw.get("started_at"),
         finished_at=raw.get("finished_at"),
         error=raw.get("error"),
@@ -58,6 +59,7 @@ async def start_scan(body: ScanStartRequest, request: Request) -> ScanStatusResp
             body.mode,
             tuple(body.github_pack_ids),
             resume_run_id=(body.resume_run_id or "").strip(),
+            manual_enrich=body.resolved_manual_enrich(),
         )
     except RuntimeError as e:
         # A scan is already running → conflict; the frontend greys out the button.

@@ -169,14 +169,23 @@ def test_scan_start_accepts_manual_source(
     headers = _auth_headers(client)
     captured: dict = {}
 
-    def fake_start(self, source, mode="incremental", github_pack_ids=(), resume_run_id=""):
+    def fake_start(
+        self,
+        source,
+        mode="incremental",
+        github_pack_ids=(),
+        resume_run_id="",
+        manual_enrich=(),
+    ):
         captured["source"] = source
         captured["mode"] = mode
+        captured["manual_enrich"] = tuple(manual_enrich)
         return {
             "state": "running",
             "source": source,
             "mode": mode,
             "github_pack_ids": list(github_pack_ids),
+            "manual_enrich": list(manual_enrich),
             "run_id": "run_test",
             "started_at": "2026-01-01T00:00:00+00:00",
             "finished_at": None,
@@ -193,11 +202,17 @@ def test_scan_start_accepts_manual_source(
     res = client.post(
         "/api/scan/start",
         headers=headers,
-        json={"source": "manual", "mode": "incremental"},
+        json={
+            "source": "manual",
+            "mode": "incremental",
+            "manual_enrich": ["shodan", "fofa"],
+        },
     )
     assert res.status_code == 200
     assert captured["source"] == "manual"
+    assert captured["manual_enrich"] == ("fofa", "shodan")
     assert res.json()["source"] == "manual"
+    assert res.json()["manual_enrich"] == ["fofa", "shodan"]
 
 
 def test_scan_start_request_manual_label() -> None:
@@ -205,6 +220,10 @@ def test_scan_start_request_manual_label() -> None:
 
     assert ScanStartRequest(source="manual").resolved_source_label() == "manual"
     assert ScanStartRequest(sources=["manual"]).resolved_source_label() == "manual"
+    assert ScanStartRequest(
+        source="manual", manual_enrich=["shodan", "fofa"]
+    ).resolved_manual_enrich() == ("fofa", "shodan")
+    assert ScanStartRequest(source="fofa", manual_enrich=["shodan"]).resolved_manual_enrich() == ()
 
 
 @pytest.mark.asyncio
@@ -233,7 +252,8 @@ async def test_scan_manager_passes_manual_source(tmp_path, monkeypatch: pytest.M
     manager = ScanManager()
     manager._run_dir = tmp_path
 
-    await manager._run("manual")
+    await manager._run("manual", manual_enrich=("fofa", "shodan"))
 
     assert captured["sources"] == {"manual"}
+    assert captured["manual_enrich"] == ("fofa", "shodan")
     assert ScanManager._sources_for_scan("manual") == {"manual"}

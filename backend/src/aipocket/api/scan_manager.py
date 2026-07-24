@@ -66,6 +66,7 @@ class ScanManager:
         self._source: str | None = None
         self._mode = "incremental"
         self._github_pack_ids: tuple[str, ...] = ()
+        self._manual_enrich: tuple[str, ...] = ()
         self._run_dir: Path | None = None
         self._started_at: str | None = None
         self._finished_at: str | None = None
@@ -113,6 +114,7 @@ class ScanManager:
                 "source": self._source,
                 "mode": self._mode,
                 "github_pack_ids": list(self._github_pack_ids),
+                "manual_enrich": list(self._manual_enrich),
                 "run_id": run_id,
                 "started_at": self._started_at,
                 "finished_at": self._finished_at,
@@ -145,17 +147,30 @@ class ScanManager:
         mode: str = "incremental",
         github_pack_ids: tuple[str, ...] = (),
         resume_run_id: str = "",
+        manual_enrich: tuple[str, ...] = (),
     ) -> dict:
         """Start a background scan. Raises RuntimeError if one is already running."""
         with self._lock:
             if self._state in ("running", "stopping"):
                 raise RuntimeError("a scan is already running")
-            self._reset_for_new_run(source, mode, github_pack_ids, resume_run_id=resume_run_id)
+            self._reset_for_new_run(
+                source,
+                mode,
+                github_pack_ids,
+                resume_run_id=resume_run_id,
+                manual_enrich=manual_enrich,
+            )
 
         self._loop = asyncio.get_running_loop()
         self._attach_log_handlers()
         self._task = asyncio.create_task(
-            self._run(source, mode, github_pack_ids, resume_run_id=resume_run_id)
+            self._run(
+                source,
+                mode,
+                github_pack_ids,
+                resume_run_id=resume_run_id,
+                manual_enrich=manual_enrich,
+            )
         )
         return self.status()
 
@@ -166,12 +181,14 @@ class ScanManager:
         github_pack_ids: tuple[str, ...] = (),
         *,
         resume_run_id: str = "",
+        manual_enrich: tuple[str, ...] = (),
     ) -> None:
         from aipocket.services.writer import new_run_dir
 
         self._source = source
         self._mode = mode
         self._github_pack_ids = github_pack_ids
+        self._manual_enrich = tuple(manual_enrich)
         if resume_run_id:
             self._run_dir = settings.results_path / resume_run_id
             self._run_dir.mkdir(parents=True, exist_ok=True)
@@ -235,6 +252,7 @@ class ScanManager:
         mode: str = "incremental",
         github_pack_ids: tuple[str, ...] = (),
         resume_run_id: str = "",
+        manual_enrich: tuple[str, ...] = (),
     ) -> None:
         from aipocket.services.scanner import run_scan
 
@@ -246,20 +264,25 @@ class ScanManager:
         phase_token = set_phase_reporter(self.set_phase)
         try:
             log.info(
-                "Web scan starting (source=%s, run=%s, resume=%s)",
+                "Web scan starting (source=%s, run=%s, resume=%s, manual_enrich=%s)",
                 source,
                 self._run_dir,
                 resume_run_id or "-",
+                ",".join(manual_enrich) or "-",
             )
             from aipocket.core.scan_phase import report_phase
 
-            report_phase(f"{'恢复' if resume_run_id else '启动'}扫描 · source={source}")
+            enrich_note = f" · enrich={','.join(manual_enrich)}" if manual_enrich else ""
+            report_phase(
+                f"{'恢复' if resume_run_id else '启动'}扫描 · source={source}{enrich_note}"
+            )
             result = await run_scan(
                 run_dir=self._run_dir,
                 sources=sources,
                 mode=mode,
                 github_pack_ids=github_pack_ids,
                 resume_run_id=resume_run_id or None,
+                manual_enrich=manual_enrich,
             )
             with self._lock:
                 self._state = "finished"

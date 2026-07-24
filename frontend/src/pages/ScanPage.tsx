@@ -26,6 +26,7 @@ import {
   openScanLogStream,
   type ScanLogLine,
   type GitHubPackId,
+  type ManualEnrichEngine,
   type ScanMode,
   type ScanSource,
   type ScanSourceItem,
@@ -135,6 +136,26 @@ function MetricCard({ icon: Icon, label, value, valueClass, iconClass }: Readonl
   )
 }
 
+const MANUAL_ENRICH_KEY = "aipocket.manual-enrich.engines"
+
+function readManualEnrich(): ManualEnrichEngine[] {
+  try {
+    const raw = window.localStorage.getItem(MANUAL_ENRICH_KEY)
+    if (raw == null) return ["fofa", "shodan"]
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return ["fofa", "shodan"]
+    const out: ManualEnrichEngine[] = []
+    for (const item of parsed) {
+      if (item === "fofa" || item === "shodan") {
+        if (!out.includes(item)) out.push(item)
+      }
+    }
+    return out
+  } catch {
+    return ["fofa", "shodan"]
+  }
+}
+
 export interface ScanConsoleProps {
   /** Lock source selector and always start with this source (e.g. github-only page). */
   fixedSource?: ScanSource
@@ -159,6 +180,8 @@ export function ScanConsole({
   /** Multi-select provider packs. Empty + "all" shortcut both mean every pack. */
   const [githubPacks, setGithubPacks] = useState<GitHubPackId[]>(["deepseek", "glm", "kimi"])
   const [packDropdownOpen, setPackDropdownOpen] = useState(false)
+  /** Custom hunt: reverse-lookup hostnames on FOFA/Shodan for product fingerprints. */
+  const [manualEnrich, setManualEnrich] = useState<ManualEnrichEngine[]>(readManualEnrich)
   const [lines, setLines] = useState<ScanLogLine[]>([])
   /** Live phase derived from log SSE (faster than status poll). */
   const [phaseFromLogs, setPhaseFromLogs] = useState("")
@@ -171,6 +194,15 @@ export function ScanConsole({
   useEffect(() => {
     if (fixedSource && fixedSource !== "all") setSelectedSources([fixedSource])
   }, [fixedSource])
+
+  useEffect(() => {
+    if (fixedSource !== "manual") return
+    try {
+      window.localStorage.setItem(MANUAL_ENRICH_KEY, JSON.stringify(manualEnrich))
+    } catch {
+      // ignore quota / private mode
+    }
+  }, [fixedSource, manualEnrich])
 
   // Close provider multi-select on outside click / Escape.
   useEffect(() => {
@@ -354,6 +386,14 @@ export function ScanConsole({
     })
   }, [])
 
+  const isManualLane = fixedSource === "manual" || launchSources.includes("manual")
+
+  const toggleManualEnrich = useCallback((engine: ManualEnrichEngine) => {
+    setManualEnrich((prev) =>
+      prev.includes(engine) ? prev.filter((e) => e !== engine) : [...prev, engine],
+    )
+  }, [])
+
   const startMutation = useMutation({
     mutationFn: () => {
       if (launchSources.length === 0) {
@@ -366,11 +406,16 @@ export function ScanConsole({
       if (!serialized) {
         return Promise.reject(new Error("请至少选择一个数据源"))
       }
+      const enrich =
+        isManualLane && manualEnrich.length > 0
+          ? ([...manualEnrich].sort() as ManualEnrichEngine[])
+          : []
       return api.scanStart(
         serialized.source,
         mode,
         resolvedGithubPackIds,
         serialized.sources,
+        enrich,
       )
     },
     onSuccess: applyStatus,
@@ -518,7 +563,7 @@ export function ScanConsole({
             </span>
             <span className="font-mono text-[11px] text-text-muted">
               {fixedSource === "manual"
-                ? "本页固定为 source=manual · 跳过 FOFA / Shodan / GitHub · 直接探测已入库地址"
+                ? "本页固定为 source=manual · 探测已入库地址 · 可开启域名反查 FOFA / Shodan 补指纹"
                 : `本页固定为 source=${fixedSource} · 组合扫描请用「执行扫描」多选数据源`}
             </span>
             {running ? (
@@ -583,6 +628,44 @@ export function ScanConsole({
             ) : null}
           </div>
         )}
+
+        {fixedSource === "manual" ? (
+          <div className="flex flex-wrap items-center gap-3.5">
+            <span className="font-mono text-xs text-text-muted">域名反查</span>
+            {(
+              [
+                { value: "fofa" as const, label: "FOFA" },
+                { value: "shodan" as const, label: "Shodan" },
+              ] as const
+            ).map(({ value, label }) => {
+              const selected = manualEnrich.includes(value)
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  disabled={running}
+                  aria-pressed={selected}
+                  onClick={() => toggleManualEnrich(value)}
+                  className={cn(
+                    "inline-flex items-center gap-2 rounded-[4px] border px-4 py-[9px] text-[13px] transition-colors",
+                    selected
+                      ? "border-accent bg-accent-dim font-semibold text-accent"
+                      : "border-border-primary bg-surface-raised text-text-secondary hover:text-text-primary",
+                    running && "cursor-not-allowed opacity-50",
+                  )}
+                >
+                  <Radar className="size-[15px]" />
+                  {label}
+                </button>
+              )
+            })}
+            <span className="font-mono text-[11px] text-text-muted">
+              {manualEnrich.length === 0
+                ? "关闭时仅探测已入库 URL（无产品指纹）"
+                : "按域名反查 title/banner · 补 NewAPI 等产品识别 · 消耗对应 API 额度"}
+            </span>
+          </div>
+        ) : null}
 
         {activeSources.includes("github") ? (
           <div className="flex flex-wrap items-center gap-3.5">

@@ -7,6 +7,8 @@ import { clearToken, getToken } from "@/lib/auth-storage"
 export type ScanSourceItem = "fofa" | "shodan" | "github" | "manual"
 export type ScanSource = ScanSourceItem | "all"
 export type ScanMode = "full" | "incremental"
+/** Hostname reverse-lookup engines for source=manual (custom hunt). */
+export type ManualEnrichEngine = "fofa" | "shodan"
 export type GitHubPackId =
   | "all"
   | "glm"
@@ -117,6 +119,8 @@ export interface ScanStatusResponse {
   source: string | null
   mode: ScanMode
   github_pack_ids: GitHubPackId[]
+  /** FOFA/Shodan hostname enrich for manual scans (empty otherwise). */
+  manual_enrich?: ManualEnrichEngine[]
   run_id: string | null
   started_at: string | null
   finished_at: string | null
@@ -658,6 +662,7 @@ export const api = {
     mode: ScanMode,
     githubPackIds: readonly GitHubPackId[] = [],
     sources: readonly ScanSourceItem[] = [],
+    manualEnrich: readonly ManualEnrichEngine[] = [],
   ) =>
     request<ScanStatusResponse>("/scan/start", {
       method: "POST",
@@ -667,6 +672,8 @@ export const api = {
         sources: sources.length > 0 ? [...sources] : undefined,
         mode,
         github_pack_ids: githubPackIds,
+        // Custom hunt: reverse-lookup stored hostnames on FOFA/Shodan.
+        manual_enrich: manualEnrich.length > 0 ? [...manualEnrich] : undefined,
       },
     }),
   scanStop: () => request<ScanStatusResponse>("/scan/stop", { method: "POST" }),
