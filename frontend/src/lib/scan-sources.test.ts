@@ -43,4 +43,15 @@ describe("scan source selection", () => {
     expect(parseSourceLabel("all")).toEqual(ALL_SCAN_SOURCES)
     expect(parseSourceLabel(" fofa , invalid , shodan ")).toEqual(["fofa", "shodan"])
   })
+
+  it("supports dedicated manual source without collapsing into all", () => {
+    expect(serializeSources(["manual"])).toEqual({
+      source: "manual",
+      sources: ["manual"],
+    })
+    expect(toCanonicalSourceLabel(["manual"])).toBe("manual")
+    expect(parseSourceLabel("manual")).toEqual(["manual"])
+    // Manual is never part of the multi-select "all" set.
+    expect(ALL_SCAN_SOURCES.includes("manual" as never)).toBe(false)
+  })
 })

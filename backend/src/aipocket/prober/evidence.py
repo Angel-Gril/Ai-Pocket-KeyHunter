@@ -37,6 +37,11 @@ def score_target(target: DiscoveryTarget) -> TargetEvidence:
     if target.product_hints:
         score += 70
         reasons.append("product fingerprint")
+    # User-supplied manual targets have no FOFA/Shodan banner body; still
+    # deserve a full generic probe (homepage + common leak paths).
+    if "manual" in target.sources:
+        score += 70
+        reasons.append("manual target")
     if _DOCS_SIGNAL.search(blob):
         score -= 40
         reasons.append("documentation/blog penalty")

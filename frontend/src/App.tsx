@@ -8,6 +8,7 @@ import AllKeysPage from "@/pages/AllKeysPage"
 import HighValuePage from "@/pages/HighValuePage"
 import ScanPage from "@/pages/ScanPage"
 import GithubHunterPage from "@/pages/GithubHunterPage"
+import ManualTargetsPage from "@/pages/ManualTargetsPage"
 import CvePage from "@/pages/CvePage"
 import HoneypotPage from "@/pages/HoneypotPage"
 import SettingsPage from "@/pages/SettingsPage"
@@ -25,6 +26,7 @@ export function App() {
           <Route path="/high-value" element={<HighValuePage />} />
           <Route path="/scan" element={<ScanPage />} />
           <Route path="/github" element={<GithubHunterPage />} />
+          <Route path="/manual" element={<ManualTargetsPage />} />
           <Route path="/cve" element={<CvePage />} />
           <Route path="/honeypot" element={<HoneypotPage />} />
           <Route path="/settings" element={<SettingsPage />} />

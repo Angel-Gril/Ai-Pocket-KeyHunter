@@ -12,9 +12,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ScanSourceItem = Literal["fofa", "shodan", "github"]
-ScanSource = Literal["fofa", "shodan", "github", "all"]
+ScanSourceItem = Literal["fofa", "shodan", "github", "manual"]
+ScanSource = Literal["fofa", "shodan", "github", "manual", "all"]
 ScanMode = Literal["full", "incremental"]
+# Multi-select "all" on the main scan page (manual has a dedicated page).
 _ALL_SCAN_SOURCES: frozenset[str] = frozenset({"fofa", "shodan", "github"})
 GitHubPackId = Literal[
     "all",
@@ -168,7 +169,7 @@ class ScanStartRequest(BaseModel):
     """
 
     source: ScanSource = "all"
-    sources: list[ScanSourceItem] = Field(default_factory=list, max_length=3)
+    sources: list[ScanSourceItem] = Field(default_factory=list, max_length=4)
     mode: ScanMode = "incremental"
     github_pack_ids: list[GitHubPackId] = Field(default_factory=list, max_length=16)
     # Opt-in resume of an interrupted run (C8). Empty/default = new run_id.
@@ -328,6 +329,56 @@ class HoneypotBulkDeleteRequest(BaseModel):
 
 
 class HoneypotBulkDeleteResponse(BaseModel):
+    deleted: int = 0
+
+
+# ----------------------------------------------------------------------------
+# Manual scan targets (user-supplied relay / gateway URLs)
+# ----------------------------------------------------------------------------
+class ManualTarget(BaseModel):
+    url: str
+    host_key: str = ""
+    scheme: str = "https"
+    hostname: str = ""
+    port: int = 443
+    enabled: bool = True
+    notes: str = ""
+    first_seen: str = ""
+    last_seen: str = ""
+
+
+class ManualTargetListResponse(BaseModel):
+    results: list[ManualTarget] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 500
+    offset: int = 0
+
+
+class ManualTargetBulkRequest(BaseModel):
+    """Multi-line address paste. Each line is sanitized to scheme://host[:port]."""
+
+    urls: str = Field(
+        ...,
+        description="Newline-separated URLs/hosts (paths are stripped)",
+        max_length=100_000,
+    )
+    notes: str = ""
+    # When true, replace the entire enabled set with this paste (delete missing).
+    replace: bool = False
+
+
+class ManualTargetBulkResponse(BaseModel):
+    added: int = 0
+    updated: int = 0
+    rejected: list[str] = Field(default_factory=list)
+    targets: list[ManualTarget] = Field(default_factory=list)
+
+
+class ManualTargetDeleteRequest(BaseModel):
+    urls: list[str] = Field(default_factory=list, max_length=500)
+
+
+class ManualTargetDeleteResponse(BaseModel):
     deleted: int = 0
 
 

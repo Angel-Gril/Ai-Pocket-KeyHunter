@@ -124,6 +124,7 @@ def create_app() -> FastAPI:
         honeypot,
         key,
         keys,
+        manual_targets,
         runs,
         scan,
         system,
@@ -142,6 +143,7 @@ def create_app() -> FastAPI:
         scan,
         cve,
         honeypot,
+        manual_targets,
         settings_router,
         system,
     ):

@@ -34,6 +34,13 @@ def _builtin_sources(cfg: Settings) -> dict[str, DiscoverySource]:
         sources["github"] = GitHubSource()
     except ImportError:
         pass
+    # Manual targets are always registered; is_configured() gates empty lists.
+    try:
+        from aipocket.discovery.manual_source import ManualSource
+
+        sources["manual"] = ManualSource()
+    except ImportError:
+        pass
     return sources
 
 

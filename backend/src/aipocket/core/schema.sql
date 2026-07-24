@@ -339,3 +339,21 @@ CREATE TABLE IF NOT EXISTS honeypot_sites (
 CREATE INDEX IF NOT EXISTS idx_honeypot_sites_last_seen ON honeypot_sites (last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_honeypot_sites_reason ON honeypot_sites (reason);
 CREATE INDEX IF NOT EXISTS idx_honeypot_sites_source ON honeypot_sites (source);
+
+-- User-supplied relay / gateway origins for manual (non-FOFA/Shodan/GitHub) scans.
+-- URL is the canonical scheme://host[:port] form after sanitization (no path).
+CREATE TABLE IF NOT EXISTS manual_targets (
+    url          TEXT PRIMARY KEY,               -- https://web.ymocode.com
+    host_key     TEXT NOT NULL,                  -- hostname:port (scheme-agnostic)
+    scheme       TEXT NOT NULL DEFAULT 'https',
+    hostname     TEXT NOT NULL DEFAULT '',
+    port         INTEGER NOT NULL DEFAULT 443,
+    enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+    notes        TEXT NOT NULL DEFAULT '',
+    first_seen   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    record       JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_manual_targets_enabled ON manual_targets (enabled);
+CREATE INDEX IF NOT EXISTS idx_manual_targets_last_seen ON manual_targets (last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_manual_targets_host_key ON manual_targets (host_key);

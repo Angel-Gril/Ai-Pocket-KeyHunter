@@ -486,6 +486,17 @@ async def _run_scan_inner(
                     )
                 )
                 raise RuntimeError(detail)
+            if sources == {"manual"}:
+                detail = (
+                    source_errors[0]
+                    if source_errors
+                    else (
+                        "Manual source requested but no enabled targets are stored. "
+                        "Add relay/gateway URLs on the「自定义狩猎」page "
+                        "(requires DATABASE_URL)."
+                    )
+                )
+                raise RuntimeError(detail)
             # Keys may be set but every source threw (e.g. PG reject of NUL in
             # Shodan banners). Prefer the real failure over a "not configured"
             # message that sends operators hunting for missing env vars.
@@ -497,7 +508,8 @@ async def _run_scan_inner(
                 )
             raise RuntimeError(
                 "No discovery source configured. Set FOFA_KEYS and/or SHODAN_KEYS "
-                "(and optionally GITHUB_TOKENS + DATABASE_URL) in .env"
+                "(and optionally GITHUB_TOKENS + DATABASE_URL) in .env, "
+                "or add manual targets for source=manual"
             )
 
         github_obs_metric = hits_by_source.get("github", len(cred_observations))

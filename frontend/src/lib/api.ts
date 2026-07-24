@@ -4,7 +4,7 @@ import { clearToken, getToken } from "@/lib/auth-storage"
 /* Types — mirror src/aipocket/web/schemas.py and models.py            */
 /* ------------------------------------------------------------------ */
 
-export type ScanSourceItem = "fofa" | "shodan" | "github"
+export type ScanSourceItem = "fofa" | "shodan" | "github" | "manual"
 export type ScanSource = ScanSourceItem | "all"
 export type ScanMode = "full" | "incremental"
 export type GitHubPackId =
@@ -426,6 +426,38 @@ export interface HoneypotUpdateRequest {
   notes?: string | null
 }
 
+export interface ManualTarget {
+  url: string
+  host_key: string
+  scheme: string
+  hostname: string
+  port: number
+  enabled: boolean
+  notes: string
+  first_seen: string
+  last_seen: string
+}
+
+export interface ManualTargetListResponse {
+  results: ManualTarget[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface ManualTargetBulkRequest {
+  urls: string
+  notes?: string
+  replace?: boolean
+}
+
+export interface ManualTargetBulkResponse {
+  added: number
+  updated: number
+  rejected: string[]
+  targets: ManualTarget[]
+}
+
 /* ------------------------------------------------------------------ */
 /* Core request machinery                                              */
 /* ------------------------------------------------------------------ */
@@ -670,6 +702,28 @@ export const api = {
     request<{ deleted: number }>("/honeypot/bulk-delete", {
       method: "POST",
       body: { host_keys: hostKeys },
+    }),
+
+  // Manual scan targets (relay / gateway URLs for source=manual)
+  getManualTargets: (params?: { enabled_only?: boolean; limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams()
+    if (params?.enabled_only) sp.set("enabled_only", "true")
+    if (params?.limit != null) sp.set("limit", String(params.limit))
+    if (params?.offset != null) sp.set("offset", String(params.offset))
+    const qs = sp.toString()
+    return request<ManualTargetListResponse>(`/manual-targets${qs ? `?${qs}` : ""}`)
+  },
+  saveManualTargets: (body: ManualTargetBulkRequest) =>
+    request<ManualTargetBulkResponse>("/manual-targets", { method: "POST", body }),
+  deleteManualTarget: (url: string) =>
+    request<{ deleted: number }>(
+      `/manual-targets?url=${encodeURIComponent(url)}`,
+      { method: "DELETE" },
+    ),
+  bulkDeleteManualTargets: (urls: string[]) =>
+    request<{ deleted: number }>("/manual-targets/bulk-delete", {
+      method: "POST",
+      body: { urls },
     }),
 
   // Settings

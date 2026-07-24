@@ -505,11 +505,21 @@ export function ScanConsole({
           <div className="flex items-center gap-3.5">
             <span className="font-mono text-xs text-text-muted">数据源</span>
             <span className="inline-flex items-center gap-2 rounded-[4px] border border-accent bg-accent-dim px-4 py-[9px] text-[13px] font-semibold text-accent">
-              <GitBranch className="size-[15px]" />
-              GitHub
+              {fixedSource === "manual" ? (
+                <Server className="size-[15px]" />
+              ) : (
+                <GitBranch className="size-[15px]" />
+              )}
+              {fixedSource === "manual"
+                ? "自定义狩猎"
+                : fixedSource === "github"
+                  ? "GitHub"
+                  : fixedSource}
             </span>
             <span className="font-mono text-[11px] text-text-muted">
-              本页固定为 source=github · 组合扫描请用「执行扫描」多选数据源
+              {fixedSource === "manual"
+                ? "本页固定为 source=manual · 跳过 FOFA / Shodan / GitHub · 直接探测已入库地址"
+                : `本页固定为 source=${fixedSource} · 组合扫描请用「执行扫描」多选数据源`}
             </span>
             {running ? (
               <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-[11px] text-text-muted">
