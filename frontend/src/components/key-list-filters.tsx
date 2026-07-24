@@ -29,17 +29,59 @@ export interface KeyListViewRow {
   effectiveBalance?: string
 }
 
-/** Parse a display balance (`$12.34`, `12.34`, `N/A`, …) into a number for sorting. */
-export function parseBalanceNumber(raw?: string): number | null {
+/**
+ * Approximate CNY→USD for client-side ranking only.
+ * Matches the legacy backend conversion rate in balance.py (CNY / 7.2).
+ * Not live FX — only used so mixed $ / ¥ lists rank sensibly.
+ */
+export const CNY_TO_USD_SORT_RATE = 7.2
+
+const NON_NUMERIC_BALANCE = new Set(["n/a", "na", "—", "-", "unknown", ""])
+
+export type ParsedBalance = {
+  amount: number
+  /** Detected unit; bare numbers default to USD (display path prefixes `$`). */
+  currency: "USD" | "CNY"
+}
+
+/**
+ * Parse a display balance string into amount + currency.
+ * Supports `$12.34`, `12.34`, `¥110`, `110 CNY`, `CNY 110`, `110 元`, `N/A`, …
+ */
+export function parseBalance(raw?: string): ParsedBalance | null {
   if (!raw) return null
-  const cleaned = raw.replace(/[$,\s]/g, "").trim()
-  if (!cleaned) return null
-  const lower = cleaned.toLowerCase()
-  if (lower === "n/a" || lower === "na" || lower === "—" || lower === "-" || lower === "unknown") {
-    return null
-  }
-  const n = Number(cleaned)
-  return Number.isFinite(n) ? n : null
+  const s = raw.trim()
+  if (!s) return null
+  if (NON_NUMERIC_BALANCE.has(s.toLowerCase())) return null
+
+  const hasCny = /[¥￥]|cny|rmb|元|人民币/i.test(s)
+  const hasUsd = /\$|usd|美元/i.test(s)
+
+  // Allow thousand separators: "1,234.56"
+  const match = s.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/)
+  if (!match) return null
+  const amount = Number(match[0])
+  if (!Number.isFinite(amount)) return null
+
+  // Prefer explicit CNY markers when both appear (unusual); otherwise USD.
+  if (hasCny && !hasUsd) return { amount, currency: "CNY" }
+  return { amount, currency: "USD" }
+}
+
+/**
+ * USD-equivalent value for multi-currency ranking.
+ * CNY amounts are converted with {@link CNY_TO_USD_SORT_RATE}; unparseable → null.
+ */
+export function balanceSortValue(raw?: string): number | null {
+  const parsed = parseBalance(raw)
+  if (!parsed) return null
+  if (parsed.currency === "CNY") return parsed.amount / CNY_TO_USD_SORT_RATE
+  return parsed.amount
+}
+
+/** @deprecated Prefer {@link balanceSortValue}; kept as alias for call sites/tests. */
+export function parseBalanceNumber(raw?: string): number | null {
+  return balanceSortValue(raw)
 }
 
 function matchesSearch(row: KeyListViewRow, needle: string): boolean {
@@ -112,10 +154,11 @@ export function useKeyListView(
     if (balanceSort !== "none") {
       const dir = balanceSort === "high-to-low" ? -1 : 1
       items = [...items].sort((a, b) => {
-        const na = parseBalanceNumber(a.effectiveBalance)
-        const nb = parseBalanceNumber(b.effectiveBalance)
+        // Compare USD-equivalent so $ and ¥ (CNY) rank together under filters.
+        const na = balanceSortValue(a.effectiveBalance)
+        const nb = balanceSortValue(b.effectiveBalance)
         if (na === null && nb === null) return a.originalIndex - b.originalIndex
-        if (na === null) return 1
+        if (na === null) return 1 // unknown / N/A sink to bottom
         if (nb === null) return -1
         if (na !== nb) return (na - nb) * dir
         return a.originalIndex - b.originalIndex

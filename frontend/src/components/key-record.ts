@@ -29,12 +29,20 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {}
 }
 
-/** Normalise a balance string into a `$`-prefixed amount when it looks numeric. */
+/**
+ * Normalise a balance string for display.
+ * - Keep existing currency markers (`$`, `¥`/`￥`, `CNY`, `USD`, `元`, …)
+ * - Bare numbers default to `$` (USD) — backend writes `¥…` for CNY native cash
+ */
 export function formatBalance(raw?: string): string | undefined {
   if (!raw) return undefined
-  if (raw.startsWith("$")) return raw
-  if (/^-?\d/.test(raw)) return `$${raw}`
-  return raw
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+  // Already labelled — do not force `$` onto CNY / other units.
+  // Note: avoid `\b` around CJK (元/人民币); word-boundary is ASCII-oriented.
+  if (/[\$¥￥]|cny|usd|rmb|元|人民币|美元/i.test(trimmed)) return trimmed
+  if (/^-?\d/.test(trimmed)) return `$${trimmed}`
+  return trimmed
 }
 
 const STATE_LABELS: Record<string, { variant: KeyRowStatus["variant"]; label: string }> = {

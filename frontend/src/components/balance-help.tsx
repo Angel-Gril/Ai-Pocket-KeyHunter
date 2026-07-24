@@ -53,8 +53,15 @@ export function BalanceHelpButton() {
           <Section title="BALANCE 列怎么读">
             <p>
               <strong className="text-text-primary">第一行数字</strong>
-              （如 <code className="font-mono text-[11px]">$14.50</code>
-              ）= 查到的剩余额度（美元）。
+              = 查到的剩余额度。单位因厂商而异：
+              <code className="font-mono text-[11px]">$14.50</code> 为美元，
+              <code className="font-mono text-[11px]">¥110</code> 为人民币（如 DeepSeek 国内、Kimi
+              国内）。
+            </p>
+            <p>
+              <strong className="text-text-primary">余额排序</strong>
+              会把人民币按约 7.2 折算成美元再比大小（仅排序用，非实时汇率），避免
+              $ 与 ¥ 混排时按原始数字乱序。
             </p>
             <p>
               <strong className="text-text-primary">N/A</strong> = 当前 key
