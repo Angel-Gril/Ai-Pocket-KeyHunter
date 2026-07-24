@@ -7,8 +7,8 @@ import { cn } from "@/lib/utils"
  * background is a low-opacity wash of the same hue, so it reads on both the
  * light and dark themes without needing per-mode overrides.
  *
- * Keep this vocabulary in sync with backend `ProviderName`
- * (`backend/src/aipocket/core/models.py`).
+ * Keep this vocabulary in sync with the Rust provider registry
+ * (`crates/aipocket-prober/src/provider.rs`).
  */
 export type ProviderName =
   | "openai"
