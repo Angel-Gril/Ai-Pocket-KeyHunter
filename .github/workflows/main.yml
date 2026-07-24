@@ -1,0 +1,87 @@
+name: main
+
+on:
+  push:
+    branches: [main, refactor-rs]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: aipocket
+          POSTGRES_PASSWORD: aipocket
+          POSTGRES_DB: aipocket
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aipocket -d aipocket"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://aipocket:aipocket@localhost:5432/aipocket
+      DEDUP_REDIS_URL: redis://localhost:6379/0
+      TEST_DATABASE_URL: postgresql://aipocket:aipocket@localhost:5432/aipocket
+      TEST_REDIS_URL: redis://localhost:6379/1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo test -p aipocket-db --tests -- --ignored
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # scanner.rs is intentionally covered (not ignored). Keep only binary assembly /
+      # large generated route tables out of the denominator.
+      - run: cargo llvm-cov --workspace --lcov --output-path lcov.info --ignore-filename-regex 'crates/aipocket/src/(main|maintenance)\.rs|crates/aipocket-api/src/routes\.rs' -- --include-ignored
+      - name: Enforce >85% line coverage
+        run: cargo llvm-cov --workspace --summary-only --fail-under-lines 86 --ignore-filename-regex 'crates/aipocket/src/(main|maintenance)\.rs|crates/aipocket-api/src/routes\.rs' -- --include-ignored
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-lcov
+          path: lcov.info
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test -- --run
+      - run: pnpm build
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [rust, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t aipocket-backend .
+      - run: docker build -t aipocket-frontend frontend
