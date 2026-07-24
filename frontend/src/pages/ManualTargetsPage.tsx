@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronDown, Loader2, Save, Server, Trash2 } from "lucide-react"
+import { ChevronDown, Loader2, Plus, Save, Server, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { api, ApiError, type ManualTarget } from "@/lib/api"
@@ -30,8 +30,9 @@ function readPanelOpen(): boolean {
 /**
  * Custom hunt console — user-supplied relay/gateway URLs.
  *
- * Persist cleaned origins (scheme://host[:port], path stripped), then start the
- * same global scan singleton with source=manual — no FOFA / Shodan / GitHub.
+ * Single collapsible panel for list + add/edit: view/delete stored
+ * origins, paste new ones into the same surface, then start the global
+ * scan singleton with source=manual.
  */
 export default function ManualTargetsPage() {
   const queryClient = useQueryClient()
@@ -47,15 +48,6 @@ export default function ManualTargetsPage() {
   const targets = listQuery.data?.results ?? []
   const storedTotal = listQuery.data?.total ?? targets.length
 
-  // Seed the textarea from stored targets once loaded (so users see prior input).
-  useEffect(() => {
-    if (listQuery.isSuccess && targets.length > 0 && draft === "") {
-      setDraft(targets.map((t) => t.url).join("\n"))
-    }
-    // Only seed when the list first arrives with empty draft.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot seed
-  }, [listQuery.isSuccess, listQuery.dataUpdatedAt])
-
   useEffect(() => {
     try {
       window.localStorage.setItem(TARGETS_PANEL_KEY, panelOpen ? "1" : "0")
@@ -67,9 +59,11 @@ export default function ManualTargetsPage() {
   const saveMutation = useMutation({
     mutationFn: (replace: boolean) =>
       api.saveManualTargets({ urls: draft, replace }),
-    onSuccess: (res) => {
+    onSuccess: (res, replace) => {
       void queryClient.invalidateQueries({ queryKey: ["manual-targets"] })
-      const parts = [`新增 ${res.added}`, `更新 ${res.updated}`]
+      const parts = replace
+        ? [`替换为 ${res.targets.length} 条`, `新增 ${res.added}`, `更新 ${res.updated}`]
+        : [`新增 ${res.added}`, `更新 ${res.updated}`]
       if (res.rejected.length > 0) {
         parts.push(`拒绝 ${res.rejected.length}`)
         toast.warning(`已保存 · ${parts.join(" · ")}`, {
@@ -81,10 +75,8 @@ export default function ManualTargetsPage() {
       } else {
         toast.success(`已保存 · ${parts.join(" · ")}`)
       }
-      // Reflect canonical URLs back into the editor.
-      if (res.targets.length > 0) {
-        setDraft(res.targets.map((t) => t.url).join("\n"))
-      }
+      // Input is for new lines only — clear after successful write.
+      setDraft("")
       setSelected(new Set())
     },
     onError: (err) => {
@@ -101,13 +93,6 @@ export default function ManualTargetsPage() {
       void queryClient.invalidateQueries({ queryKey: ["manual-targets"] })
       toast.success(`已删除 ${res.deleted} 条`)
       setSelected(new Set())
-      // Drop deleted lines from draft when possible.
-      if (targets.length > 0) {
-        const remaining = targets
-          .filter((t) => !selected.has(t.url))
-          .map((t) => t.url)
-        setDraft(remaining.join("\n"))
-      }
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 404) {
@@ -166,8 +151,8 @@ export default function ManualTargetsPage() {
             </div>
             <p className="mt-[3px] font-mono text-xs text-text-muted">
               {panelOpen
-                ? "填入中转站 / 网关地址（每行一个）· 自动清洗 path · 入库后可重复扫描 · 可域名反查 FOFA / Shodan 补指纹"
-                : "点击展开编辑地址列表 · source=manual · 可域名反查 FOFA / Shodan"}
+                ? "统一管理中转站 / 网关地址 · 自动清洗 path · 入库后可重复扫描 · 可域名反查 FOFA / Shodan 补指纹"
+                : "点击展开管理地址 · source=manual · 可域名反查 FOFA / Shodan"}
             </p>
           </div>
           <span
@@ -186,60 +171,13 @@ export default function ManualTargetsPage() {
         </button>
 
         {panelOpen ? (
-          <div id="manual-targets-panel" className="mt-4 grid gap-4 lg:grid-cols-2">
-            <div className="flex flex-col gap-2">
-              <label
-                htmlFor="manual-urls"
-                className="font-mono text-[11px] tracking-[0.3px] text-text-muted"
-              >
-                地址列表（每行一个）
-              </label>
-              <textarea
-                id="manual-urls"
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder={"https://web.example.com\nhttps://web1.example.com\nhttps://web2.example.com"}
-                spellCheck={false}
-                className={cn(
-                  "min-h-[140px] resize-y rounded-md border border-border-primary bg-surface-raised",
-                  "px-3 py-2.5 font-mono text-[13px] leading-relaxed text-text-primary",
-                  "placeholder:text-text-muted focus:border-accent focus:outline-none",
-                )}
-              />
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  disabled={saveMutation.isPending || lineCount === 0}
-                  onClick={() => saveMutation.mutate(false)}
-                  className="inline-flex items-center gap-1.5 rounded-[4px] bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-text transition-opacity hover:opacity-90 disabled:opacity-50"
-                >
-                  {saveMutation.isPending ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <Save className="size-3.5" />
-                  )}
-                  保存 / 追加
-                </button>
-                <button
-                  type="button"
-                  disabled={saveMutation.isPending || lineCount === 0}
-                  onClick={() => saveMutation.mutate(true)}
-                  className="inline-flex items-center gap-1.5 rounded-[4px] border border-border-primary bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
-                >
-                  替换全部
-                </button>
-                <span className="font-mono text-[11px] text-text-muted">
-                  {lineCount > 0 ? `${lineCount} 行待保存` : "粘贴后保存入库"}
-                  {" · "}
-                  path / query 会被剥离（如 /login/xxx）
-                </span>
-              </div>
-            </div>
-
-            <div className="flex min-h-0 flex-col gap-2">
-              <div className="flex items-center justify-between">
+          <div id="manual-targets-panel" className="mt-4">
+            <div className="overflow-hidden rounded-md border border-border-primary bg-surface-raised">
+              {/* Toolbar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
                 <span className="font-mono text-[11px] tracking-[0.3px] text-text-muted">
-                  已入库（{storedTotal}）
+                  地址列表
+                  <span className="ml-1.5 text-text-secondary">{storedTotal}</span>
                 </span>
                 {selected.size > 0 ? (
                   <button
@@ -255,33 +193,41 @@ export default function ManualTargetsPage() {
                     )}
                     删除选中 ({selected.size})
                   </button>
-                ) : null}
+                ) : (
+                  <span className="font-mono text-[11px] text-text-muted">
+                    勾选可批量删除 · path / query 入库时剥离
+                  </span>
+                )}
               </div>
-              <div className="max-h-[180px] overflow-y-auto rounded-md border border-border-primary bg-surface-raised">
+
+              {/* Stored list */}
+              <div className="max-h-[220px] overflow-y-auto">
                 {listQuery.isLoading ? (
                   <div className="flex items-center justify-center gap-2 py-10 text-text-muted">
                     <Loader2 className="size-4 animate-spin" />
                     <span className="font-mono text-xs">加载中…</span>
                   </div>
                 ) : targets.length === 0 ? (
-                  <div className="flex flex-col items-center gap-2 py-10 text-text-muted">
+                  <div className="flex flex-col items-center gap-2 py-8 text-text-muted">
                     <Server className="size-5 opacity-50" />
-                    <span className="font-mono text-xs">暂无入库地址</span>
+                    <span className="font-mono text-xs">暂无地址，在下方粘贴后入库</span>
                   </div>
                 ) : (
                   <table className="w-full text-left text-[12px]">
-                    <thead className="sticky top-0 bg-surface-raised">
+                    <thead className="sticky top-0 z-10 bg-surface-raised">
                       <tr className="border-b border-border-subtle font-mono text-[11px] text-text-muted">
-                        <th className="w-8 px-2 py-2">
+                        <th className="w-8 px-3 py-2">
                           <input
                             type="checkbox"
-                            checked={selected.size === targets.length && targets.length > 0}
+                            checked={
+                              selected.size === targets.length && targets.length > 0
+                            }
                             onChange={toggleAll}
                             aria-label="全选"
                           />
                         </th>
                         <th className="px-2 py-2 font-medium">URL</th>
-                        <th className="px-2 py-2 font-medium">更新</th>
+                        <th className="w-[110px] px-2 py-2 font-medium">更新</th>
                         <th className="w-10 px-2 py-2" />
                       </tr>
                     </thead>
@@ -291,7 +237,7 @@ export default function ManualTargetsPage() {
                           key={t.url}
                           className="border-b border-border-subtle last:border-0 hover:bg-surface-inset/50"
                         >
-                          <td className="px-2 py-1.5">
+                          <td className="px-3 py-1.5">
                             <input
                               type="checkbox"
                               checked={selected.has(t.url)}
@@ -299,7 +245,10 @@ export default function ManualTargetsPage() {
                               aria-label={`选择 ${t.url}`}
                             />
                           </td>
-                          <td className="max-w-[1px] truncate px-2 py-1.5 font-mono text-text-primary">
+                          <td
+                            className="max-w-[1px] truncate px-2 py-1.5 font-mono text-text-primary"
+                            title={t.url}
+                          >
                             {t.url}
                           </td>
                           <td className="whitespace-nowrap px-2 py-1.5 font-mono text-text-muted">
@@ -321,6 +270,61 @@ export default function ManualTargetsPage() {
                     </tbody>
                   </table>
                 )}
+              </div>
+
+              {/* Add / replace — same surface */}
+              <div className="border-t border-border-subtle bg-surface-inset/30 px-3 py-3">
+                <label
+                  htmlFor="manual-urls"
+                  className="mb-1.5 flex items-center gap-1.5 font-mono text-[11px] tracking-[0.3px] text-text-muted"
+                >
+                  <Plus className="size-3" />
+                  新增地址（每行一个）
+                </label>
+                <textarea
+                  id="manual-urls"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  placeholder={
+                    "https://web.example.com\nhttps://web1.example.com\nhttps://web2.example.com"
+                  }
+                  spellCheck={false}
+                  rows={3}
+                  className={cn(
+                    "w-full resize-y rounded-md border border-border-primary bg-surface-raised",
+                    "px-3 py-2 font-mono text-[13px] leading-relaxed text-text-primary",
+                    "placeholder:text-text-muted focus:border-accent focus:outline-none",
+                  )}
+                />
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={saveMutation.isPending || lineCount === 0}
+                    onClick={() => saveMutation.mutate(false)}
+                    className="inline-flex items-center gap-1.5 rounded-[4px] bg-accent px-3 py-1.5 text-[12px] font-semibold text-accent-text transition-opacity hover:opacity-90 disabled:opacity-50"
+                  >
+                    {saveMutation.isPending ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Save className="size-3.5" />
+                    )}
+                    保存 / 追加
+                  </button>
+                  <button
+                    type="button"
+                    disabled={saveMutation.isPending || lineCount === 0}
+                    onClick={() => saveMutation.mutate(true)}
+                    className="inline-flex items-center gap-1.5 rounded-[4px] border border-border-primary bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
+                    title="用上方输入完整替换已入库列表"
+                  >
+                    替换全部
+                  </button>
+                  <span className="font-mono text-[11px] text-text-muted">
+                    {lineCount > 0 ? `${lineCount} 行待保存` : "粘贴后保存入库"}
+                    {" · "}
+                    path / query 会被剥离（如 /login/xxx）
+                  </span>
+                </div>
               </div>
             </div>
           </div>
