@@ -1,6 +1,8 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: aipocket-backend
     volumes:
       - /data/aipocket:/data/aipocket
@@ -32,7 +34,9 @@ services:
   # Optional periodic scanner. Enable with:
   #   docker compose --profile watch up -d backend-watch
   backend-watch:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: aipocket-watch
     profiles: ["watch"]
     volumes:
@@ -51,25 +55,6 @@ services:
         condition: service_healthy
     command: ["watch"]
 
-  # One-shot backfill of historical JSONL/JSON into PostgreSQL. Run with:
-  #   docker compose --profile import run --rm backend-import
-  backend-import:
-    build: ./backend
-    profiles: ["import"]
-    volumes:
-      - ./results:/app/results:ro
-    env_file:
-      - .env
-    environment:
-      - RESULTS_DIR=/data/aipocket/results
-      - DEDUP_REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://aipocket:aipocket@postgres:5432/aipocket
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-    entrypoint: ["/app/entrypoint.sh", "uv", "run", "python", "scripts/oneoff/import_jsonl_to_pg.py"]
-    command: ["--results", "/app/results"]
 
   postgres:
     image: postgres:16-alpine
