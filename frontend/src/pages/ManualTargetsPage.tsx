@@ -148,7 +148,7 @@ export default function ManualTargetsPage() {
               id="manual-urls"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder={"https://web.ymocode.com\nhttps://web1.ymocode.com\nhttps://web2.ymocode.com"}
+              placeholder={"https://web.example.com\nhttps://web1.example.com\nhttps://web2.example.com"}
               spellCheck={false}
               className={cn(
                 "min-h-[140px] resize-y rounded-md border border-border-primary bg-surface-raised",
