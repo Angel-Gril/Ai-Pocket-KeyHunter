@@ -177,6 +177,16 @@ impl Scanner {
                     checkpoints,
                     ..source_budgets
                 };
+                events
+                    .send(ScanEvent::Log(format!(
+                        "发现 · 开始 {} · 计划查询 {} 条",
+                        source.name(),
+                        source_budgets
+                            .selected_queries
+                            .as_ref()
+                            .map_or(query_ids.len(), Vec::len)
+                    )))
+                    .ok();
                 let fetched = tokio::select! {
                     _ = cancel.cancelled() => {
                         return self.interrupt(&run_id, progress, lease, &events).await;
@@ -260,6 +270,13 @@ impl Scanner {
                                 .ok();
                         }
                         events.send(ScanEvent::Progress(progress.clone())).ok();
+                        events
+                            .send(ScanEvent::Log(format!(
+                                "发现 · 完成 {} · 累计原始命中 {}",
+                                source.name(),
+                                progress.raw_hits
+                            )))
+                            .ok();
                     }
                     Err(error) => {
                         events
@@ -595,6 +612,7 @@ impl Scanner {
             .finish_run(&run_id, "finished", &progress, "")
             .await?;
         info!(%run_id,"scan completed");
+        events.send(ScanEvent::Progress(progress.clone())).ok();
         events
             .send(ScanEvent::Finished {
                 run_id: run_id.clone(),

@@ -16,8 +16,7 @@ async fn manager_enforces_single_scan_and_replays_logs() {
             .await
             .is_err()
     );
-    let consumer = tokio::spawn(manager.clone().consume(rx));
-    drop(stopped);
+    let consumer = tokio::spawn(manager.clone().consume(rx, Default::default(), stopped));
     tx.send(ScanEvent::Started {
         run_id: "run_2026_07_24_00-00-00".into(),
     })
@@ -43,8 +42,13 @@ async fn manager_enforces_single_scan_and_replays_logs() {
     assert_eq!(status.progress.raw_hits, 3);
     let logs = manager.logs_since(0).await;
     assert_eq!(logs.len(), 2);
-    assert_eq!(logs[0].line, "two");
-    assert_eq!(logs[1].line, "three");
+    assert_eq!(logs[0].line, "three");
+    assert_eq!(logs[1].line, "扫描完成 · run_2026_07_24_00-00-00");
+    let transcript = manager.log_text().await;
+    assert!(transcript.contains("扫描请求已接受 · 数据源 manual · 模式 增量"));
+    assert!(transcript.contains("阶段 · 发现"));
+    assert!(transcript.contains("进度 · 原始命中 3"));
+    assert!(transcript.contains("扫描完成 · run_2026_07_24_00-00-00"));
 }
 
 #[tokio::test]
@@ -54,7 +58,7 @@ async fn stop_waits_until_the_scan_task_exits() {
         .start_channel("fofa".into(), ScanMode::Full)
         .await
         .unwrap();
-    let consumer = tokio::spawn(manager.clone().consume(rx));
+    let consumer = tokio::spawn(manager.clone().consume(rx, Default::default(), stopped));
     let scan = tokio::spawn(async move {
         cancel.cancelled().await;
         tx.send(ScanEvent::Interrupted {
@@ -63,7 +67,6 @@ async fn stop_waits_until_the_scan_task_exits() {
         })
         .unwrap();
         drop(tx);
-        stopped.send(()).unwrap();
     });
 
     assert!(manager.stop().await);

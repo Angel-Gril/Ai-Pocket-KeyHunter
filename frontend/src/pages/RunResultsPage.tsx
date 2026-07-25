@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowLeft, Loader2, RotateCcw } from "lucide-react"
+import { ArrowLeft, FileText, Loader2, RotateCcw } from "lucide-react"
 import { toast } from "sonner"
 import {
   api,
@@ -16,6 +16,7 @@ import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/component
 import { useKeyTableSizing } from "@/components/key-table-columns"
 import { extractKeyFields, formatBalance } from "@/components/key-record"
 import { Button } from "@/components/ui/button"
+import { RunLogDialog } from "@/components/run-log-dialog"
 import { cn, copyToClipboard } from "@/lib/utils"
 
 type Revealed = { apikey: string; apiurl: string }
@@ -55,6 +56,7 @@ export default function RunResultsPage() {
   const [exporting, setExporting] = useState(false)
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
+  const [logOpen, setLogOpen] = useState(false)
   /** Local flag so the button stays busy between POST and first poll. */
   const [retryStarting, setRetryStarting] = useState(false)
   /**
@@ -79,6 +81,11 @@ export default function RunResultsPage() {
     enabled: Boolean(runId),
   })
   const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.getRuns })
+  const logQuery = useQuery({
+    queryKey: ["run", runId, "log"],
+    queryFn: () => api.getRunLog(runId!),
+    enabled: Boolean(runId) && logOpen,
+  })
   const gptFailedQuery = useQuery({
     queryKey: ["run", runId, "gpt-failed"],
     queryFn: () => api.getGptFailed(runId!),
@@ -538,6 +545,12 @@ export default function RunResultsPage() {
               </button>
             )
           })}
+          {summary?.has_log ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setLogOpen(true)}>
+              <FileText className="size-3.5" />
+              运行日志
+            </Button>
+          ) : null}
 
           {showRetry ? (
             <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
@@ -617,6 +630,15 @@ export default function RunResultsPage() {
         result={chatResult}
         onSend={handleSendChat}
       />
+      <RunLogDialog
+        runId={runId ?? ""}
+        open={logOpen}
+        onOpenChange={setLogOpen}
+        log={logQuery.data}
+        loading={logQuery.isLoading}
+        error={logQuery.error}
+      />
+
     </div>
   )
 }

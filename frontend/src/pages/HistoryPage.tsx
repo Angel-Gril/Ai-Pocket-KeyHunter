@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronRight, Clock3, Inbox, Loader2, Plus, Search, Trash2 } from "lucide-react"
+import { ChevronRight, Clock3, FileText, Inbox, Loader2, Plus, Search, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { api, type RunDay, type RunSummary } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { RunLogDialog } from "@/components/run-log-dialog"
 import { cn } from "@/lib/utils"
 
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
@@ -55,8 +56,14 @@ function Stat({
 function RunRow({
   run,
   onDelete,
+  onLog,
   deleting,
-}: Readonly<{ run: RunSummary; onDelete: (run: RunSummary) => void; deleting: boolean }>) {
+}: Readonly<{
+  run: RunSummary
+  onDelete: (run: RunSummary) => void
+  onLog: (run: RunSummary) => void
+  deleting: boolean
+}>) {
   const navigate = useNavigate()
   return (
     <div className="group flex flex-col gap-3 rounded-md border border-border-primary bg-surface-raised p-4 transition-colors hover:bg-surface-overlay sm:flex-row sm:items-center sm:gap-[18px] sm:px-[18px]">
@@ -84,6 +91,17 @@ function RunRow({
         </div>
         <ChevronRight className="hidden size-[17px] shrink-0 text-text-secondary sm:block" />
       </button>
+      {run.has_log ? (
+        <Button
+          variant="outline"
+          size="icon-sm"
+          className="self-end"
+          onClick={() => onLog(run)}
+          aria-label={`查看 ${run.run_id} 日志`}
+        >
+          <FileText />
+        </Button>
+      ) : null}
       {run.deletable ? (
         <Button variant="destructive" size="icon-sm" className="self-end" disabled={deleting} onClick={() => onDelete(run)} aria-label={`删除 ${run.run_id}`}>
           {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
@@ -104,6 +122,7 @@ function HistoryContent({
   days,
   hasSearch,
   onScan,
+  onLog,
   onDelete,
   deletingRunId,
 }: Readonly<{
@@ -114,6 +133,7 @@ function HistoryContent({
   hasSearch: boolean
   onScan: () => void
   onDelete: (run: RunSummary) => void
+  onLog: (run: RunSummary) => void
   deletingRunId: string
 }>) {
   if (isPending) {
@@ -165,7 +185,13 @@ function HistoryContent({
           </div>
           <div className="flex flex-col gap-3">
             {day.runs.map((run) => (
-              <RunRow key={run.run_id} run={run} onDelete={onDelete} deleting={deletingRunId === run.run_id} />
+              <RunRow
+                key={run.run_id}
+                run={run}
+                onDelete={onDelete}
+                onLog={onLog}
+                deleting={deletingRunId === run.run_id}
+              />
             ))}
           </div>
         </section>
@@ -178,6 +204,12 @@ export default function HistoryPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [deletingRunId, setDeletingRunId] = useState("")
+  const [logRun, setLogRun] = useState<RunSummary | null>(null)
+  const logQuery = useQuery({
+    queryKey: ["run", logRun?.run_id, "log"],
+    queryFn: () => api.getRunLog(logRun!.run_id),
+    enabled: logRun !== null,
+  })
   const deleteMutation = useMutation({
     mutationFn: api.deleteRun,
     onSuccess: async () => {
@@ -249,9 +281,20 @@ export default function HistoryPage() {
           hasSearch={needle.length > 0}
           onScan={() => navigate("/scan")}
           onDelete={deleteEmptyRun}
+          onLog={setLogRun}
           deletingRunId={deletingRunId}
         />
       </div>
+      <RunLogDialog
+        runId={logRun?.run_id ?? ""}
+        open={logRun !== null}
+        onOpenChange={(open) => {
+          if (!open) setLogRun(null)
+        }}
+        log={logQuery.data}
+        loading={logQuery.isLoading}
+        error={logQuery.error}
+      />
     </div>
   )
 }

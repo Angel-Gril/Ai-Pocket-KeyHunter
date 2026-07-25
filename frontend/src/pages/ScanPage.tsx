@@ -44,6 +44,7 @@ import {
 
 const MAX_LINES = 200
 const POLL_MS = 2000
+const STREAM_GRACE_MS = 3000
 
 const SOURCE_ITEMS: { value: ScanSourceItem; label: string; icon: typeof Globe }[] = [
   { value: "fofa", label: "FOFA", icon: Globe },
@@ -270,23 +271,26 @@ export function ScanConsole({
     })
   }, [])
 
-  useEffect(() => {
-    lastSeqRef.current = 0
-    setLines([])
-    setPhaseFromLogs("")
-  }, [runId])
 
   useEffect(() => {
     if (!running) return
 
     let cancelled = false
     let stream: EventSource | null = null
-    let pollTimer: ReturnType<typeof setInterval> | null = null
+    let pollTimer: number | null = null
+    let streamGraceTimer: number | null = null
 
     const stopPolling = () => {
       if (pollTimer) {
         clearInterval(pollTimer)
         pollTimer = null
+      }
+    }
+
+    const stopGraceTimer = () => {
+      if (streamGraceTimer) {
+        clearTimeout(streamGraceTimer)
+        streamGraceTimer = null
       }
     }
 
@@ -303,12 +307,18 @@ export function ScanConsole({
     const startPolling = () => {
       if (pollTimer) return
       poll()
-      pollTimer = setInterval(poll, POLL_MS)
+      pollTimer = window.setInterval(poll, POLL_MS)
     }
 
+    // Poll immediately so the initial server-side lines are visible even when
+    // EventSource is still connecting or an upstream proxy delays SSE headers.
+    startPolling()
     stream = openScanLogStream(lastSeqRef.current, {
       onLog: (line) => {
-        if (!cancelled) appendLines([line])
+        if (cancelled) return
+        appendLines([line])
+        stopGraceTimer()
+        stopPolling()
       },
       onStatus: (nextState) => {
         if (!cancelled && isTerminal(nextState)) {
@@ -322,13 +332,16 @@ export function ScanConsole({
         startPolling()
       },
     })
+    // Keep the reliable polling fallback until SSE proves it can deliver data.
+    streamGraceTimer = window.setTimeout(startPolling, STREAM_GRACE_MS)
 
     return () => {
       cancelled = true
       stream?.close()
+      stopGraceTimer()
       stopPolling()
     }
-  }, [running, runId, appendLines, queryClient])
+  }, [running, runId, status?.started_at, appendLines, queryClient])
 
   useEffect(() => {
     const el = logViewRef.current
@@ -425,7 +438,12 @@ export function ScanConsole({
         enrich,
       )
     },
-    onSuccess: applyStatus,
+    onSuccess: (next) => {
+      lastSeqRef.current = 0
+      setLines([])
+      setPhaseFromLogs("")
+      applyStatus(next)
+    },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
         toast.info("扫描已在运行")

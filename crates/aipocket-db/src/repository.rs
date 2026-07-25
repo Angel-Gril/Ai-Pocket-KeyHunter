@@ -425,6 +425,17 @@ impl Repository {
             .bind(run_id).bind(state).bind(progress.raw_hits as i64).bind(progress.unique_targets as i64).bind(progress.candidates as i64).bind(progress.active_requests as i64).bind(progress.final_verified as i64).bind(progress.suspicious as i64).bind(progress.high_value_final as i64).bind(log).execute(pool).await?;
         Ok(())
     }
+    pub async fn set_run_log(&self, run_id: &str, log: &str) -> Result<()> {
+        let Some(pool) = self.pool() else {
+            return Ok(());
+        };
+        sqlx::query("UPDATE runs SET log=$2 WHERE run_id=$1")
+            .bind(run_id)
+            .bind(log)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
 
     /// Most recently started run still marked `running` (for error recovery / fail_run).
     pub async fn latest_running_run_id(&self) -> Result<Option<String>> {

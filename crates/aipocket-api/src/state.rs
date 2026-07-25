@@ -47,11 +47,12 @@ impl AppState {
             http.clone(),
         );
         let balance = BalanceService::new(http.clone());
+        let log_capacity = settings.read().await.web_log_buffer_lines.max(1);
         Ok(Self {
             settings,
             repository,
             http,
-            scan_manager: Arc::new(ScanManager::new(2000)),
+            scan_manager: Arc::new(ScanManager::new(log_capacity)),
             balance,
             scanner,
             login_failures: LoginFailures::default(),

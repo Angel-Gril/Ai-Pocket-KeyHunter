@@ -1019,12 +1019,12 @@ async fn scan_start(
         .set_options(b.github_pack_ids.clone(), b.manual_enrich.clone())
         .await;
     let manager = s.scan_manager.clone();
-    tokio::spawn(manager.consume(rx));
+    let repository = s.repository.clone();
+    tokio::spawn(manager.consume(rx, repository, stopped));
     let scanner = s.scanner.clone();
     let settings = s.settings.read().await.clone();
     let http = s.http.clone();
     tokio::spawn(async move {
-        let _stopped = stopped;
         let registry = aipocket_discovery::packs::registry();
         let selected_packs: Vec<_> =
             if b.github_pack_ids.is_empty() || b.github_pack_ids.iter().any(|v| v == "all") {
@@ -1165,19 +1165,19 @@ async fn scan_stream(
     Query(q): Query<Since>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
     verify(q.token.as_deref().unwrap_or_default(), &s).await?;
-    let replay = s
-        .scan_manager
-        .logs_since(q.since)
-        .await
-        .into_iter()
-        .map(|line| {
-            Ok(Event::default()
-                .event("log")
-                .id(line.seq.to_string())
-                .data(line.line))
-        });
-    let live = BroadcastStream::new(s.scan_manager.subscribe()).filter_map(|item| async move {
-        item.ok().map(|line| {
+    // Subscribe before replaying the buffer. Filtering by the replay high-water
+    // mark closes the otherwise possible gap between replay and live subscribe.
+    let receiver = s.scan_manager.subscribe();
+    let replay_lines = s.scan_manager.logs_since(q.since).await;
+    let replay_last = replay_lines.last().map_or(q.since, |line| line.seq);
+    let replay = replay_lines.into_iter().map(|line| {
+        Ok(Event::default()
+            .event("log")
+            .id(line.seq.to_string())
+            .data(line.line))
+    });
+    let live = BroadcastStream::new(receiver).filter_map(move |item| async move {
+        item.ok().filter(|line| line.seq > replay_last).map(|line| {
             Ok(Event::default()
                 .event("log")
                 .id(line.seq.to_string())
