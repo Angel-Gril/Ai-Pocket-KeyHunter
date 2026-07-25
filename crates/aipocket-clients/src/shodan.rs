@@ -58,15 +58,8 @@ impl ShodanClient {
                 ("page", &page.to_string()),
             ])
             .send()
-            .await?
-            .error_for_status()?;
-        let status = response.status();
-        let bytes = response.bytes().await?;
-        serde_json::from_slice(&bytes).with_context(|| {
-            let preview = String::from_utf8_lossy(&bytes);
-            let preview = preview.chars().take(200).collect::<String>();
-            format!("shodan non-json response status={status}: {preview}")
-        })
+            .await?;
+        crate::parse_json_response("shodan", response).await
     }
     pub async fn count(&self, query: &str) -> Result<i64> {
         let key = self.keys.first().context("SHODAN_KEYS not configured")?;

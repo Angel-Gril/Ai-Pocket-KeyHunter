@@ -1,5 +1,5 @@
 use aipocket_api::{AppState, auth::verify, create_app, error::ApiError};
-use aipocket_core::Settings;
+use aipocket_core::{ScanMode, Settings};
 use aipocket_db::Repository;
 use axum::{
     body::Body,
@@ -228,6 +228,72 @@ async fn logout_requires_bearer_token_and_error_conversions_are_stable() {
     assert_eq!(internal.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let converted: ApiError = anyhow::anyhow!("fixture failure").into();
     assert_eq!(converted.code, "internal_error");
+}
+
+#[tokio::test]
+async fn active_run_log_endpoint_serves_the_in_memory_transcript() {
+    let settings = Settings {
+        web_password: "test-password".into(),
+        web_jwt_secret: "test-secret-that-is-long-enough".into(),
+        ..Settings::default()
+    };
+    let state = AppState::new(settings, Repository::default())
+        .await
+        .unwrap();
+    let (_cancel, tx, rx, stopped) = state
+        .scan_manager
+        .start_channel("fofa".into(), ScanMode::Incremental)
+        .await
+        .unwrap();
+    let consumer = tokio::spawn(state.scan_manager.clone().consume(
+        rx,
+        Repository::default(),
+        stopped,
+    ));
+    tx.send(aipocket_services::ScanEvent::Started {
+        run_id: "run_live_log".into(),
+    })
+    .unwrap();
+    tx.send(aipocket_services::ScanEvent::Log(
+        "发现 · 进度 · fofa · 查询 1/23 · 第 1 页".into(),
+    ))
+    .unwrap();
+    for _ in 0..20 {
+        if state.scan_manager.status().await.run_id.as_deref() == Some("run_live_log") {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let app = create_app(state).await;
+    let login = app
+        .clone()
+        .oneshot(
+            Request::post("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"password":"test-password"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let login: Value =
+        serde_json::from_slice(&login.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let response = app
+        .oneshot(
+            Request::get("/api/runs/run_live_log/log")
+                .header(
+                    header::AUTHORIZATION,
+                    format!("Bearer {}", login["token"].as_str().unwrap()),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).contains("扫描请求已接受"));
+    drop(tx);
+    consumer.await.unwrap();
 }
 
 #[tokio::test]

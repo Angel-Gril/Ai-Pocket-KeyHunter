@@ -53,7 +53,7 @@ export function RunLogDialog({
             </pre>
           ) : (
             <div className="flex h-full items-center justify-center font-mono text-xs text-text-muted">
-              此运行没有可用日志
+              此运行暂时没有可用日志
             </div>
           )}
         </div>

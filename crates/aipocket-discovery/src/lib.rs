@@ -4,6 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
 use aipocket_core::{Credential, ScanMode};
 
@@ -45,6 +46,18 @@ pub struct QueryUsage {
     pub pack_id: String,
     pub lane: String,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DiscoveryProgress {
+    pub source: String,
+    pub query_index: usize,
+    pub query_total: usize,
+    pub page: u32,
+    pub hits: u64,
+    pub errors: usize,
+}
+
+pub type DiscoveryProgressReporter = Arc<dyn Fn(DiscoveryProgress) + Send + Sync>;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CheckpointUpdate {
     pub source: String,
@@ -88,7 +101,7 @@ pub struct SourceFetchResult {
     pub credential_observation_count: Option<u64>,
     pub spilled: bool,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct SourceBudgets {
     pub fofa: Option<usize>,
     pub shodan: Option<usize>,
@@ -96,6 +109,7 @@ pub struct SourceBudgets {
     pub github_code: Option<usize>,
     pub selected_queries: Option<Vec<String>>,
     pub checkpoints: Vec<CheckpointUpdate>,
+    pub progress: Option<DiscoveryProgressReporter>,
 }
 #[async_trait]
 pub trait DiscoverySource: Send + Sync {

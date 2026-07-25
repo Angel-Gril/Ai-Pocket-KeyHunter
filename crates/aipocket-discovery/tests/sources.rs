@@ -1,10 +1,11 @@
 use aipocket_clients::{FofaClient, GithubClient, ShodanClient};
 use aipocket_core::{ScanMode, Settings};
 use aipocket_discovery::{
-    DiscoverySource, SourceBudgets,
+    DiscoveryProgress, DiscoverySource, SourceBudgets,
     sources::{FofaSource, GithubSource, ManualSource, ShodanSource},
 };
 use axum::{Json, Router, extract::Query, routing::get};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
 use std::sync::Arc;
 async fn fixture(Query(q): Query<std::collections::HashMap<String, String>>) -> Json<Value> {
@@ -144,6 +145,8 @@ async fn source_selection_errors_and_manual_enrichment_cover_boundaries() {
         ..Settings::default()
     };
     let http = reqwest::Client::new();
+    let progress = Arc::new(Mutex::new(Vec::<DiscoveryProgress>::new()));
+    let progress_sink = progress.clone();
     let fofa = FofaSource {
         client: FofaClient::new(http.clone(), &settings),
         queries: vec!["keep".into(), "drop".into()],
@@ -158,6 +161,9 @@ async fn source_selection_errors_and_manual_enrichment_cover_boundaries() {
             &SourceBudgets {
                 fofa: Some(1),
                 selected_queries: Some(vec!["keep".into()]),
+                progress: Some(Arc::new(move |event| {
+                    progress_sink.lock().push(event);
+                })),
                 ..Default::default()
             },
             ScanMode::Full,
@@ -165,6 +171,12 @@ async fn source_selection_errors_and_manual_enrichment_cover_boundaries() {
         .await
         .unwrap();
     assert_eq!(selected.query_usage.len(), 2);
+    {
+        let progress = progress.lock();
+        assert_eq!(progress.first().unwrap().query_index, 1);
+        assert_eq!(progress.last().unwrap().page, 2);
+        assert_eq!(progress.last().unwrap().hits, 2);
+    }
 
     let shodan = ShodanSource {
         client: ShodanClient::new(http.clone(), &settings),

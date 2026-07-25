@@ -1,4 +1,4 @@
-use crate::{DiscoverySource, QueryUsage, SourceBudgets, SourceFetchResult};
+use crate::{DiscoveryProgress, DiscoverySource, QueryUsage, SourceBudgets, SourceFetchResult};
 use aipocket_clients::{FofaClient, GithubClient, ShodanClient};
 use aipocket_core::ScanMode;
 use anyhow::Result;
@@ -195,6 +195,25 @@ fn tag_hit(mut hit: Value, source: &str, query_id: &str) -> Value {
     }
     hit
 }
+fn report_progress(
+    budgets: &SourceBudgets,
+    source: &str,
+    query_index: usize,
+    query_total: usize,
+    page: u32,
+    result: &SourceFetchResult,
+) {
+    if let Some(progress) = &budgets.progress {
+        progress(DiscoveryProgress {
+            source: source.into(),
+            query_index,
+            query_total,
+            page,
+            hits: result.host_hits.len() as u64,
+            errors: result.errors.len(),
+        });
+    }
+}
 
 pub struct FofaSource {
     pub client: FofaClient,
@@ -226,7 +245,10 @@ impl DiscoverySource for FofaSource {
             source: "fofa".into(),
             ..Default::default()
         };
-        for query in queries.into_iter().take(limit) {
+        let query_total = queries.len().min(limit);
+        for (query_offset, query) in queries.into_iter().take(limit).enumerate() {
+            let query_index = query_offset + 1;
+            report_progress(budgets, "fofa", query_index, query_total, 0, &result);
             for page in 1..=self.max_pages.max(1) {
                 match self.client.search(query, page, self.page_size.max(1)).await {
                     Ok(value) => {
@@ -248,12 +270,14 @@ impl DiscoverySource for FofaSource {
                             query_id: query.clone(),
                             ..Default::default()
                         });
+                        report_progress(budgets, "fofa", query_index, query_total, page, &result);
                         if count < self.page_size as usize {
                             break;
                         }
                     }
                     Err(error) => {
                         result.errors.push(error.to_string());
+                        report_progress(budgets, "fofa", query_index, query_total, page, &result);
                         break;
                     }
                 }
@@ -296,7 +320,10 @@ impl DiscoverySource for ShodanSource {
             source: "shodan".into(),
             ..Default::default()
         };
-        for query in queries.into_iter().take(limit) {
+        let query_total = queries.len().min(limit);
+        for (query_offset, query) in queries.into_iter().take(limit).enumerate() {
+            let query_index = query_offset + 1;
+            report_progress(budgets, "shodan", query_index, query_total, 0, &result);
             for page in 1..=self.max_pages.max(1) {
                 match self.client.search(query, page).await {
                     Ok(value) => {
@@ -318,12 +345,14 @@ impl DiscoverySource for ShodanSource {
                             query_id: query.clone(),
                             ..Default::default()
                         });
+                        report_progress(budgets, "shodan", query_index, query_total, page, &result);
                         if count < 100 {
                             break;
                         }
                     }
                     Err(error) => {
                         result.errors.push(error.to_string());
+                        report_progress(budgets, "shodan", query_index, query_total, page, &result);
                         break;
                     }
                 }

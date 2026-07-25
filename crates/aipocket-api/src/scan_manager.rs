@@ -11,6 +11,7 @@ pub struct ScanManager {
     logs: Mutex<VecDeque<ScanLogLine>>,
     transcript: Mutex<String>,
     capacity: usize,
+    persist_interval: u64,
     tx: broadcast::Sender<ScanLogLine>,
     cancel: Mutex<Option<CancellationToken>>,
     stopped: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
@@ -23,6 +24,7 @@ impl ScanManager {
             logs: Mutex::new(VecDeque::with_capacity(capacity)),
             transcript: Mutex::new(String::new()),
             capacity,
+            persist_interval: (capacity / 4).clamp(1, 50) as u64,
             tx,
             cancel: Mutex::new(None),
             stopped: Mutex::new(None),
@@ -127,14 +129,23 @@ impl ScanManager {
                 }
             };
             if let Some(run_id) = terminal_run {
-                let log = self.log_text().await;
-                if let Err(error) = repository.set_run_log(&run_id, &log).await {
-                    tracing::warn!(%run_id, %error, "failed to persist scan log");
-                }
+                self.persist_log(&repository, &run_id).await;
+            } else if (self.status.read().await.log_seq == 2
+                || self.status.read().await.log_seq % self.persist_interval == 0)
+                && let Some(run_id) = self.status.read().await.run_id.clone()
+            {
+                self.persist_log(&repository, &run_id).await;
             }
         }
         let _ = stopped.send(());
     }
+    async fn persist_log(&self, repository: &Repository, run_id: &str) {
+        let log = self.log_text().await;
+        if let Err(error) = repository.set_run_log(run_id, &log).await {
+            tracing::warn!(%run_id, %error, "failed to persist scan log");
+        }
+    }
+
     pub async fn stop(&self) -> bool {
         {
             let mut status = self.status.write().await;

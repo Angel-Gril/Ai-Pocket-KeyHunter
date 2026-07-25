@@ -545,7 +545,7 @@ export default function RunResultsPage() {
               </button>
             )
           })}
-          {summary?.has_log ? (
+          {summary ? (
             <Button type="button" variant="outline" size="sm" onClick={() => setLogOpen(true)}>
               <FileText className="size-3.5" />
               运行日志

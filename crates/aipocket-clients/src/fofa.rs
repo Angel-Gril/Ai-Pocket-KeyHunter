@@ -41,9 +41,8 @@ impl FofaClient {
                 ),
             ])
             .send()
-            .await?
-            .error_for_status()?;
-        Ok(response.json().await?)
+            .await?;
+        crate::parse_json_response("fofa", response).await
     }
     pub async fn check(&self) -> Result<Value> {
         self.search("title=\"123\"", 1, 1).await

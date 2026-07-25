@@ -91,17 +91,15 @@ function RunRow({
         </div>
         <ChevronRight className="hidden size-[17px] shrink-0 text-text-secondary sm:block" />
       </button>
-      {run.has_log ? (
-        <Button
-          variant="outline"
-          size="icon-sm"
-          className="self-end"
-          onClick={() => onLog(run)}
-          aria-label={`查看 ${run.run_id} 日志`}
-        >
-          <FileText />
-        </Button>
-      ) : null}
+      <Button
+        variant="outline"
+        size="icon-sm"
+        className="self-end"
+        onClick={() => onLog(run)}
+        aria-label={`查看 ${run.run_id} 日志`}
+      >
+        <FileText />
+      </Button>
       {run.deletable ? (
         <Button variant="destructive" size="icon-sm" className="self-end" disabled={deleting} onClick={() => onDelete(run)} aria-label={`删除 ${run.run_id}`}>
           {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}

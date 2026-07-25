@@ -24,4 +24,5 @@ url.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+parking_lot.workspace = true
 reqwest.workspace = true

@@ -331,6 +331,15 @@ async fn run_log(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
+    let status = s.scan_manager.status().await;
+    if status.run_id.as_deref() == Some(id.as_str()) {
+        let live = s.scan_manager.log_text().await;
+        if !live.is_empty() {
+            return Ok(
+                ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], live).into_response(),
+            );
+        }
+    }
     let log = s
         .repository
         .run_log(&id)

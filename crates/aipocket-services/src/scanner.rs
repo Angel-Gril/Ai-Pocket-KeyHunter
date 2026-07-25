@@ -1,7 +1,7 @@
 use crate::pipeline::{as_json, extract_credentials, finalize_results, high_value_record};
 use aipocket_core::{Credential, ScanMode, ScanProgress, Settings};
 use aipocket_db::{DedupStore, Repository, RequestLedgerEntry, ScanLease};
-use aipocket_discovery::{DiscoverySource, SourceBudgets};
+use aipocket_discovery::{DiscoveryProgress, DiscoverySource, SourceBudgets};
 use aipocket_prober::Validator;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -107,6 +107,7 @@ impl Scanner {
             github_code: Some(self.settings.github_code_query_budget),
             selected_queries: None,
             checkpoints: Vec::new(),
+            progress: None,
         };
         let policy = aipocket_core::ScanPolicy::from_mode(mode.clone());
         if resume_phase
@@ -172,9 +173,16 @@ impl Scanner {
                         }
                     }
                 }
+                let events_for_progress = events.clone();
+                let progress_reporter = Arc::new(move |update: DiscoveryProgress| {
+                    events_for_progress
+                        .send(ScanEvent::Log(discovery_progress_line(&update)))
+                        .ok();
+                });
                 let source_budgets = SourceBudgets {
                     selected_queries: Some(selected_queries),
                     checkpoints,
+                    progress: Some(progress_reporter),
                     ..source_budgets
                 };
                 events
@@ -264,7 +272,7 @@ impl Scanner {
                         for error in fetched.errors {
                             events
                                 .send(ScanEvent::Log(format!(
-                                    "{} discovery: {error}",
+                                    "发现 · {} · 警告 · {error}",
                                     source.name()
                                 )))
                                 .ok();
@@ -281,7 +289,7 @@ impl Scanner {
                     Err(error) => {
                         events
                             .send(ScanEvent::Log(format!(
-                                "{} discovery failed: {error}",
+                                "发现 · {} · 失败 · {error}",
                                 source.name()
                             )))
                             .ok();
@@ -898,6 +906,23 @@ impl Scanner {
         Ok(run_id.to_owned())
     }
 }
+fn discovery_progress_line(progress: &DiscoveryProgress) -> String {
+    let page = if progress.page == 0 {
+        "准备请求".to_owned()
+    } else {
+        format!("第 {} 页", progress.page)
+    };
+    format!(
+        "发现 · 进度 · {} · 查询 {}/{} · {} · 当前命中 {} · 错误 {}",
+        progress.source,
+        progress.query_index,
+        progress.query_total,
+        page,
+        progress.hits,
+        progress.errors
+    )
+}
+
 fn github_shard_id(lane: &str, pack_id: &str, query: &str) -> String {
     use sha1::{Digest, Sha1};
     format!(
@@ -1057,7 +1082,17 @@ mod tests {
             budgets: &SourceBudgets,
             mode: ScanMode,
         ) -> Result<SourceFetchResult> {
-            let _ = (budgets, mode);
+            let _ = mode;
+            if let Some(progress) = &budgets.progress {
+                progress(DiscoveryProgress {
+                    source: self.name.into(),
+                    query_index: 1,
+                    query_total: self.query_ids.len().max(1),
+                    page: 1,
+                    hits: 1,
+                    errors: usize::from(self.fail),
+                });
+            }
             if self.fail {
                 anyhow::bail!("fixture discovery offline");
             }
@@ -1520,6 +1555,9 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, ScanEvent::Phase(phase) if phase == "discovery"))
         );
+        assert!(events.iter().any(
+            |event| matches!(event, ScanEvent::Log(message) if message.contains("发现 · 进度 · fofa · 查询 1/3 · 第 1 页"))
+        ));
         assert!(
             events.iter().any(
                 |event| matches!(event, ScanEvent::Log(message) if message.contains("soft discovery warning"))
@@ -1575,7 +1613,7 @@ mod tests {
         assert_eq!(run_id, "run_fixture_resume_unit");
         let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(events.iter().any(
-            |event| matches!(event, ScanEvent::Log(message) if message.contains("discovery failed"))
+            |event| matches!(event, ScanEvent::Log(message) if message.contains("发现 · manual · 失败 · fixture discovery offline"))
         ));
         assert!(
             events

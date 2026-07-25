@@ -44,7 +44,6 @@ import {
 
 const MAX_LINES = 200
 const POLL_MS = 2000
-const STREAM_GRACE_MS = 3000
 
 const SOURCE_ITEMS: { value: ScanSourceItem; label: string; icon: typeof Globe }[] = [
   { value: "fofa", label: "FOFA", icon: Globe },
@@ -102,10 +101,10 @@ function stateLabel(state: string | undefined): string {
   }
 }
 
-const RE_LINE_DANGER = /\b(ERROR|CRITICAL|FATAL|401|403)\b/
-const RE_LINE_WARNING = /\b(WARN|WARNING|429)\b/
-const RE_LINE_SUCCESS = /\b(200|saved|valid|success)\b/i
-const RE_LINE_PHASE = /阶段 ·|GitHub (lane=|file_history|code_snapshot|commit_message)/
+const RE_LINE_DANGER = /\b(ERROR|CRITICAL|FATAL|401|403)\b|失败|中断/
+const RE_LINE_WARNING = /\b(WARN|WARNING|429)\b|警告/
+const RE_LINE_SUCCESS = /\b(200|saved|valid|success)\b|扫描完成/i
+const RE_LINE_PHASE = /阶段 ·|发现 · 进度 ·|GitHub (lane=|file_history|code_snapshot|commit_message)/
 
 function lineTone(line: string): string {
   if (RE_LINE_DANGER.test(line)) return "text-danger"
@@ -278,21 +277,6 @@ export function ScanConsole({
     let cancelled = false
     let stream: EventSource | null = null
     let pollTimer: number | null = null
-    let streamGraceTimer: number | null = null
-
-    const stopPolling = () => {
-      if (pollTimer) {
-        clearInterval(pollTimer)
-        pollTimer = null
-      }
-    }
-
-    const stopGraceTimer = () => {
-      if (streamGraceTimer) {
-        clearTimeout(streamGraceTimer)
-        streamGraceTimer = null
-      }
-    }
 
     const poll = () => {
       api
@@ -304,21 +288,13 @@ export function ScanConsole({
         .catch(() => {})
     }
 
-    const startPolling = () => {
-      if (pollTimer) return
-      poll()
-      pollTimer = window.setInterval(poll, POLL_MS)
-    }
-
-    // Poll immediately so the initial server-side lines are visible even when
-    // EventSource is still connecting or an upstream proxy delays SSE headers.
-    startPolling()
+    // Poll for the whole run. SSE lowers latency, while polling closes gaps from
+    // proxies that connect successfully but buffer or drop later stream chunks.
+    poll()
+    pollTimer = window.setInterval(poll, POLL_MS)
     stream = openScanLogStream(lastSeqRef.current, {
       onLog: (line) => {
-        if (cancelled) return
-        appendLines([line])
-        stopGraceTimer()
-        stopPolling()
+        if (!cancelled) appendLines([line])
       },
       onStatus: (nextState) => {
         if (!cancelled && isTerminal(nextState)) {
@@ -326,20 +302,15 @@ export function ScanConsole({
         }
       },
       onError: () => {
-        if (cancelled) return
         stream?.close()
         stream = null
-        startPolling()
       },
     })
-    // Keep the reliable polling fallback until SSE proves it can deliver data.
-    streamGraceTimer = window.setTimeout(startPolling, STREAM_GRACE_MS)
 
     return () => {
       cancelled = true
       stream?.close()
-      stopGraceTimer()
-      stopPolling()
+      if (pollTimer) clearInterval(pollTimer)
     }
   }, [running, runId, status?.started_at, appendLines, queryClient])
 
