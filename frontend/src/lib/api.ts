@@ -11,6 +11,13 @@ export type ScanMode = "full" | "incremental"
 export type ManualEnrichEngine = "fofa" | "shodan"
 export type GitHubPackId =
   | "all"
+  | "gemini"
+  | "xai"
+  | "qoder"
+  | "kiro"
+  | "aws_bedrock"
+  | "cursor"
+  | "windsurf"
   | "glm"
   | "kimi"
   | "qwen"
@@ -663,6 +670,7 @@ export const api = {
     githubPackIds: readonly GitHubPackId[] = [],
     sources: readonly ScanSourceItem[] = [],
     manualEnrich: readonly ManualEnrichEngine[] = [],
+    resumeRunId = "",
   ) =>
     request<ScanStatusResponse>("/scan/start", {
       method: "POST",
@@ -674,6 +682,7 @@ export const api = {
         github_pack_ids: githubPackIds,
         // Custom hunt: reverse-lookup stored hostnames on FOFA/Shodan.
         manual_enrich: manualEnrich.length > 0 ? [...manualEnrich] : undefined,
+        resume_run_id: resumeRunId || undefined,
       },
     }),
   scanStop: () => request<ScanStatusResponse>("/scan/stop", { method: "POST" }),

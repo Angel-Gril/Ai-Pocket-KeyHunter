@@ -7,8 +7,8 @@ import { cn } from "@/lib/utils"
  * background is a low-opacity wash of the same hue, so it reads on both the
  * light and dark themes without needing per-mode overrides.
  *
- * Keep this vocabulary in sync with backend `ProviderName`
- * (`backend/src/aipocket/core/models.py`).
+ * Keep this vocabulary in sync with the Rust provider registry
+ * (`crates/aipocket-prober/src/provider.rs`).
  */
 export type ProviderName =
   | "openai"
@@ -32,6 +32,12 @@ export type ProviderName =
   | "nvidia"
   | "ksyun"
   | "longcat"
+  | "xai"
+  | "qoder"
+  | "kiro"
+  | "aws_bedrock"
+  | "cursor"
+  | "windsurf"
   | "newapi"
   | "oneapi"
   | "litellm"
@@ -61,6 +67,12 @@ const PROVIDER_BRAND: Record<ProviderName, { label: string; color: string }> = {
   nvidia: { label: "NVIDIA NIM", color: "#76b900" },
   ksyun: { label: "KSYUN MaaS", color: "#ff6a00" },
   longcat: { label: "LongCat", color: "#8b5cf6" },
+  xai: { label: "xAI", color: "#111827" },
+  qoder: { label: "Qoder", color: "#6750a4" },
+  kiro: { label: "Kiro", color: "#938f9b" },
+  aws_bedrock: { label: "AWS Bedrock", color: "#ff9900" },
+  cursor: { label: "Cursor", color: "#0f172a" },
+  windsurf: { label: "Windsurf", color: "#00bfa5" },
   newapi: { label: "NewAPI", color: "#0ea5e9" },
   oneapi: { label: "OneAPI", color: "#06b6d4" },
   litellm: { label: "LiteLLM", color: "#6366f1" },

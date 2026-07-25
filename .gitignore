@@ -37,6 +37,9 @@ coverage/
 
 # uv
 
+# Rust
+target/
+lcov.info
 # Node / Frontend
 frontend/node_modules/
 frontend/dist/

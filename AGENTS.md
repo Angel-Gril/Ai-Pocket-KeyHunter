@@ -7,7 +7,7 @@ Guidelines for AI agents (Claude Code, Copilot, Cursor, etc.) working on this co
 **AIPocket** scans for exposed AI infrastructure via FOFA + Shodan (+ GitHub artifact source), extracts and validates leaked API key/URL pairs, checks balances, and flags high-value findings.
 
 Monorepo layout:
-- `backend/` — Python 3.11+, FastAPI + Typer CLI, `uv` package manager
+- `crates/` — Rust 2024 workspace；Axum + Clap + SQLx + redis-rs + Reqwest
 - `frontend/` — React 19 + Vite + Tailwind v4 + shadcn/ui, `pnpm`
 - Infra: PostgreSQL 16, Redis 7 (see `docker-compose.yml`)
 
@@ -19,14 +19,14 @@ Monorepo layout:
 
 ## Backend Guidelines
 
-- Source: `backend/src/aipocket/`
-- Tests: `backend/tests/` (pytest + pytest-asyncio, auto mode)
-- Validate: `cd backend && uv run pytest tests/ -x -q`
-- Lint: `cd backend && uv run ruff check --fix . && uv run ruff format .`
-- All HTTP I/O is async (`httpx.AsyncClient`). Do not use `requests`.
-- Config uses `pydantic-settings`. Add new env vars to both `core/config.py` and `.env.example`.
-- New probers go in `prober/probers/` and must be registered in `probers/__init__.py`.
-- New API routes go in `api/routers/` and must be included in `api/app.py`.
+- Source: `crates/aipocket-*`，依赖方向保持 `api → services → discovery/prober/clients/db/core`。
+- Validate: `cargo test --workspace`
+- Lint: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings`
+- Coverage: `cargo llvm-cov --workspace --fail-under-lines 86`
+- All HTTP I/O is async through shared `reqwest::Client`.
+- Config env names/defaults must stay compatible with `.env.example`; never add a required env without a compatible default.
+- Schema changes must be additive and idempotent. Never drop/rebuild production tables or change Redis key formats.
+- New API routes belong in `aipocket-api`; business logic belongs in `aipocket-services`, not handlers.
 
 ## Frontend Guidelines
 
@@ -42,15 +42,15 @@ Monorepo layout:
 
 | Task | Steps |
 |------|-------|
-| Add a new platform prober | Create `prober/probers/<name>.py` extending `BaseProber`, register in `__init__.py`, add tests |
-| Add a new API endpoint | Create or extend a router in `api/routers/`, include in `api/app.py`, add schemas to `api/schemas.py` |
-| Add a new frontend page | Create page in `pages/`, add route in `App.tsx`, add sidebar link in `components/sidebar.tsx` |
-| Add a new env var | Add to `core/config.py` (Settings class), document in `.env.example` |
+| Add a platform prober | Implement `Prober` in `aipocket-prober`, register it, add behavioral tests |
+| Add an API endpoint | Add route/DTO in `aipocket-api`, reuse a service/repository, add a contract test |
+| Add a frontend page | Create page in `pages/`, add route in `App.tsx`, add sidebar link |
+| Add an env var | Add a backward-compatible default to Rust `Settings` and `.env.example` |
 
 ## Do Not
 
-- Install new Python deps without adding them to `pyproject.toml`
-- Use synchronous HTTP calls in backend code
+- Introduce synchronous HTTP calls in Rust backend code
 - Store runtime state, credentials, or scan results in git-tracked files
-- Modify `docker-compose.override.yml` for production changes (it's dev-only)
-- Skip tests — always run `uv run pytest tests/ -x -q` after backend changes
+- Modify production PG/Redis volumes, URLs, database names, or ports for the Rust migration
+- Add destructive migrations, flush Redis, or require `.env` edits for deployment
+- Skip `cargo test --workspace`, fmt, clippy, and frontend build validation

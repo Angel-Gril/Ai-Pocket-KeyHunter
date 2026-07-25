@@ -1,0 +1,34 @@
+[package]
+name = "aipocket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+
+[dependencies]
+aipocket-api = { path = "../aipocket-api" }
+aipocket-clients = { path = "../aipocket-clients" }
+aipocket-discovery = { path = "../aipocket-discovery" }
+aipocket-core = { path = "../aipocket-core" }
+aipocket-prober = { path = "../aipocket-prober" }
+axum.workspace = true
+reqwest.workspace = true
+aipocket-db = { path = "../aipocket-db" }
+aipocket-services = { path = "../aipocket-services" }
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+clap.workspace = true
+redis.workspace = true
+sqlx.workspace = true
+tokio-util.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

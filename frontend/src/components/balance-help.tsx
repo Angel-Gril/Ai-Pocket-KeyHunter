@@ -109,6 +109,18 @@ export function BalanceHelpButton() {
             </p>
           </Section>
 
+          <Section title="新增提供商">
+            <Term name="xAI / Gemini / Kiro / AWS Bedrock">
+              当前公开接口只提供 key 存活、模型或权限证据，余额显示 N/A。
+            </Term>
+            <Term name="Qoder / Cursor">
+              通过官方只读身份接口确认 PAT / API key；无公开余额时显示 N/A。
+            </Term>
+            <Term name="Windsurf credits">
+              Enterprise Billing Read service key 可读取团队当前账期的 add-on credits，单位为 credits。
+            </Term>
+          </Section>
+
           <Section title="其他常见网关">
             <Term name="$ 数字">OpenRouter / NewAPI / LiteLLM / DeepSeek 等能直接返回的剩余额度。</Term>
             <Term name="gateway · unsupported">所有已知探针均未命中，未识别平台或 key 无效。</Term>
