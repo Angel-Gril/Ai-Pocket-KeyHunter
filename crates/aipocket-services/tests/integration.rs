@@ -359,13 +359,21 @@ async fn balance_and_validation_cover_provider_protocols_and_statuses() {
         .route("/user/balance", get(balance))
         .route("/deepseek/user/balance", get(balance));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
+    let address = listener.local_addr().unwrap();
+    let base = format!("http://{address}");
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let validator = aipocket_prober::Validator::new(reqwest::Client::new());
+    let validator = aipocket_prober::Validator::new(
+        reqwest::Client::builder()
+            .resolve("api.anthropic.com", address)
+            .resolve("generativelanguage.googleapis.com", address)
+            .build()
+            .unwrap(),
+    );
+    let port = address.port();
     let anthropic = validator
         .validate(Credential {
-            apikey: "sk-ant-fixture".into(),
-            apiurl: base.clone(),
+            apikey: "local-anthropic-fixture".into(),
+            apiurl: format!("http://api.anthropic.com:{port}"),
             ..Default::default()
         })
         .await
@@ -377,8 +385,8 @@ async fn balance_and_validation_cover_provider_protocols_and_statuses() {
     );
     let gemini = validator
         .validate(Credential {
-            apikey: "AIza-fixture".into(),
-            apiurl: base.clone(),
+            apikey: "local-gemini-fixture".into(),
+            apiurl: format!("http://generativelanguage.googleapis.com:{port}"),
             ..Default::default()
         })
         .await

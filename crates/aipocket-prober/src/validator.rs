@@ -117,16 +117,20 @@ impl Validator {
         result.status_code = Some(response.status().as_u16());
         let status = response.status();
         let body: Value = response.json().await.unwrap_or(json!({}));
-        result.valid = status.is_success();
+        let models = extract_models(&body);
+        result.valid = status.is_success() && !models.is_empty();
         result.validation_state = if result.valid {
             "final_verified".into()
-        } else if status.as_u16() == 401 || status.as_u16() == 403 {
+        } else if status.as_u16() == 401 || status.as_u16() == 403 || status.is_success() {
             "rejected".into()
         } else {
             "transient".into()
         };
+        if status.is_success() && models.is_empty() {
+            result.error = "invalid-response-schema".into();
+        }
         result.response_snippet = body.to_string().chars().take(512).collect();
-        result.provider_info.models_available = extract_models(&body);
+        result.provider_info.models_available = models;
         Ok(result)
     }
 }
@@ -159,7 +163,7 @@ mod tests {
     };
     use std::collections::HashMap;
 
-    async fn fixture_server() -> (String, tokio::task::JoinHandle<()>) {
+    async fn fixture_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
         let app = Router::new()
             .route(
                 "/v1/models",
@@ -174,7 +178,7 @@ mod tests {
             .route(
                 "/v1beta/models",
                 get(|Query(query): Query<HashMap<String, String>>| async move {
-                    if query.get("key").is_some_and(|key| key.starts_with("AIza")) {
+                    if query.contains_key("key") {
                         Json(json!({"models":[{"name":"gemini-fixture"}]})).into_response()
                     } else {
                         (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad key"}))).into_response()
@@ -197,11 +201,19 @@ mod tests {
                         Json(json!({"error":"busy"})),
                     )
                 }),
+            )
+            .route(
+                "/html/v1/models",
+                get(|| async { (StatusCode::OK, "<!doctype html><title>not an API</title>") }),
+            )
+            .route(
+                "/empty/v1/models",
+                get(|| async { Json(json!({"data":[]})) }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        (format!("http://{address}"), task)
+        (address, task)
     }
 
     fn credential(apikey: &str, apiurl: String) -> Credential {
@@ -225,23 +237,49 @@ mod tests {
 
     #[tokio::test]
     async fn validates_protocol_routes_and_classifies_http_failures() {
-        let (base, server) = fixture_server().await;
-        let validator = Validator::new(reqwest::Client::new());
+        let (address, server) = fixture_server().await;
+        let base = format!("http://127.0.0.1:{}", address.port());
+        let validator = Validator::new(
+            reqwest::Client::builder()
+                .resolve("api.anthropic.com", address)
+                .resolve("generativelanguage.googleapis.com", address)
+                .resolve("bedrock.us-east-1.amazonaws.com", address)
+                .build()
+                .unwrap(),
+        );
         for (apikey, apiurl, model) in [
-            ("sk-ant-api03-abcdefghijkl", base.clone(), "claude-fixture"),
             (
-                "AIzaSyDaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                format!("{base}/v1beta"),
+                "local-anthropic-key",
+                format!("http://api.anthropic.com:{}", address.port()),
+                "claude-fixture",
+            ),
+            (
+                "AI-test-gemini-key",
+                format!(
+                    "http://generativelanguage.googleapis.com:{}",
+                    address.port()
+                ),
                 "gemini-fixture",
             ),
-            ("ABSKabcdefghijkl", base.clone(), "bedrock-fixture"),
+            (
+                "local-bedrock-key",
+                format!("http://bedrock.us-east-1.amazonaws.com:{}", address.port()),
+                "bedrock-fixture",
+            ),
             ("sk-generic-abcdefghijkl", base.clone(), "openai-fixture"),
         ] {
             let result = validator
                 .validate(credential(apikey, apiurl))
                 .await
                 .unwrap();
-            assert!(result.valid, "{}", result.response_snippet);
+            assert!(
+                result.valid,
+                "provider={} status={:?} error={} body={}",
+                result.provider_info.provider,
+                result.status_code,
+                result.error,
+                result.response_snippet
+            );
             assert_eq!(result.validation_state, "final_verified");
             assert_eq!(result.provider_info.models_available, vec![model]);
         }
@@ -267,6 +305,20 @@ mod tests {
         assert!(!transient.valid);
         assert_eq!(transient.status_code, Some(503));
         assert_eq!(transient.validation_state, "transient");
+        for path in ["html", "empty"] {
+            let invalid = validator
+                .validate(credential(
+                    "sk-generic-abcdefghijkl",
+                    format!("{base}/{path}"),
+                ))
+                .await
+                .unwrap();
+            assert!(!invalid.valid, "{path}");
+            assert_eq!(invalid.status_code, Some(200));
+            assert_eq!(invalid.validation_state, "rejected");
+            assert_eq!(invalid.error, "invalid-response-schema");
+        }
+
         server.abort();
     }
 }

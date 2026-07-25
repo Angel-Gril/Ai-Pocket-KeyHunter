@@ -2457,6 +2457,17 @@ mod tests {
         assert_eq!(free.balance_usd, "0");
         assert_eq!(free.source, "openrouter:free_tier");
 
+        let openrouter =
+            aipocket_core::endpoint::canonicalize_endpoint("https://openrouter.ai", "openrouter")
+                .unwrap();
+        assert_eq!(
+            models_url(
+                &openrouter,
+                aipocket_prober::ProtocolFamily::OpenAiCompatible
+            ),
+            "https://openrouter.ai/api/v1/models"
+        );
+
         let rate = service
             .query_for_result(&aipocket_core::ValidationResult {
                 credential: Credential {

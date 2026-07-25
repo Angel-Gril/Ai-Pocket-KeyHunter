@@ -54,6 +54,7 @@ pub fn canonicalize_endpoint(raw: &str, provider: &str) -> Result<CanonicalEndpo
         ("glm", "open.bigmodel.cn") => Some("/api/paas/v4"),
         ("nvidia", "integrate.api.nvidia.com") | ("ksyun", "kspmas.ksyun.com") => Some("/v1"),
         ("xai", "api.x.ai") => Some("/v1"),
+        ("openrouter", "openrouter.ai") => Some("/api"),
         ("qoder", "api.qoder.com") | ("cursor", "api.cursor.com") => Some(""),
         ("windsurf", "server.codeium.com") => Some("/api/v1"),
         ("minimax", "api.minimax.io" | "api.minimaxi.com" | "api.minimax.chat") => Some("/v1"),
@@ -147,6 +148,11 @@ mod tests {
                 "https://api.longcat.chat/anthropic",
             ),
             ("https://api.x.ai/v1/models", "xai", "https://api.x.ai/v1"),
+            (
+                "https://openrouter.ai/v1/models",
+                "openrouter",
+                "https://openrouter.ai/api",
+            ),
             (
                 "https://server.codeium.com/api/v1/GetTeamCreditBalance",
                 "windsurf",
