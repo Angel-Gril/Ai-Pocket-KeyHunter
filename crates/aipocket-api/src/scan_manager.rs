@@ -67,6 +67,9 @@ impl ScanManager {
     pub async fn consume(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<ScanEvent>) {
         while let Some(event) = rx.recv().await {
             match event {
+                ScanEvent::Started { run_id } => {
+                    self.status.write().await.run_id = Some(run_id);
+                }
                 ScanEvent::Phase(phase) => self.status.write().await.phase = phase,
                 ScanEvent::Progress(progress) => self.status.write().await.progress = progress,
                 ScanEvent::Log(line) => self.push_log(line).await,

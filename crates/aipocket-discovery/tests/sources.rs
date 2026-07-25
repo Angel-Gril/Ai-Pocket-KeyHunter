@@ -88,6 +88,21 @@ async fn all_source_adapters_return_contract_shape() {
         let result = source.fetch(&budgets, ScanMode::Incremental).await.unwrap();
         assert!(!result.host_hits.is_empty());
         assert_eq!(result.source, source_name);
+        if source_name == "fofa" || source_name == "shodan" || source_name == "manual" {
+            for hit in &result.host_hits {
+                assert!(
+                    hit.get("host")
+                        .and_then(Value::as_str)
+                        .is_some_and(|h| !h.is_empty()),
+                    "{source_name} hit missing host: {hit}"
+                );
+                assert_eq!(
+                    hit.get("_source").and_then(Value::as_str),
+                    Some(source_name),
+                    "{source_name} hit missing _source: {hit}"
+                );
+            }
+        }
         if source_name == "github" {
             assert_eq!(result.artifact_work.len(), 2);
             assert!(

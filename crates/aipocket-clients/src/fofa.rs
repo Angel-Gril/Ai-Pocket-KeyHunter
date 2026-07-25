@@ -34,7 +34,11 @@ impl FofaClient {
                 ("qbase64", qbase64.as_str()),
                 ("page", &page.to_string()),
                 ("size", &size.to_string()),
-                ("fields", "host,ip,port,protocol,title,header,body,cert"),
+                // Keep field list aligned with Python DEFAULT_FIELDS / discovery FOFA_FIELDS.
+                (
+                    "fields",
+                    "host,ip,port,protocol,title,header,banner,server,product,link,domain,cert",
+                ),
             ])
             .send()
             .await?

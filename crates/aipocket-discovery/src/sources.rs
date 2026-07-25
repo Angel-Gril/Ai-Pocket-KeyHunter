@@ -3,7 +3,199 @@ use aipocket_clients::{FofaClient, GithubClient, ShodanClient};
 use aipocket_core::ScanMode;
 use anyhow::Result;
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{Value, json};
+
+/// FOFA `fields` query param + dict key order. Keep in sync with Python
+/// `DEFAULT_FIELDS` (`banner` not `body` — extractor scans `header`/`banner`).
+pub const FOFA_FIELDS: &[&str] = &[
+    "host", "ip", "port", "protocol", "title", "header", "banner", "server", "product", "link",
+    "domain", "cert",
+];
+
+fn value_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn first_string(value: Option<&Value>) -> String {
+    value.map(value_text).unwrap_or_default()
+}
+
+/// Map one FOFA `results[]` row (array or object) into the extractor dict shape.
+pub fn normalize_fofa_row(row: &Value) -> Value {
+    let mut out = match row {
+        Value::Object(map) => Value::Object(map.clone()),
+        Value::Array(items) => {
+            let mut map = serde_json::Map::with_capacity(FOFA_FIELDS.len());
+            for (i, name) in FOFA_FIELDS.iter().enumerate() {
+                map.insert(
+                    (*name).to_owned(),
+                    items
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| Value::String(String::new())),
+                );
+            }
+            Value::Object(map)
+        }
+        other => json!({ "_raw": value_text(other) }),
+    };
+    // Older FOFA field lists used `body`; alias into `banner` for the extractor.
+    if out
+        .get("banner")
+        .map(value_text)
+        .unwrap_or_default()
+        .is_empty()
+        && let Some(body) = out.get("body").cloned()
+    {
+        out["banner"] = body;
+    }
+    out
+}
+
+/// Normalize one Shodan match into FOFA-style fields the extractor expects.
+/// `data` → `header`, `http.html` → `banner` (Python `map_match`).
+pub fn normalize_shodan_match(m: &Value) -> Value {
+    let http = m.get("http").cloned().unwrap_or_else(|| json!({}));
+    let ip = {
+        let ip_str = first_string(m.get("ip_str"));
+        if !ip_str.is_empty() {
+            ip_str
+        } else {
+            // String `ip` only (fixtures); ignore integer-packed Shodan `ip`.
+            m.get("ip").and_then(Value::as_str).unwrap_or("").to_owned()
+        }
+    };
+    let port = first_string(m.get("port"));
+    let hostnames = m
+        .get("hostnames")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let hostname0 = hostnames.first().map(value_text).filter(|s| !s.is_empty());
+    let http_host = first_string(http.get("host"));
+    let mut base = if let Some(h) = hostname0.clone() {
+        h
+    } else if !http_host.is_empty() {
+        http_host
+    } else if !ip.is_empty() {
+        ip.clone()
+    } else {
+        // Fixture / already-normalized rows may carry `host` directly.
+        first_string(m.get("host"))
+    };
+    if !base.is_empty() && !matches!(port.as_str(), "" | "80" | "443") && !base.contains(':') {
+        base = format!("{base}:{port}");
+    }
+    let scheme = if port == "443" { "https" } else { "http" };
+    let data_banner = first_string(m.get("data"));
+    let html_body = first_string(http.get("html"));
+    let header = if !data_banner.is_empty() {
+        data_banner
+    } else {
+        first_string(m.get("header"))
+    };
+    let banner = if !html_body.is_empty() {
+        html_body
+    } else {
+        first_string(m.get("banner"))
+    };
+    let title = {
+        let t = first_string(http.get("title"));
+        if t.is_empty() {
+            first_string(m.get("title"))
+        } else {
+            t
+        }
+    };
+    let cert = {
+        let c = cert_to_str(m.get("ssl"));
+        if c.is_empty() {
+            first_string(m.get("cert"))
+        } else {
+            c
+        }
+    };
+    let server = {
+        let s = first_string(http.get("server"));
+        if s.is_empty() {
+            first_string(m.get("server"))
+        } else {
+            s
+        }
+    };
+    json!({
+        "host": base,
+        "ip": ip,
+        "port": port,
+        "protocol": scheme,
+        "title": title,
+        "header": header,
+        "banner": banner,
+        "cert": cert,
+        "product": first_string(m.get("product")),
+        "server": server,
+        "link": hostname0.unwrap_or_default(),
+    })
+}
+
+fn cert_to_str(ssl: Option<&Value>) -> String {
+    let Some(ssl) = ssl else {
+        return String::new();
+    };
+    let cert = ssl.get("cert").cloned().unwrap_or_else(|| json!({}));
+    let mut parts = Vec::new();
+    for field in ["subject", "issuer"] {
+        let node = cert.get(field).cloned().unwrap_or_else(|| json!({}));
+        let nodes = match node {
+            Value::Array(items) => items,
+            other => vec![other],
+        };
+        for d in nodes {
+            if let Value::Object(map) = d {
+                let cn = map
+                    .get("commonName")
+                    .or_else(|| map.get("commonname"))
+                    .map(value_text)
+                    .unwrap_or_default();
+                if !cn.is_empty() {
+                    parts.push(cn);
+                    let on = map
+                        .get("organizationName")
+                        .or_else(|| map.get("organizationname"))
+                        .map(value_text)
+                        .unwrap_or_default();
+                    if !on.is_empty() {
+                        parts.push(on);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(issued) = cert.get("issued") {
+        let text = value_text(issued);
+        if !text.is_empty() {
+            parts.push(text);
+        }
+    }
+    parts.join(" ")
+}
+
+fn tag_hit(mut hit: Value, source: &str, query_id: &str) -> Value {
+    if let Value::Object(map) = &mut hit {
+        map.insert("_source".into(), Value::String(source.into()));
+        if !query_id.is_empty() {
+            map.insert("_query_id".into(), Value::String(query_id.into()));
+        }
+    }
+    hit
+}
+
 pub struct FofaSource {
     pub client: FofaClient,
     pub queries: Vec<String>,
@@ -44,12 +236,16 @@ impl DiscoverySource for FofaSource {
                             .cloned()
                             .unwrap_or_default();
                         let count = rows.len();
-                        result.host_hits.extend(rows);
+                        result.host_hits.extend(
+                            rows.iter()
+                                .map(|row| tag_hit(normalize_fofa_row(row), "fofa", query)),
+                        );
                         result.query_usage.push(QueryUsage {
                             source: "fofa".into(),
                             query: query.clone(),
                             page_count: 1,
                             result_count: count as u64,
+                            query_id: query.clone(),
                             ..Default::default()
                         });
                         if count < self.page_size as usize {
@@ -110,12 +306,16 @@ impl DiscoverySource for ShodanSource {
                             .cloned()
                             .unwrap_or_default();
                         let count = rows.len();
-                        result.host_hits.extend(rows);
+                        result.host_hits.extend(
+                            rows.iter()
+                                .map(|row| tag_hit(normalize_shodan_match(row), "shodan", query)),
+                        );
                         result.query_usage.push(QueryUsage {
                             source: "shodan".into(),
                             query: query.clone(),
                             page_count: 1,
                             result_count: count as u64,
+                            query_id: query.clone(),
                             ..Default::default()
                         });
                         if count < 100 {
@@ -511,26 +711,35 @@ impl DiscoverySource for ManualEnrichSource {
                 };
                 match self.fofa.search(&query, 1, 50).await {
                     Ok(value) => {
-                        let mut rows = value
+                        let query_id = format!("manual-enrich:fofa:{hostname}");
+                        let rows = value
                             .get("results")
                             .and_then(Value::as_array)
                             .cloned()
                             .unwrap_or_default();
-                        for row in &mut rows {
-                            row["_source"] = "fofa".into();
-                            row["_manual_seed_host"] = hostname.into();
-                            row["_query_id"] = format!("manual-enrich:fofa:{hostname}").into();
-                        }
+                        let mut mapped = rows
+                            .iter()
+                            .map(|row| {
+                                let mut hit = tag_hit(normalize_fofa_row(row), "fofa", &query_id);
+                                if let Value::Object(map) = &mut hit {
+                                    map.insert(
+                                        "_manual_seed_host".into(),
+                                        Value::String(hostname.into()),
+                                    );
+                                }
+                                hit
+                            })
+                            .collect::<Vec<_>>();
                         result.query_usage.push(QueryUsage {
                             source: "fofa".into(),
                             query,
                             page_count: 1,
-                            result_count: rows.len() as u64,
-                            query_id: format!("manual-enrich:fofa:{hostname}"),
+                            result_count: mapped.len() as u64,
+                            query_id,
                             lane: "manual-enrich".into(),
                             ..Default::default()
                         });
-                        result.host_hits.append(&mut rows);
+                        result.host_hits.append(&mut mapped);
                     }
                     Err(error) => result.errors.push(format!("fofa {hostname}: {error}")),
                 }
@@ -543,26 +752,36 @@ impl DiscoverySource for ManualEnrichSource {
                 };
                 match self.shodan.search(&query, 1).await {
                     Ok(value) => {
-                        let mut rows = value
+                        let query_id = format!("manual-enrich:shodan:{hostname}");
+                        let rows = value
                             .get("matches")
                             .and_then(Value::as_array)
                             .cloned()
                             .unwrap_or_default();
-                        for row in &mut rows {
-                            row["_source"] = "shodan".into();
-                            row["_manual_seed_host"] = hostname.into();
-                            row["_query_id"] = format!("manual-enrich:shodan:{hostname}").into();
-                        }
+                        let mut mapped = rows
+                            .iter()
+                            .map(|row| {
+                                let mut hit =
+                                    tag_hit(normalize_shodan_match(row), "shodan", &query_id);
+                                if let Value::Object(map) = &mut hit {
+                                    map.insert(
+                                        "_manual_seed_host".into(),
+                                        Value::String(hostname.into()),
+                                    );
+                                }
+                                hit
+                            })
+                            .collect::<Vec<_>>();
                         result.query_usage.push(QueryUsage {
                             source: "shodan".into(),
                             query,
                             page_count: 1,
-                            result_count: rows.len() as u64,
-                            query_id: format!("manual-enrich:shodan:{hostname}"),
+                            result_count: mapped.len() as u64,
+                            query_id,
                             lane: "manual-enrich".into(),
                             ..Default::default()
                         });
-                        result.host_hits.append(&mut rows);
+                        result.host_hits.append(&mut mapped);
                     }
                     Err(error) => result.errors.push(format!("shodan {hostname}: {error}")),
                 }
@@ -570,5 +789,74 @@ impl DiscoverySource for ManualEnrichSource {
         }
         result.host_hit_count = Some(result.host_hits.len() as u64);
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn fofa_array_row_maps_to_named_fields() {
+        let row = json!([
+            "api.example.com",
+            "1.2.3.4",
+            443,
+            "https",
+            "title",
+            "Authorization: Bearer sk-test-abcdefghijklmnop",
+            "<html>body</html>",
+            "nginx",
+            "OpenAI",
+            "api.example.com",
+            "example.com",
+            "CN=example"
+        ]);
+        let hit = tag_hit(normalize_fofa_row(&row), "fofa", "title=\"x\"");
+        assert_eq!(hit["host"], "api.example.com");
+        assert_eq!(hit["ip"], "1.2.3.4");
+        assert_eq!(hit["port"], 443);
+        assert_eq!(
+            hit["header"],
+            "Authorization: Bearer sk-test-abcdefghijklmnop"
+        );
+        assert_eq!(hit["banner"], "<html>body</html>");
+        assert_eq!(hit["_source"], "fofa");
+        assert_eq!(hit["_query_id"], "title=\"x\"");
+    }
+
+    #[test]
+    fn shodan_match_maps_data_to_header_and_html_to_banner() {
+        let row = json!({
+            "ip_str": "9.9.9.9",
+            "port": 8443,
+            "hostnames": ["leak.example"],
+            "data": "HTTP/1.1 200\r\nAuthorization: Bearer sk-proj-abcdef",
+            "http": {
+                "html": "<html>OPENAI_API_KEY=sk-proj-xyz</html>",
+                "title": "t",
+                "host": "leak.example"
+            },
+            "product": "nginx"
+        });
+        let hit = tag_hit(
+            normalize_shodan_match(&row),
+            "shodan",
+            "http.html:\"OPENAI\"",
+        );
+        assert_eq!(hit["host"], "leak.example:8443");
+        assert_eq!(hit["ip"], "9.9.9.9");
+        assert_eq!(hit["port"], "8443");
+        assert!(hit["header"].as_str().unwrap().contains("sk-proj-abcdef"));
+        assert!(hit["banner"].as_str().unwrap().contains("sk-proj-xyz"));
+        assert_eq!(hit["_source"], "shodan");
+    }
+
+    #[test]
+    fn fofa_body_aliases_to_banner() {
+        let row = json!({"host": "h", "body": "BANNER_BODY", "header": "H"});
+        let hit = normalize_fofa_row(&row);
+        assert_eq!(hit["banner"], "BANNER_BODY");
     }
 }

@@ -49,7 +49,7 @@ impl ShodanClient {
     }
     pub async fn search(&self, query: &str, page: u32) -> Result<Value> {
         let key = self.keys.first().context("SHODAN_KEYS not configured")?;
-        Ok(self
+        let response = self
             .http
             .get(format!("{}/shodan/host/search", self.base_url))
             .query(&[
@@ -59,9 +59,14 @@ impl ShodanClient {
             ])
             .send()
             .await?
-            .error_for_status()?
-            .json()
-            .await?)
+            .error_for_status()?;
+        let status = response.status();
+        let bytes = response.bytes().await?;
+        serde_json::from_slice(&bytes).with_context(|| {
+            let preview = String::from_utf8_lossy(&bytes);
+            let preview = preview.chars().take(200).collect::<String>();
+            format!("shodan non-json response status={status}: {preview}")
+        })
     }
     pub async fn count(&self, query: &str) -> Result<i64> {
         let key = self.keys.first().context("SHODAN_KEYS not configured")?;

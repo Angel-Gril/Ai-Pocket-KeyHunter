@@ -13,11 +13,20 @@ use tracing::info;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ScanEvent {
+    /// Emitted right after the run row is created so the UI can show run_id while running.
+    Started {
+        run_id: String,
+    },
     Phase(String),
     Progress(ScanProgress),
     Log(String),
-    Finished { run_id: String },
-    Interrupted { run_id: String, error: String },
+    Finished {
+        run_id: String,
+    },
+    Interrupted {
+        run_id: String,
+        error: String,
+    },
 }
 #[derive(Clone)]
 pub struct Scanner {
@@ -79,6 +88,11 @@ impl Scanner {
         self.repository
             .create_run(&run_id, started_at, mode_name(&mode))
             .await?;
+        events
+            .send(ScanEvent::Started {
+                run_id: run_id.clone(),
+            })
+            .ok();
         let resume_phase = self.repository.resume_phase(&run_id).await?;
         let mut progress = ScanProgress::default();
         let mut hits = Vec::new();
@@ -105,24 +119,8 @@ impl Scanner {
         }
         let mut query_metrics =
             std::collections::BTreeMap::<(String, String), aipocket_db::QueryMetricRecord>::new();
-        if let Some(pool) = self.repository.pool() {
-            let pending = aipocket_db::claim_artifact_work(pool, 200).await?;
-            if !pending.is_empty() {
-                events
-                    .send(ScanEvent::Log(format!(
-                        "processing {} pending GitHub artifact work items",
-                        pending.len()
-                    )))
-                    .ok();
-                let observations = tokio::select! {
-                    _ = cancel.cancelled() => {
-                        return self.interrupt(&run_id, progress, lease, &events).await;
-                    }
-                    observations = self.process_github_work(pool, pending, &events) => observations,
-                };
-                credentials_from_observations(&mut hits, observations);
-            }
-        }
+        // FOFA/Shodan first: do not block primary discovery behind pending GitHub blob
+        // drains (slow/403 tokens previously left the UI stuck in discovery with 0 hits).
         if hits.is_empty() {
             for source in sources {
                 if cancel.is_cancelled() {
@@ -272,6 +270,29 @@ impl Scanner {
                             .ok();
                     }
                 };
+            }
+        }
+        if cancel.is_cancelled() {
+            return self.interrupt(&run_id, progress, lease, &events).await;
+        }
+        // Drain previously-enqueued GitHub artifact work after host discovery so a
+        // slow/broken token pool cannot stall FOFA/Shodan.
+        if let Some(pool) = self.repository.pool() {
+            let pending = aipocket_db::claim_artifact_work(pool, 200).await?;
+            if !pending.is_empty() {
+                events
+                    .send(ScanEvent::Log(format!(
+                        "processing {} pending GitHub artifact work items",
+                        pending.len()
+                    )))
+                    .ok();
+                let observations = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        return self.interrupt(&run_id, progress, lease, &events).await;
+                    }
+                    observations = self.process_github_work(pool, pending, &events) => observations,
+                };
+                credentials_from_observations(&mut hits, observations);
             }
         }
         if cancel.is_cancelled() {

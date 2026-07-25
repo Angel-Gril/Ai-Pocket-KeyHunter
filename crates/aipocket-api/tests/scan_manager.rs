@@ -18,6 +18,10 @@ async fn manager_enforces_single_scan_and_replays_logs() {
     );
     let consumer = tokio::spawn(manager.clone().consume(rx));
     drop(stopped);
+    tx.send(ScanEvent::Started {
+        run_id: "run_2026_07_24_00-00-00".into(),
+    })
+    .unwrap();
     tx.send(ScanEvent::Phase("discovery".into())).unwrap();
     tx.send(ScanEvent::Progress(ScanProgress {
         raw_hits: 3,
@@ -35,6 +39,7 @@ async fn manager_enforces_single_scan_and_replays_logs() {
     consumer.await.unwrap();
     let status = manager.status().await;
     assert_eq!(status.state, ScanState::Finished);
+    assert_eq!(status.run_id.as_deref(), Some("run_2026_07_24_00-00-00"));
     assert_eq!(status.progress.raw_hits, 3);
     let logs = manager.logs_since(0).await;
     assert_eq!(logs.len(), 2);
