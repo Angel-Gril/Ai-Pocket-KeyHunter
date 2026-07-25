@@ -426,6 +426,18 @@ impl Repository {
         Ok(())
     }
 
+    /// Most recently started run still marked `running` (for error recovery / fail_run).
+    pub async fn latest_running_run_id(&self) -> Result<Option<String>> {
+        let Some(pool) = self.pool() else {
+            return Ok(None);
+        };
+        Ok(sqlx::query_scalar(
+            "SELECT run_id FROM runs WHERE state='running' ORDER BY started_at DESC LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?)
+    }
+
     pub async fn append_ledger(&self, entries: &[RequestLedgerEntry]) -> Result<()> {
         let Some(pool) = self.pool() else {
             return Ok(());

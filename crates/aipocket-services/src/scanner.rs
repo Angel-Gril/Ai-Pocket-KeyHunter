@@ -38,6 +38,10 @@ impl Scanner {
         Ok(targets.into_iter().map(|target| target.url).collect())
     }
 
+    pub async fn latest_running_run_id(&self) -> Result<Option<String>> {
+        self.repository.latest_running_run_id().await
+    }
+
     pub async fn run_resumable(
         &self,
         sources: Vec<Arc<dyn DiscoverySource>>,

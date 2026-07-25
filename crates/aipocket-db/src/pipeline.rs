@@ -103,6 +103,8 @@ pub async fn upsert_discovery_hits(
 ) -> anyhow::Result<u64> {
     let mut written = 0;
     for hit in hits {
+        // PostgreSQL json/jsonb rejects \u0000; FOFA/Shodan banners sometimes contain NUL.
+        let hit = sanitize_json_for_pg(hit);
         let entry_id = format!("{:x}", Sha1::digest(hit.to_string().as_bytes()));
         let source = hit
             .get("_source")
@@ -124,7 +126,7 @@ pub async fn upsert_discovery_hits(
             .and_then(Value::as_str)
             .unwrap_or_default();
         written += sqlx::query("INSERT INTO scan_discovery_hits(run_id,source,entry_id,query_id,host,ip,port,protocol,record) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(run_id,entry_id) DO UPDATE SET record=EXCLUDED.record")
-            .bind(run_id).bind(source).bind(entry_id).bind(query_id).bind(host).bind(ip).bind(port).bind(protocol).bind(hit)
+            .bind(run_id).bind(source).bind(entry_id).bind(query_id).bind(host).bind(ip).bind(port).bind(protocol).bind(&hit)
             .execute(pool).await?.rows_affected();
     }
     Ok(written)
@@ -135,6 +137,23 @@ fn value_text(value: &Value) -> String {
         .as_str()
         .map(str::to_owned)
         .unwrap_or_else(|| value.to_string())
+}
+
+/// Strip NUL bytes so values are safe for PostgreSQL `json`/`jsonb` columns.
+/// Postgres rejects `\u0000` with: unsupported Unicode escape sequence.
+pub fn sanitize_json_for_pg(value: &Value) -> Value {
+    match value {
+        Value::String(s) => Value::String(s.replace('\0', "")),
+        Value::Array(items) => Value::Array(items.iter().map(sanitize_json_for_pg).collect()),
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (key, child) in map {
+                out.insert(key.replace('\0', ""), sanitize_json_for_pg(child));
+            }
+            Value::Object(out)
+        }
+        other => other.clone(),
+    }
 }
 
 pub async fn load_discovery_hits(pool: &PgPool, run_id: &str) -> anyhow::Result<Vec<Value>> {
@@ -309,6 +328,23 @@ pub fn next_work_status(current: &str, success: bool, source_gone: bool) -> &'st
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sanitize_json_strips_nul_bytes() {
+        let dirty = serde_json::json!({
+            "banner": "hello\u{0000}world",
+            "nested": {"x": "a\0b"},
+            "arr": ["c\0d", 1],
+            "ok": "fine"
+        });
+        let clean = sanitize_json_for_pg(&dirty);
+        assert_eq!(clean["banner"], "helloworld");
+        assert_eq!(clean["nested"]["x"], "ab");
+        assert_eq!(clean["arr"][0], "cd");
+        assert_eq!(clean["ok"], "fine");
+        // Must not contain the JSON escape that Postgres rejects.
+        assert!(!clean.to_string().contains("\\u0000"));
+    }
+
     #[test]
     fn planner_uses_selected_metric_version() {
         let a = PlannerCandidate {

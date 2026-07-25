@@ -1116,8 +1116,22 @@ async fn scan_start(
             .run_resumable(discovery, b.mode, resume.clone(), cancel, tx.clone())
             .await
         {
-            let run_id = resume.unwrap_or_else(|| "unknown".into());
+            // run_id is created inside the scanner; without resume the old path used
+            // "unknown" and left the real runs row stuck in `running`.
+            let run_id = if let Some(run_id) = resume {
+                run_id
+            } else {
+                scanner
+                    .latest_running_run_id()
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "unknown".into())
+            };
             scanner.fail_run(&run_id, error.to_string(), &tx).await;
+            // Belt-and-suspenders: error paths may drop the lease before release();
+            // clear Redis so the next scan is not blocked by a stale lock.
+            aipocket_db::clear_stale_scan_lock(&settings).await;
         }
     });
     Ok(Json(s.scan_manager.status().await))

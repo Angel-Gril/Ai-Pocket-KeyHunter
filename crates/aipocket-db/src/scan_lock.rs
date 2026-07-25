@@ -18,6 +18,8 @@ pub struct ScanLease {
     token: String,
     ttl: u64,
     heartbeat: Option<JoinHandle<()>>,
+    /// Set when [`Self::release`] already cleared Redis; Drop must not race-delete.
+    released: bool,
 }
 
 impl ScanLease {
@@ -70,12 +72,14 @@ impl ScanLease {
             token,
             ttl,
             heartbeat: Some(heartbeat),
+            released: false,
         }))
     }
     pub fn ttl(&self) -> u64 {
         self.ttl
     }
     pub async fn release(mut self) -> Result<bool> {
+        self.released = true;
         if let Some(task) = self.heartbeat.take() {
             task.abort();
         }
@@ -85,6 +89,33 @@ impl ScanLease {
             .invoke_async(&mut self.connection)
             .await?;
         Ok(released == 1)
+    }
+}
+
+impl Drop for ScanLease {
+    fn drop(&mut self) {
+        if let Some(task) = self.heartbeat.take() {
+            task.abort();
+        }
+        if self.released {
+            return;
+        }
+        // Error paths often `?` out without calling release(); without this the
+        // heartbeat task keeps renewing aipocket:scan:lock for up to scan_lock_ttl.
+        let mut connection = self.connection.clone();
+        let token = self.token.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let result: redis::RedisResult<i32> = redis::Script::new(RELEASE_SCRIPT)
+                    .key(LOCK_KEY)
+                    .arg(token)
+                    .invoke_async(&mut connection)
+                    .await;
+                if let Err(error) = result {
+                    warn!(%error, "scan lease best-effort drop release failed");
+                }
+            });
+        }
     }
 }
 
