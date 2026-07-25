@@ -110,7 +110,12 @@ impl Scanner {
                         pending.len()
                     )))
                     .ok();
-                let observations = self.process_github_work(pool, pending, &events).await;
+                let observations = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        return self.interrupt(&run_id, progress, lease, &events).await;
+                    }
+                    observations = self.process_github_work(pool, pending, &events) => observations,
+                };
                 credentials_from_observations(&mut hits, observations);
             }
         }
@@ -170,7 +175,13 @@ impl Scanner {
                     checkpoints,
                     ..source_budgets
                 };
-                match source.fetch(&source_budgets, mode.clone()).await {
+                let fetched = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        return self.interrupt(&run_id, progress, lease, &events).await;
+                    }
+                    fetched = source.fetch(&source_budgets, mode.clone()) => fetched,
+                };
+                match fetched {
                     Ok(mut fetched) => {
                         progress.raw_hits += fetched
                             .host_hit_count
@@ -259,6 +270,9 @@ impl Scanner {
                 };
             }
         }
+        if cancel.is_cancelled() {
+            return self.interrupt(&run_id, progress, lease, &events).await;
+        }
         if let Some(pool) = self.repository.pool() {
             aipocket_db::upsert_discovery_hits(pool, &run_id, &hits).await?;
         }
@@ -292,7 +306,12 @@ impl Scanner {
         let validator = Validator::new(self.http.clone());
         let mut outcomes = Vec::new();
         let mut ledger = Vec::new();
-        let mut probed = self.probe_hits(&hits, &events).await;
+        let mut probed = tokio::select! {
+            _ = cancel.cancelled() => {
+                return self.interrupt(&run_id, progress, lease, &events).await;
+            }
+            probed = self.probe_hits(&hits, &events) => probed,
+        };
         for hit in &hits {
             if let Some(target) = hit
                 .get("host")
@@ -331,7 +350,12 @@ impl Scanner {
             .as_deref()
             .is_none_or(|phase| phase_rank(phase) < phase_rank("validate"))
         {
-            let gpt_report = analyzer.extract(&hits, run_dir.as_deref()).await;
+            let gpt_report = tokio::select! {
+                _ = cancel.cancelled() => {
+                    return self.interrupt(&run_id, progress, lease, &events).await;
+                }
+                report = analyzer.extract(&hits, run_dir.as_deref()) => report,
+            };
             credentials.extend(gpt_report.credentials);
         }
         if let Some(pool) = self.repository.pool() {
@@ -376,7 +400,12 @@ impl Scanner {
                     (credential, entry, result)
                 });
             }
-            while let Some(joined) = tasks.join_next().await {
+            while let Some(joined) = tokio::select! {
+                _ = cancel.cancelled() => {
+                    return self.interrupt(&run_id, progress, lease, &events).await;
+                }
+                joined = tasks.join_next() => joined,
+            } {
                 let Ok((credential, mut entry, result)) = joined else {
                     events
                         .send(ScanEvent::Log("validation task failed in isolation".into()))
@@ -421,13 +450,21 @@ impl Scanner {
             ledger.clear();
             events.send(ScanEvent::Progress(progress.clone())).ok();
         }
-        analyzer.recheck(&mut outcomes).await;
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                return self.interrupt(&run_id, progress, lease, &events).await;
+            }
+            _ = analyzer.recheck(&mut outcomes) => {}
+        }
         let (mut valid_results, mut suspicious_results) = finalize_results(outcomes);
         events
             .send(ScanEvent::Phase("balance_finalize".into()))
             .ok();
         let balance = crate::BalanceService::new(self.http.clone());
         for result in &mut valid_results {
+            if cancel.is_cancelled() {
+                return self.interrupt(&run_id, progress, lease, &events).await;
+            }
             if let Some(cached) = dedup
                 .get_balance::<crate::BalanceResult>(&result.credential)
                 .await
@@ -436,7 +473,13 @@ impl Scanner {
                 dedup.set_success(&result.credential, result).await;
                 continue;
             }
-            match balance.query_for_result(result).await {
+            let balance_result = tokio::select! {
+                _ = cancel.cancelled() => {
+                    return self.interrupt(&run_id, progress, lease, &events).await;
+                }
+                result = balance.query_for_result(result) => result,
+            };
+            match balance_result {
                 Ok(enriched) => {
                     dedup.set_balance(&result.credential, &enriched).await;
                     apply_balance(result, enriched);
@@ -457,13 +500,22 @@ impl Scanner {
             }
         }
         for result in &mut suspicious_results {
+            if cancel.is_cancelled() {
+                return self.interrupt(&run_id, progress, lease, &events).await;
+            }
             let enriched = if let Some(cached) = dedup
                 .get_balance::<crate::BalanceResult>(&result.credential)
                 .await
             {
                 Some(cached)
             } else {
-                match balance.query_for_result(result).await {
+                let balance_result = tokio::select! {
+                    _ = cancel.cancelled() => {
+                        return self.interrupt(&run_id, progress, lease, &events).await;
+                    }
+                    result = balance.query_for_result(result) => result,
+                };
+                match balance_result {
                     Ok(enriched) => {
                         dedup.set_balance(&result.credential, &enriched).await;
                         Some(enriched)
@@ -924,6 +976,26 @@ mod tests {
         observations: bool,
         empty_host: bool,
         host_hit_count: Option<u64>,
+    }
+
+    struct BlockingSource {
+        started: Arc<tokio::sync::Barrier>,
+    }
+
+    #[async_trait]
+    impl DiscoverySource for BlockingSource {
+        fn name(&self) -> &'static str {
+            "blocking"
+        }
+
+        fn is_configured(&self) -> bool {
+            true
+        }
+
+        async fn fetch(&self, _: &SourceBudgets, _: ScanMode) -> Result<SourceFetchResult> {
+            self.started.wait().await;
+            std::future::pending().await
+        }
     }
 
     #[async_trait]
@@ -1501,6 +1573,45 @@ mod tests {
             .await
             .unwrap();
         assert!(interrupted.starts_with("run_"));
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(events.iter().any(
+            |event| matches!(event, ScanEvent::Interrupted { error, .. } if error == "cancelled")
+        ));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn scanner_cancels_an_inflight_discovery_request() {
+        let root = std::env::temp_dir().join(format!(
+            "aipocket-scan-inflight-cancel-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let scanner = Scanner::new(
+            Arc::new(offline_settings(root.to_string_lossy())),
+            Repository::new(None),
+            test_http(),
+        );
+        let started = Arc::new(tokio::sync::Barrier::new(2));
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        let source = Arc::new(BlockingSource {
+            started: started.clone(),
+        });
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let scan = tokio::spawn(async move {
+            scanner
+                .run(vec![source], ScanMode::Incremental, cancel, tx)
+                .await
+        });
+
+        started.wait().await;
+        stop.cancel();
+        let run_id = tokio::time::timeout(Duration::from_secs(1), scan)
+            .await
+            .expect("scan did not stop promptly")
+            .unwrap()
+            .unwrap();
+        assert!(run_id.starts_with("run_"));
         let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(events.iter().any(
             |event| matches!(event, ScanEvent::Interrupted { error, .. } if error == "cancelled")

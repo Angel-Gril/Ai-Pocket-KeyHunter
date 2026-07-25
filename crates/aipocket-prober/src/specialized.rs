@@ -43,16 +43,25 @@ pub async fn validate_specialized(
 ) -> anyhow::Result<Option<SpecializedValidation>> {
     let base = credential.apiurl.trim_end_matches('/');
     let kind = classify_credential(provider, &credential.apikey);
+    let origin = base
+        .split("/v1beta")
+        .next()
+        .unwrap_or(base)
+        .trim_end_matches('/');
     let response = match provider {
         "anthropic" => Some(
-            http.get(format!("{base}/v1/models"))
-                .header("x-api-key", &credential.apikey)
-                .header("anthropic-version", "2023-06-01")
-                .send()
-                .await?,
+            http.get(if base.ends_with("/v1") {
+                format!("{base}/models")
+            } else {
+                format!("{base}/v1/models")
+            })
+            .header("x-api-key", &credential.apikey)
+            .header("anthropic-version", "2023-06-01")
+            .send()
+            .await?,
         ),
         "gemini" => Some(
-            http.get(format!("{base}/v1beta/models"))
+            http.get(format!("{origin}/v1beta/models"))
                 .query(&[("key", &credential.apikey)])
                 .send()
                 .await?,
@@ -64,10 +73,44 @@ pub async fn validate_specialized(
                 .await?,
         ),
         "openai" => Some(
-            http.get(format!("{base}/v1/models"))
-                .bearer_auth(&credential.apikey)
-                .send()
-                .await?,
+            http.get(if base.ends_with("/v1") {
+                format!("{base}/models")
+            } else {
+                format!("{base}/v1/models")
+            })
+            .bearer_auth(&credential.apikey)
+            .send()
+            .await?,
+        ),
+        "qoder" => Some(
+            http.get(if base.ends_with("/api/v1") {
+                format!("{base}/cloud/models")
+            } else {
+                format!("{base}/api/v1/cloud/models")
+            })
+            .bearer_auth(&credential.apikey)
+            .send()
+            .await?,
+        ),
+        "cursor" => Some(
+            http.get(if base.ends_with("/v1") {
+                format!("{base}/me")
+            } else {
+                format!("{base}/v1/me")
+            })
+            .bearer_auth(&credential.apikey)
+            .send()
+            .await?,
+        ),
+        "aws_bedrock" => Some(
+            http.get(if base.ends_with("/foundation-models") {
+                base.to_owned()
+            } else {
+                format!("{base}/foundation-models")
+            })
+            .bearer_auth(&credential.apikey)
+            .send()
+            .await?,
         ),
         _ => None,
     };
@@ -108,12 +151,14 @@ fn extract_models(value: &Value) -> Vec<String> {
     value
         .get("data")
         .or_else(|| value.get("models"))
+        .or_else(|| value.get("modelSummaries"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|item| {
             item.get("id")
                 .or_else(|| item.get("name"))
+                .or_else(|| item.get("modelId"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })

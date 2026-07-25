@@ -41,7 +41,91 @@ fn provider_registry_resolves_domain_prefix_and_unknown() {
         "unknown"
     );
     assert!(registry.specs().contains_key("anthropic"));
+    assert_eq!(
+        registry.resolve("", "xai-abcdefghijklmnop").spec.name,
+        "xai"
+    );
+    assert_eq!(
+        registry.resolve("", "ksk_abcdefghijklmnop").spec.name,
+        "kiro"
+    );
+    assert_eq!(
+        registry
+            .resolve("", "crsr_abcdefghijklmnopqrstuvwxyz123456")
+            .spec
+            .name,
+        "cursor"
+    );
+    assert_eq!(
+        registry.resolve("", "pt-abcdefghijklmnop").spec.name,
+        "qoder"
+    );
+    assert_eq!(
+        registry
+            .resolve("https://bedrock-runtime.us-east-1.amazonaws.com", "token")
+            .spec
+            .name,
+        "aws_bedrock"
+    );
+    assert!(registry.specs()["xai"].models.contains(&"grok-4.7"));
 }
+#[tokio::test]
+async fn coding_agent_and_bedrock_credentials_use_official_read_only_routes() {
+    use axum::{Json, extract::Request};
+    use serde_json::{Value, json};
+    async fn fixture(request: Request) -> Json<Value> {
+        Json(match request.uri().path() {
+            "/api/v1/cloud/models" => json!({"data":[{"id":"cantus"}]}),
+            "/v1/me" => json!({"apiKeyName":"scanner","userEmail":"dev@example.test"}),
+            "/foundation-models" => {
+                json!({"modelSummaries":[{"modelId":"amazon.nova-lite-v1:0"}]})
+            }
+            _ => json!({}),
+        })
+    }
+    let app = Router::new().fallback(get(fixture));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let port = address.port();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let validator = aipocket_prober::Validator::new(
+        reqwest::Client::builder()
+            .resolve("api.qoder.com", address)
+            .resolve("api.cursor.com", address)
+            .resolve("bedrock.us-east-1.amazonaws.com", address)
+            .build()
+            .unwrap(),
+    );
+    for (key, provider, models) in [
+        ("pt-abcdefghijklmnop", "qoder", vec!["cantus"]),
+        ("crsr_abcdefghijklmnopqrstuvwxyz123456", "cursor", vec![]),
+        (
+            "ABSKabcdefghijklmnopqrstuvwxyz",
+            "aws_bedrock",
+            vec!["amazon.nova-lite-v1:0"],
+        ),
+    ] {
+        let expected = aipocket_prober::ProviderRegistry.resolve("", key).spec.name;
+        let result = validator
+            .validate(Credential {
+                apikey: key.into(),
+                apiurl: match provider {
+                    "qoder" => format!("http://api.qoder.com:{port}"),
+                    "cursor" => format!("http://api.cursor.com:{port}"),
+                    _ => format!("http://bedrock.us-east-1.amazonaws.com:{port}"),
+                },
+                product: provider.into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(result.valid, "{provider}");
+        assert_eq!(expected, provider);
+        assert_eq!(result.provider_info.models_available, models, "{provider}");
+    }
+    task.abort();
+}
+
 #[test]
 fn defaults_construct_credential() {
     let credential = Credential::default();

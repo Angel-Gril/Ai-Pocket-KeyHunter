@@ -1010,7 +1010,7 @@ async fn scan_start(
     } else {
         b.sources.clone()
     };
-    let (cancel, tx, rx) = s
+    let (cancel, tx, rx, stopped) = s
         .scan_manager
         .start_channel(sources.join(","), b.mode.clone())
         .await
@@ -1024,6 +1024,7 @@ async fn scan_start(
     let settings = s.settings.read().await.clone();
     let http = s.http.clone();
     tokio::spawn(async move {
+        let _stopped = stopped;
         let registry = aipocket_discovery::packs::registry();
         let selected_packs: Vec<_> =
             if b.github_pack_ids.is_empty() || b.github_pack_ids.iter().any(|v| v == "all") {

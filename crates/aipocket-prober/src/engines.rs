@@ -697,8 +697,115 @@ fn extract_credentials(text: &str, target: &str, product: &str) -> Vec<Credentia
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RiskLevel;
+    use axum::{
+        Json, Router,
+        extract::Path,
+        http::{HeaderMap, StatusCode},
+        response::IntoResponse,
+        routing::{get, post},
+    };
+
+    fn spec(
+        id: &str,
+        class: VulnClass,
+        risk_level: RiskLevel,
+        requires_auth: bool,
+        depends_on: &[&str],
+        entry: Value,
+        max_requests: usize,
+    ) -> ProbeSpec {
+        ProbeSpec {
+            id: id.into(),
+            product: "fixture".into(),
+            vuln_class: class,
+            risk_level,
+            cve_ids: vec![],
+            requires_auth,
+            depends_on: depends_on.iter().map(|value| (*value).into()).collect(),
+            entry,
+            max_requests,
+        }
+    }
+
+    fn policy() -> RiskPolicy {
+        RiskPolicy {
+            enabled_classes: [
+                VulnClass::UnauthRead,
+                VulnClass::WeakPassword,
+                VulnClass::Idor,
+                VulnClass::Ssrf,
+                VulnClass::Sqli,
+                VulnClass::Rce,
+            ]
+            .into_iter()
+            .collect(),
+            max_risk: RiskLevel::L3,
+            intrusive_checks: true,
+            authorized_scope: vec![],
+            ssrf_enabled: true,
+            sqli_enabled: true,
+            rce_enabled: true,
+        }
+    }
+
+    async fn fixture_server() -> (String, tokio::task::JoinHandle<()>) {
+        let app = Router::new()
+            .route(
+                "/secrets",
+                get(|| async { "OPENAI_API_KEY=sk-fixture-abcdefghijkl" }),
+            )
+            .route(
+                "/login",
+                post(|Json(body): Json<Value>| async move {
+                    if body["username"] == "admin" && body["password"] == "123456789" {
+                        Json(json!({"token":"fixture-token"})).into_response()
+                    } else {
+                        (StatusCode::UNAUTHORIZED, Json(json!({"error":"invalid"}))).into_response()
+                    }
+                }),
+            )
+            .route(
+                "/objects/{id}",
+                get(|Path(id): Path<String>, headers: HeaderMap| async move {
+                    if id == "1" || headers.get("authorization").is_some() {
+                        (StatusCode::OK, "sk-object-abcdefghijkl").into_response()
+                    } else {
+                        StatusCode::FORBIDDEN.into_response()
+                    }
+                }),
+            )
+            .route(
+                "/ssrf",
+                post(|| async { "localhost OPENAI_API_KEY=sk-ssrf-abcdefghijkl" }),
+            )
+            .route(
+                "/search",
+                get(|query: axum::extract::RawQuery| async move {
+                    if query.0.as_deref().is_some_and(|value| value.contains("OR")) {
+                        "postgresql syntax error: sk-sqli-abcdefghijkl"
+                    } else {
+                        "baseline"
+                    }
+                }),
+            )
+            .route(
+                "/exec",
+                post(|Json(body): Json<Value>| async move {
+                    body["command"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .replace("echo ", "")
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{address}"), task)
+    }
+
     #[test]
-    fn weak_password_dictionary_is_packaged_and_sqli_payloads_are_non_destructive() {
+    fn helper_contracts_filter_commands_and_extract_credentials() {
         assert!(weak_credentials().len() > 10);
         for word in [
             "drop ",
@@ -710,5 +817,225 @@ mod tests {
         ] {
             assert!(!"' OR '1'='1".contains(word));
         }
+        for allowed in [
+            "printenv",
+            "env",
+            "id",
+            "uname",
+            "cat /.env",
+            "cat /app/.env",
+            "cat /proc/self/environ",
+            "cat /etc/hostname",
+            "echo fixture",
+        ] {
+            assert!(command_allowed(allowed), "{allowed}");
+        }
+        for denied in ["cat /etc/passwd", "rm -rf /", "curl example.com"] {
+            assert!(!command_allowed(denied), "{denied}");
+        }
+        assert_eq!(url("https://host/", "path"), "https://host/path");
+        assert_eq!(url("https://host", "/path"), "https://host/path");
+        let credentials = extract_credentials(
+            "sk-one-abcdefghijkl AIzaSyDaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "https://fixture",
+            "fixture",
+        );
+        assert_eq!(credentials.len(), 2);
+        assert!(credentials.iter().all(|item| item.backend == "prober"));
+    }
+
+    #[tokio::test]
+    async fn plan_executes_all_engines_and_records_gate_states() {
+        let (target, server) = fixture_server().await;
+        let specs = vec![
+            spec(
+                "unauth",
+                VulnClass::UnauthRead,
+                RiskLevel::L0,
+                false,
+                &[],
+                json!({"paths":["/secrets"]}),
+                1,
+            ),
+            spec(
+                "weak",
+                VulnClass::WeakPassword,
+                RiskLevel::L1,
+                false,
+                &[],
+                json!({"login":"/login","post_auth_paths":["/secrets"]}),
+                3,
+            ),
+            spec(
+                "idor",
+                VulnClass::Idor,
+                RiskLevel::L1,
+                true,
+                &["weak"],
+                json!({"object":"/objects/{id}","predictable_ids":["1"]}),
+                2,
+            ),
+            spec(
+                "ssrf",
+                VulnClass::Ssrf,
+                RiskLevel::L2,
+                false,
+                &[],
+                json!({"path":"/ssrf"}),
+                1,
+            ),
+            spec(
+                "sqli",
+                VulnClass::Sqli,
+                RiskLevel::L2,
+                false,
+                &[],
+                json!({"path":"/search","payloads":["' OR '1'='1"]}),
+                2,
+            ),
+            spec(
+                "rce",
+                VulnClass::Rce,
+                RiskLevel::L3,
+                false,
+                &[],
+                json!({"path":"/exec","secret_commands":["cat /.env","rm -rf /"]}),
+                2,
+            ),
+        ];
+        let result = execute_plan(
+            &reqwest::Client::new(),
+            EngineContext {
+                target,
+                product: "fixture".into(),
+                ..Default::default()
+            },
+            &specs,
+            &policy(),
+            20,
+        )
+        .await;
+        assert_eq!(result.outcomes.len(), specs.len());
+        assert!(
+            result
+                .outcomes
+                .iter()
+                .all(|outcome| outcome.status == NodeStatus::Executed),
+            "{:?}",
+            result.outcomes
+        );
+        assert_eq!(result.findings.len(), specs.len());
+        assert!(result.credentials.len() >= 4);
+
+        let gated = execute_plan(
+            &reqwest::Client::new(),
+            EngineContext {
+                target: "http://127.0.0.1:1".into(),
+                product: "fixture".into(),
+                ..Default::default()
+            },
+            &[
+                spec(
+                    "class-off",
+                    VulnClass::Rce,
+                    RiskLevel::L3,
+                    false,
+                    &[],
+                    Value::Null,
+                    1,
+                ),
+                spec(
+                    "needs-auth",
+                    VulnClass::UnauthRead,
+                    RiskLevel::L0,
+                    true,
+                    &[],
+                    json!({"paths":[]}),
+                    1,
+                ),
+                spec(
+                    "budget",
+                    VulnClass::UnauthRead,
+                    RiskLevel::L0,
+                    false,
+                    &[],
+                    json!({"paths":[]}),
+                    1,
+                ),
+            ],
+            &RiskPolicy {
+                enabled_classes: [VulnClass::UnauthRead].into_iter().collect(),
+                ..policy()
+            },
+            0,
+        )
+        .await;
+        assert!(gated.outcomes.iter().any(|item| {
+            item.spec_id == "class-off" && item.status == NodeStatus::SkippedClass
+        }));
+        assert!(gated.outcomes.iter().any(|item| {
+            item.spec_id == "needs-auth" && item.status == NodeStatus::SkippedNoAuth
+        }));
+        assert!(
+            gated.outcomes.iter().any(|item| {
+                item.spec_id == "budget" && item.status == NodeStatus::SkippedBudget
+            })
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn dependency_and_transport_failures_are_isolated() {
+        let failed = spec(
+            "failed",
+            VulnClass::UnauthRead,
+            RiskLevel::L0,
+            false,
+            &[],
+            json!({"paths":["/unreachable"]}),
+            1,
+        );
+        let dependent = spec(
+            "dependent",
+            VulnClass::UnauthRead,
+            RiskLevel::L0,
+            false,
+            &["failed"],
+            json!({"paths":[]}),
+            1,
+        );
+        let unresolved = spec(
+            "unresolved",
+            VulnClass::UnauthRead,
+            RiskLevel::L0,
+            false,
+            &["missing"],
+            json!({"paths":[]}),
+            1,
+        );
+        let result = execute_plan(
+            &reqwest::Client::new(),
+            EngineContext {
+                target: "http://127.0.0.1:1".into(),
+                product: "fixture".into(),
+                ..Default::default()
+            },
+            &[failed, dependent, unresolved],
+            &policy(),
+            3,
+        )
+        .await;
+        assert!(
+            result
+                .outcomes
+                .iter()
+                .any(|item| item.spec_id == "failed" && item.status == NodeStatus::Failed)
+        );
+        assert!(result.outcomes.iter().any(|item| {
+            item.spec_id == "dependent" && item.status == NodeStatus::SkippedDependency
+        }));
+        assert!(result.outcomes.iter().any(|item| {
+            item.spec_id == "unresolved" && item.status == NodeStatus::SkippedDependency
+        }));
     }
 }

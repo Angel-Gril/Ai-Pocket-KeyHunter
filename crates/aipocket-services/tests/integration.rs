@@ -50,6 +50,10 @@ async fn fixture_server() -> (String, tokio::task::JoinHandle<()>) {
             }),
         )
         .route(
+            "/v1beta/models/gemini-2.0-flash:generateContent",
+            axum::routing::post(|| async { Json(json!({"candidates":[{"content":{"parts":[{"text":"ok"}]}}]})) }),
+        )
+        .route(
             "/user/balance",
             get(|| async { Json(json!({"balance":"12.5"})) }),
         );
@@ -216,6 +220,7 @@ async fn models_and_chat_use_provider_protocol_endpoints() {
     let service = BalanceService::new(
         reqwest::Client::builder()
             .resolve("api.anthropic.com", address)
+            .resolve("generativelanguage.googleapis.com", address)
             .build()
             .unwrap(),
     );
@@ -252,15 +257,18 @@ async fn models_and_chat_use_provider_protocol_endpoints() {
         .test_chat(
             Credential {
                 apikey: "AIzaSyDaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-                apiurl: "https://generativelanguage.googleapis.com/v1beta".into(),
+                apiurl: format!(
+                    "http://generativelanguage.googleapis.com:{}",
+                    url::Url::parse(&base).unwrap().port().unwrap()
+                ),
                 ..Default::default()
             },
             "gemini-2.0-flash",
         )
         .await
         .unwrap();
-    assert!(!google.success);
-    assert_eq!(google.error, "excluded:google_generative_language");
+    assert!(google.success);
+    assert_eq!(google.model, "gemini-2.0-flash");
     let empty = service
         .test_chat(
             Credential {

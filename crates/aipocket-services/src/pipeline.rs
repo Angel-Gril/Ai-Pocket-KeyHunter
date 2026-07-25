@@ -11,13 +11,17 @@ static KEY_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"\bsk-or-v1-[a-fA-F0-9-]{30,}\b",
         r"\bsk-ant-[A-Za-z0-9_-]{20,}\b",
         r"\bsk-(?:proj|admin|svcacct)-[A-Za-z0-9_-]{20,}\b",
-        r"\bAIzaSy[A-Za-z0-9_-]{35}\b",
+        r"\bAIza[A-Za-z0-9_-]{20,}\b",
         r"\bgsk_[A-Za-z0-9]{20,}\b",
         r"\bpplx-[A-Za-z0-9]{20,}\b",
         r"\br8_[A-Za-z0-9]{20,}\b",
         r"\bhf_[A-Za-z0-9]{20,}\b",
         r"\bxai-[A-Za-z0-9]{20,}\b",
         r"\bkey_[A-Za-z0-9]{20,}\b",
+        r"\bksk_[A-Za-z0-9_-]{16,}\b",
+        r"\bcrsr_[A-Za-z0-9_-]{32,}\b",
+        r"\bpt-[A-Za-z0-9_-]{16,}\b",
+        r"\bABSK[A-Za-z0-9_+=/.-]{20,}\b",
         r"\b[a-f0-9]{32}\.[A-Za-z0-9]{16}\b",
         r"\bsk-[A-Za-z0-9_-]{6,}\b",
         r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b",
@@ -72,6 +76,23 @@ const NOISE_SUBSTRINGS: &[&str] = &[
     "yourkey",
 ];
 
+fn provider_context_key(text: &str) -> Option<&str> {
+    let lowered = text.to_ascii_lowercase();
+    let marker = ["windsurf_service_key", "codeium_service_key"]
+        .into_iter()
+        .find(|name| lowered.contains(name))?;
+    let after = &text[lowered.find(marker)? + marker.len()..];
+    after
+        .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '"' | '\'' | '=' | ':' | ','))
+        .find(|value| {
+            value.len() >= 20
+                && value.is_ascii()
+                && value
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        })
+}
+
 pub fn extract_credentials(hits: &[Value]) -> Vec<Credential> {
     let mut seen = HashSet::new();
     let mut output = Vec::new();
@@ -110,6 +131,21 @@ pub fn extract_credentials(hits: &[Value]) -> Vec<Credential> {
             let Some(text) = hit.get(field).and_then(Value::as_str) else {
                 continue;
             };
+            if let Some(apikey) = provider_context_key(text) {
+                let apiurl = "https://server.codeium.com/api/v1".to_owned();
+                if !is_noise(apikey) && seen.insert((apikey.to_owned(), apiurl.clone())) {
+                    output.push(Credential {
+                        apikey: apikey.into(),
+                        apiurl,
+                        source: "windsurf_service_key".into(),
+                        source_type: source_type.into(),
+                        backend: source.into(),
+                        host: host.into(),
+                        raw_context: text.chars().take(500).collect(),
+                        ..Default::default()
+                    });
+                }
+            }
             for pattern in KEY_PATTERNS.iter() {
                 for found in pattern.find_iter(text) {
                     let apikey = found.as_str();
@@ -164,7 +200,6 @@ pub fn prefilter(credentials: Vec<Credential>) -> Vec<Credential> {
                 && locations
                     .get(credential.apikey.as_str())
                     .is_none_or(|items| items.len() <= 5)
-                && !is_google_direct(credential)
         })
         .collect()
 }
@@ -180,9 +215,8 @@ pub fn finalize_results(
     let mut key_first_host: HashMap<String, String> = HashMap::new();
     let mut valid = Vec::new();
     let mut suspicious = Vec::new();
-
     for mut result in results.drain(..) {
-        if is_google_direct(&result.credential) || !result.valid {
+        if !result.valid {
             continue;
         }
         let response = result.response_snippet.trim();
@@ -467,16 +501,30 @@ mod tests {
             "host":"relay.example",
             "protocol":"https",
             "_source":"fofa",
-            "body":"OPENAI_API_KEY=sk-proj-a1b2c3d4e5f6g7h8i9j0k1 BASE_URL=https://relay.example/v1\nANTHROPIC=sk-ant-A1B2C3D4E5F6G7H8I9J0K1"
+            "body":"OPENAI_API_KEY=sk-proj-a1b2c3d4e5f6g7h8i9j0k1 BASE_URL=https://relay.example/v1\nANTHROPIC=sk-ant-A1B2C3D4E5F6G7H8I9J0K1\nXAI_API_KEY=xai-A1B2C3D4E5F6G7H8I9J0K1\nKIRO_API_KEY=ksk_A1B2C3D4E5F6G7H8I9J0K1\nCURSOR_API_KEY=crsr_A1B2C3D4E5F6G7H8I9J0K1M2N3O4P5Q6R7S8\nQODER_PAT=pt-A1B2C3D4E5F6G7H8I9J0K1"
         })];
         let credentials = extract_credentials(&hits);
-        assert_eq!(credentials.len(), 2);
+        assert_eq!(credentials.len(), 6);
         assert!(
             credentials
                 .iter()
                 .all(|credential| credential.apiurl == "https://relay.example/v1")
         );
+        let gemini = extract_credentials(&[json!({
+            "host":"https://generativelanguage.googleapis.com/v1beta",
+            "_source":"github",
+            "body":"GEMINI_API_KEY=AIzaSyDaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        })]);
+        assert_eq!(gemini.len(), 1);
+        assert!(is_google_direct(&gemini[0]));
         assert!(is_noise("sk-replace_with_your_api_key"));
+        let windsurf = extract_credentials(&[json!({
+            "host":"relay.example",
+            "_source":"github",
+            "body":"WINDSURF_SERVICE_KEY=windsurfServiceKey1234567890"
+        })]);
+        assert_eq!(windsurf.len(), 1);
+        assert_eq!(windsurf[0].apiurl, "https://server.codeium.com/api/v1");
     }
 
     #[test]

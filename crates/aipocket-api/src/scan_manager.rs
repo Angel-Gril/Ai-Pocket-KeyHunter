@@ -11,6 +11,7 @@ pub struct ScanManager {
     capacity: usize,
     tx: broadcast::Sender<ScanLogLine>,
     cancel: Mutex<Option<CancellationToken>>,
+    stopped: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
 impl ScanManager {
     pub fn new(capacity: usize) -> Self {
@@ -21,6 +22,7 @@ impl ScanManager {
             capacity,
             tx,
             cancel: Mutex::new(None),
+            stopped: Mutex::new(None),
         }
     }
     pub async fn status(&self) -> ScanStatus {
@@ -40,6 +42,7 @@ impl ScanManager {
             CancellationToken,
             mpsc::UnboundedSender<ScanEvent>,
             mpsc::UnboundedReceiver<ScanEvent>,
+            tokio::sync::oneshot::Sender<()>,
         ),
         (),
     > {
@@ -49,6 +52,8 @@ impl ScanManager {
         }
         let cancel = CancellationToken::new();
         *self.cancel.lock().await = Some(cancel.clone());
+        let (stopped_tx, stopped_rx) = tokio::sync::oneshot::channel();
+        *self.stopped.lock().await = Some(stopped_rx);
         *status = ScanStatus {
             state: ScanState::Running,
             source: Some(source),
@@ -57,7 +62,7 @@ impl ScanManager {
             ..Default::default()
         };
         let (tx, rx) = mpsc::unbounded_channel();
-        Ok((cancel, tx, rx))
+        Ok((cancel, tx, rx, stopped_tx))
     }
     pub async fn consume(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<ScanEvent>) {
         while let Some(event) = rx.recv().await {
@@ -82,13 +87,19 @@ impl ScanManager {
         }
     }
     pub async fn stop(&self) -> bool {
-        let mut status = self.status.write().await;
-        if !matches!(status.state, ScanState::Running) {
-            return false;
+        {
+            let mut status = self.status.write().await;
+            if !matches!(status.state, ScanState::Running) {
+                return false;
+            }
+            status.state = ScanState::Stopping;
         }
-        status.state = ScanState::Stopping;
         if let Some(cancel) = self.cancel.lock().await.as_ref() {
             cancel.cancel();
+        }
+        let stopped = self.stopped.lock().await.take();
+        if let Some(stopped) = stopped {
+            let _ = stopped.await;
         }
         true
     }

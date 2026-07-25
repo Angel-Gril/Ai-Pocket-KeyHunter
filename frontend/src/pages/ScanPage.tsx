@@ -54,6 +54,13 @@ const SOURCE_ITEMS: { value: ScanSourceItem; label: string; icon: typeof Globe }
 
 /** Individual provider packs (excludes the "all" shortcut). */
 const GITHUB_PACK_OPTIONS: readonly { value: Exclude<GitHubPackId, "all">; label: string }[] = [
+  { value: "gemini", label: "Gemini" },
+  { value: "xai", label: "xAI / Grok" },
+  { value: "qoder", label: "Qoder / Cantus" },
+  { value: "kiro", label: "Kiro" },
+  { value: "aws_bedrock", label: "AWS Bedrock" },
+  { value: "cursor", label: "Cursor" },
+  { value: "windsurf", label: "Windsurf" },
   { value: "deepseek", label: "DeepSeek" },
   { value: "openai", label: "OpenAI" },
   { value: "anthropic", label: "Anthropic" },

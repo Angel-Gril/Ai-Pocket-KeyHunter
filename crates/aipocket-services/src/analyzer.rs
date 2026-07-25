@@ -405,19 +405,28 @@ fn credential_from_item(item: &Value, targets: &HashMap<String, Value>) -> Optio
         .or_else(|| target.get("url"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let apiurl = item
+    let explicit_apiurl = item
         .get("apiurl")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.is_empty());
+    let provider = item
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| provider_hint("", apikey));
+    let apiurl = explicit_apiurl
+        .or_else(|| {
+            let host_is_discovery_artifact =
+                host.contains("github.com") || host.contains("fofa") || host.contains("shodan");
+            (host.is_empty() || host_is_discovery_artifact)
+                .then(|| provider_default(&provider))
+                .flatten()
+        })
         .unwrap_or(host);
     Some(Credential {
         apikey: apikey.into(),
         apiurl: apiurl.into(),
-        source: item
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("gpt")
-            .into(),
+        source: provider,
         source_type: "body".into(),
         backend: target
             .get("_source")
@@ -681,6 +690,16 @@ fn variable_prefix(name: &str) -> String {
 fn provider_hint(name: &str, secret: &str) -> String {
     let text = name.to_ascii_lowercase();
     [
+        ("aws_bearer_token_bedrock", "aws_bedrock"),
+        ("bedrock", "aws_bedrock"),
+        ("windsurf", "windsurf"),
+        ("codeium", "windsurf"),
+        ("cursor", "cursor"),
+        ("kiro", "kiro"),
+        ("qoder", "qoder"),
+        ("xai", "xai"),
+        ("grok", "xai"),
+        ("gemini", "gemini"),
         ("azure_openai", "azure_openai"),
         ("zhipu", "glm"),
         ("bigmodel", "glm"),
@@ -705,12 +724,20 @@ fn provider_hint(name: &str, secret: &str) -> String {
     .iter()
     .find_map(|(token, provider)| text.contains(token).then_some((*provider).to_owned()))
     .unwrap_or_else(|| {
-        if secret.starts_with("sk-ant-") {
+        if secret.starts_with("xai-") {
+            "xai".into()
+        } else if secret.starts_with("ksk_") {
+            "kiro".into()
+        } else if secret.starts_with("crsr_") {
+            "cursor".into()
+        } else if secret.starts_with("pt-") {
+            "qoder".into()
+        } else if secret.starts_with("sk-ant-") {
             "anthropic".into()
         } else if secret.starts_with("r8_") {
             "replicate".into()
         } else if secret.starts_with("AIza") {
-            "google".into()
+            "gemini".into()
         } else if secret.starts_with("sk-") {
             "openai".into()
         } else {
@@ -734,6 +761,13 @@ fn dump_failed(run_dir: Option<&Path>, index: usize, batch: &[Value]) {
 
 fn provider_default(provider: &str) -> Option<&'static str> {
     Some(match provider {
+        "aws_bedrock" => "https://bedrock.us-east-1.amazonaws.com",
+        "xai" => "https://api.x.ai/v1",
+        "qoder" => "https://api.qoder.com",
+        "kiro" => "https://app.kiro.dev",
+        "cursor" => "https://api.cursor.com",
+        "windsurf" => "https://server.codeium.com/api/v1",
+        "gemini" => "https://generativelanguage.googleapis.com",
         "openai" => "https://api.openai.com/v1",
         "anthropic" => "https://api.anthropic.com/v1",
         "google" => "https://generativelanguage.googleapis.com",
@@ -771,6 +805,36 @@ mod tests {
             .is_none()
         );
     }
+    #[test]
+    fn attributed_provider_keys_receive_official_endpoints() {
+        let targets = HashMap::from([(
+            "known".into(),
+            json!({"host":"https://github.com/acme/repo/blob/main/.env","_source":"github"}),
+        )]);
+        for (key, provider, endpoint) in [
+            ("xai-abcdefghijklmnop", "xai", "https://api.x.ai/v1"),
+            ("ksk_abcdefghijklmnop", "kiro", "https://app.kiro.dev"),
+            (
+                "crsr_abcdefghijklmnopqrstuvwxyz123456",
+                "cursor",
+                "https://api.cursor.com",
+            ),
+            ("pt-abcdefghijklmnop", "qoder", "https://api.qoder.com"),
+            (
+                "AIzaSyabcdefghijklmnopqrst",
+                "gemini",
+                "https://generativelanguage.googleapis.com",
+            ),
+        ] {
+            let credential = credential_from_item(
+                &json!({"entry_id":"known","apikey":key,"type":provider}),
+                &targets,
+            )
+            .unwrap();
+            assert_eq!(credential.apiurl, endpoint, "{provider}");
+        }
+    }
+
     #[test]
     fn config_pairs_provider_prefix_and_default() {
         let rows = extract_config_bundles(
@@ -826,7 +890,7 @@ mod tests {
         assert_eq!(rows[0].endpoint_candidates.len(), 2);
         assert_eq!(
             provider_hint("MYSTERY_KEY", "AIzaSyabcdefghijklmnopqrst"),
-            "google"
+            "gemini"
         );
         assert!(provider_default("missing").is_none());
     }

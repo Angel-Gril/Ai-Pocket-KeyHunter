@@ -23,6 +23,13 @@ pub const DIRECT_CREDENTIAL_QUERIES: &[&str] = &[
     "body=\"deepseek\" && body=\"sk-\"",
     "body=\"master_key\" && body=\"sk-\"",
     "body=\"DANGEROUSLY_DISABLE_AUTH\" && body=\"sk-\"",
+    "body=\"GEMINI_API_KEY\" && body=\"AIza\"",
+    "body=\"XAI_API_KEY\" && body=\"xai-\"",
+    "body=\"QODER_PAT\" && body=\"pt-\"",
+    "body=\"KIRO_API_KEY\" && body=\"ksk_\"",
+    "body=\"AWS_BEARER_TOKEN_BEDROCK\"",
+    "body=\"CURSOR_API_KEY\" && body=\"crsr_\"",
+    "body=\"WINDSURF_SERVICE_KEY\" || body=\"CODEIUM_SERVICE_KEY\"",
 ];
 
 pub const PRODUCT_QUERIES: &[(&str, &[&str])] = &[
@@ -195,8 +202,8 @@ mod tests {
     use super::*;
     #[test]
     fn inventory_covers_runtime_queries() {
-        assert_eq!(DIRECT_CREDENTIAL_QUERIES.len(), 24);
+        assert_eq!(DIRECT_CREDENTIAL_QUERIES.len(), 31);
         assert_eq!(PRODUCT_QUERIES.len(), 25);
-        assert!(fofa_queries().len() > 50);
+        assert!(fofa_queries().len() > 60);
     }
 }

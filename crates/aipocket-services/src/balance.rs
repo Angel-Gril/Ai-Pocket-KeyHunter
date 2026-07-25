@@ -58,6 +58,12 @@ impl BalanceService {
             .unwrap_or_else(|| official.to_owned())
     }
 
+    fn endpoint_base(&self, official: &str) -> String {
+        self.official_base_override
+            .clone()
+            .unwrap_or_else(|| official.to_owned())
+    }
+
     pub async fn query(&self, credential: &Credential) -> Result<BalanceResult> {
         self.query_with_context(credential, None).await
     }
@@ -102,7 +108,7 @@ impl BalanceService {
         });
         let base = canonical.api_base.as_str();
         match provider {
-            "google" | "gemini" => Ok(Default::default()),
+            "google" | "gemini" => self.models_liveness(credential, "gemini", "N/A").await,
             "glm" => {
                 if let Some(result) = context {
                     let passive = glm_passive(result);
@@ -123,7 +129,12 @@ impl BalanceService {
             "openrouter" => self.openrouter(credential).await,
             "anthropic" => self.anthropic(credential).await,
             "openai" => self.openai(credential).await,
-            "azure_openai" | "vertex" => Ok(context
+            "xai" => self.models_liveness(credential, provider, "N/A").await,
+            "qoder" => self.qoder(credential).await,
+            "cursor" => self.cursor(credential).await,
+            "windsurf" => self.windsurf(credential).await,
+            "aws_bedrock" => self.models_liveness(credential, provider, "N/A").await,
+            "kiro" | "azure_openai" | "vertex" => Ok(context
                 .map(|result| validated_liveness(result, provider))
                 .unwrap_or_default()),
             "unknown" | "gateway" | "ambiguous" => {
@@ -820,6 +831,95 @@ impl BalanceService {
         Ok(result)
     }
 
+    async fn qoder(&self, credential: &Credential) -> Result<BalanceResult> {
+        let (status, payload, _) = self
+            .get_json(
+                self.endpoint("https://api.qoder.com/api/v1/cloud/models"),
+                credential,
+                &[],
+            )
+            .await?;
+        if status != 200 || !payload.is_object() {
+            return Ok(Default::default());
+        }
+        let models = model_ids(&payload);
+        let mut result = probe_result(
+            "qoder",
+            "qoder:cloud_models",
+            "entitlement",
+            "N/A",
+            json!({"models":models}),
+        );
+        result.plan = string_value(&payload, &["plan", "subscription", "tier"]);
+        result.tier = result.plan.clone();
+        result.entitlements = json!({"models":models});
+        result.alive = Some(true);
+        Ok(result)
+    }
+
+    async fn cursor(&self, credential: &Credential) -> Result<BalanceResult> {
+        let (status, payload, _) = self
+            .get_json(
+                self.endpoint("https://api.cursor.com/v1/me"),
+                credential,
+                &[],
+            )
+            .await?;
+        if status != 200 || !payload.is_object() {
+            return Ok(Default::default());
+        }
+        let identity = string_fields(
+            &payload,
+            &["apiKeyName", "userEmail", "userFirstName", "userLastName"],
+        );
+        if identity.as_object().is_none_or(|value| value.is_empty()) {
+            return Ok(Default::default());
+        }
+        let mut result = probe_result("cursor", "cursor:me", "identity", "N/A", json!({}));
+        result.identity = identity;
+        result.alive = Some(true);
+        Ok(result)
+    }
+
+    async fn windsurf(&self, credential: &Credential) -> Result<BalanceResult> {
+        if !header_safe(&credential.apikey) {
+            return Ok(Default::default());
+        }
+        let response = self
+            .http
+            .post(self.endpoint("https://server.codeium.com/api/v1/GetTeamCreditBalance"))
+            .json(&json!({"service_key":credential.apikey}))
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        let payload: Value = response.json().await.unwrap_or(Value::Null);
+        let available = payload.get("addOnCreditsAvailable").and_then(number);
+        let used = payload.get("addOnCreditsUsed").and_then(number);
+        if status != 200 || (available.is_none() && used.is_none()) {
+            return Ok(Default::default());
+        }
+        let mut result = probe_result(
+            "windsurf",
+            "windsurf:team_credit_balance",
+            "quota",
+            "",
+            json!({
+                "billingCycleStart":payload.get("billingCycleStart"),
+                "billingCycleEnd":payload.get("billingCycleEnd"),
+            }),
+        );
+        result.balance_native = available.map(number_string).unwrap_or_default();
+        result.currency = "credits".into();
+        result.quota = json!({
+            "prompt_credits_per_seat":payload.get("promptCreditsPerSeat"),
+            "seats":payload.get("numSeats"),
+            "add_on_credits_available":available,
+            "add_on_credits_used":used,
+        });
+        result.alive = Some(true);
+        Ok(result)
+    }
+
     async fn models_liveness(
         &self,
         credential: &Credential,
@@ -1108,6 +1208,14 @@ impl BalanceService {
             .registry
             .resolve(&credential.apiurl, &credential.apikey);
         let routed = routed_credential(credential, &resolution);
+        let routed = if resolution.spec.name == "aws_bedrock" {
+            Credential {
+                apiurl: self.endpoint_base(&routed.apiurl),
+                ..routed
+            }
+        } else {
+            routed
+        };
         let canonical = match aipocket_core::endpoint::canonicalize_endpoint(
             &routed.apiurl,
             resolution.spec.name,
@@ -1132,6 +1240,13 @@ impl BalanceService {
                 self.http
                     .get(url)
                     .query(&[("key", &routed.apikey)])
+                    .send()
+                    .await?
+            }
+            aipocket_prober::ProtocolFamily::AwsBedrock => {
+                self.http
+                    .get(url)
+                    .bearer_auth(&routed.apikey)
                     .send()
                     .await?
             }
@@ -1169,13 +1284,6 @@ impl BalanceService {
         let resolution = self
             .registry
             .resolve(&credential.apiurl, &credential.apikey);
-        if resolution.spec.protocol == aipocket_prober::ProtocolFamily::Gemini {
-            return Ok(ChatProbeResult::failure(
-                None,
-                model,
-                "excluded:google_generative_language",
-            ));
-        }
         let routed = routed_credential(credential, &resolution);
         let canonical = match aipocket_core::endpoint::canonicalize_endpoint(
             &routed.apiurl,
@@ -1184,7 +1292,7 @@ impl BalanceService {
             Ok(endpoint) if !endpoint.api_base.is_empty() => endpoint,
             _ => return Ok(ChatProbeResult::failure(None, model, "no apiurl")),
         };
-        let url = chat_url(&canonical, resolution.spec.protocol);
+        let url = chat_url(&canonical, resolution.spec.protocol, model);
         if url.is_empty() {
             return Ok(ChatProbeResult::failure(None, model, "no apiurl"));
         }
@@ -1195,6 +1303,11 @@ impl BalanceService {
                 .header("x-api-key", &routed.apikey)
                 .header("anthropic-version", "2023-06-01")
                 .json(&json!({"model":model,"max_tokens":4,"messages":[{"role":"user","content":"Reply OK"}]})),
+            aipocket_prober::ProtocolFamily::Gemini => self
+                .http
+                .post(url)
+                .query(&[("key", &routed.apikey)])
+                .json(&json!({"contents":[{"parts":[{"text":"Reply OK"}]}],"generationConfig":{"maxOutputTokens":4}})),
             _ => self
                 .http
                 .post(url)
@@ -1390,6 +1503,14 @@ fn string_fields(value: &Value, fields: &[&str]) -> Value {
     Value::Object(result)
 }
 
+fn string_value(value: &Value, fields: &[&str]) -> String {
+    fields
+        .iter()
+        .find_map(|field| value.get(*field).and_then(Value::as_str))
+        .unwrap_or_default()
+        .into()
+}
+
 fn strict_number(value: &Value) -> Option<f64> {
     if value.is_boolean() {
         None
@@ -1422,6 +1543,12 @@ fn models_url(
         aipocket_prober::ProtocolFamily::Gemini => {
             format!("{}/v1beta/models", endpoint.origin.trim_end_matches('/'))
         }
+        aipocket_prober::ProtocolFamily::AwsBedrock => {
+            format!(
+                "{}/foundation-models",
+                endpoint.api_base.trim_end_matches('/')
+            )
+        }
         _ => openai_operation_url(&endpoint.api_base, "models"),
     }
 }
@@ -1429,12 +1556,18 @@ fn models_url(
 fn chat_url(
     endpoint: &aipocket_core::endpoint::CanonicalEndpoint,
     protocol: aipocket_prober::ProtocolFamily,
+    model: &str,
 ) -> String {
     match protocol {
         aipocket_prober::ProtocolFamily::Anthropic => {
             format!("{}/messages", endpoint.api_base.trim_end_matches('/'))
         }
-        aipocket_prober::ProtocolFamily::Gemini => String::new(),
+        aipocket_prober::ProtocolFamily::Gemini => format!(
+            "{}/v1beta/models/{}:generateContent",
+            endpoint.origin.trim_end_matches('/'),
+            model.trim_start_matches("models/")
+        ),
+        aipocket_prober::ProtocolFamily::AwsBedrock => String::new(),
         _ => openai_operation_url(&endpoint.api_base, "chat/completions"),
     }
 }
@@ -1620,12 +1753,14 @@ fn model_ids(payload: &Value) -> Vec<String> {
     payload
         .get("data")
         .or_else(|| payload.get("models"))
+        .or_else(|| payload.get("modelSummaries"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|item| {
             item.get("id")
                 .or_else(|| item.get("name"))
+                .or_else(|| item.get("modelId"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })
@@ -1898,6 +2033,84 @@ mod tests {
         assert_eq!(anthropic.tier, "usage_tier:scale");
         server.abort();
     }
+    #[tokio::test]
+    async fn coding_agent_identity_and_credit_probes_are_typed() {
+        use axum::{Json, Router, extract::Request, routing::get};
+        async fn get_fixture(request: Request) -> Json<Value> {
+            Json(match request.uri().path() {
+                "/api/v1/cloud/models" => {
+                    json!({"data":[{"id":"cantus"},{"id":"ultimate"}],"plan":"team"})
+                }
+                "/v1/me" => json!({"apiKeyName":"scanner","userEmail":"dev@example.test"}),
+                "/foundation-models" => {
+                    json!({"modelSummaries":[{"modelId":"amazon.nova-lite-v1:0"}]})
+                }
+                _ => json!({}),
+            })
+        }
+        async fn post_fixture(request: Request) -> Json<Value> {
+            Json(match request.uri().path() {
+                "/api/v1/GetTeamCreditBalance" => json!({
+                    "promptCreditsPerSeat":500,
+                    "numSeats":50,
+                    "addOnCreditsAvailable":10000,
+                    "addOnCreditsUsed":3500,
+                    "billingCycleStart":"2026-07-01T00:00:00Z",
+                    "billingCycleEnd":"2026-08-01T00:00:00Z"
+                }),
+                _ => json!({}),
+            })
+        }
+        let app = Router::new().fallback(get(get_fixture).post(post_fixture));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let service = BalanceService::new(reqwest::Client::new()).with_official_base(&base);
+
+        let qoder = service
+            .query(&Credential {
+                apikey: "pt-abcdefghijklmnop".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(qoder.gateway, "qoder");
+        assert_eq!(qoder.tier, "team");
+        assert_eq!(qoder.entitlements["models"][0], "cantus");
+
+        let cursor = service
+            .query(&Credential {
+                apikey: "crsr_abcdefghijklmnopqrstuvwxyz123456".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(cursor.identity["userEmail"], "dev@example.test");
+
+        let windsurf = service
+            .query(&Credential {
+                apikey: "windsurf-service-key-fixture".into(),
+                host: "https://server.codeium.com".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let bedrock = service
+            .query(&Credential {
+                apikey: "ABSKabcdefghijklmnopqrstuvwxyz".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(bedrock.gateway, "aws_bedrock");
+        assert_eq!(bedrock.balance_usd, "N/A");
+        assert_eq!(bedrock.detail["models"][0], "amazon.nova-lite-v1:0");
+        assert_eq!(windsurf.balance_native, "10000");
+        assert_eq!(windsurf.currency, "credits");
+        assert_eq!(windsurf.quota["add_on_credits_used"], 3500.0);
+        server.abort();
+    }
+
     #[test]
     fn passive_context_and_apply_match_python_contract() {
         let glm = aipocket_core::ValidationResult {

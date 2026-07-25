@@ -6,6 +6,7 @@ pub enum ProtocolFamily {
     Anthropic,
     Gemini,
     Vertex,
+    AwsBedrock,
 }
 #[derive(Clone, Debug)]
 pub struct ProviderSpec {
@@ -190,6 +191,64 @@ static SPECS: &[ProviderSpec] = &[
         official_api_url: "https://openrouter.ai/api",
     },
     ProviderSpec {
+        name: "xai",
+        category: "international",
+        domain_suffixes: &["api.x.ai", "x.ai"],
+        key_prefixes: &["xai-"],
+        protocol: ProtocolFamily::OpenAiCompatible,
+        models: &["grok-4.6", "grok-4.7"],
+        official_api_url: "https://api.x.ai/v1",
+    },
+    ProviderSpec {
+        name: "qoder",
+        category: "coding_agent",
+        domain_suffixes: &["api.qoder.com", "qoder.com"],
+        key_prefixes: &["pt-"],
+        protocol: ProtocolFamily::OpenAiCompatible,
+        models: &["cantus"],
+        official_api_url: "https://api.qoder.com",
+    },
+    ProviderSpec {
+        name: "kiro",
+        category: "coding_agent",
+        domain_suffixes: &["app.kiro.dev", "kiro.dev"],
+        key_prefixes: &["ksk_"],
+        protocol: ProtocolFamily::OpenAiCompatible,
+        models: &[],
+        official_api_url: "https://app.kiro.dev",
+    },
+    ProviderSpec {
+        name: "aws_bedrock",
+        category: "cloud",
+        domain_suffixes: &[
+            "bedrock.amazonaws.com",
+            "bedrock-runtime.amazonaws.com",
+            "bedrock-mantle.amazonaws.com",
+        ],
+        key_prefixes: &["ABSK"],
+        protocol: ProtocolFamily::AwsBedrock,
+        models: &["amazon.nova-lite-v1:0"],
+        official_api_url: "https://bedrock.us-east-1.amazonaws.com",
+    },
+    ProviderSpec {
+        name: "cursor",
+        category: "coding_agent",
+        domain_suffixes: &["api.cursor.com", "cursor.com"],
+        key_prefixes: &["crsr_"],
+        protocol: ProtocolFamily::OpenAiCompatible,
+        models: &[],
+        official_api_url: "https://api.cursor.com",
+    },
+    ProviderSpec {
+        name: "windsurf",
+        category: "coding_agent",
+        domain_suffixes: &["server.codeium.com", "windsurf.com", "codeium.com"],
+        key_prefixes: &[],
+        protocol: ProtocolFamily::OpenAiCompatible,
+        models: &[],
+        official_api_url: "https://server.codeium.com/api/v1",
+    },
+    ProviderSpec {
         name: "gemini",
         category: "international",
         domain_suffixes: &["generativelanguage.googleapis.com"],
@@ -208,6 +267,16 @@ static SPECS: &[ProviderSpec] = &[
         official_api_url: "",
     },
 ];
+fn domain_matches(spec: &ProviderSpec, host: &str) -> bool {
+    if spec.name == "aws_bedrock" {
+        return host.ends_with(".amazonaws.com")
+            && (host.starts_with("bedrock.") || host.starts_with("bedrock-"));
+    }
+    spec.domain_suffixes
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+}
+
 #[derive(Default)]
 pub struct ProviderRegistry;
 impl ProviderRegistry {
@@ -216,11 +285,7 @@ impl ProviderRegistry {
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned))
             .unwrap_or_default();
-        if let Some(spec) = SPECS.iter().find(|spec| {
-            spec.domain_suffixes
-                .iter()
-                .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
-        }) {
+        if let Some(spec) = SPECS.iter().find(|spec| domain_matches(spec, &host)) {
             return ProviderResolution {
                 spec,
                 reason: "domain",
@@ -249,8 +314,25 @@ impl ProviderRegistry {
 mod tests {
     use super::*;
     #[test]
-    fn resolves_anthropic_by_key() {
-        let result = ProviderRegistry.resolve("", "sk-ant-test");
-        assert_eq!(result.spec.name, "anthropic");
+    fn resolves_provider_domains_and_key_prefixes() {
+        for (url, key, expected) in [
+            ("", "sk-ant-test", "anthropic"),
+            ("", "xai-abcdefghijklmnop", "xai"),
+            ("", "pt-abcdefghijklmnop", "qoder"),
+            ("", "ksk_abcdefghijklmnop", "kiro"),
+            ("", "crsr_abcdefghijklmnopqrstuvwxyz123456", "cursor"),
+            (
+                "https://bedrock-runtime.us-east-1.amazonaws.com",
+                "token",
+                "aws_bedrock",
+            ),
+            ("https://server.codeium.com", "service-key", "windsurf"),
+        ] {
+            assert_eq!(ProviderRegistry.resolve(url, key).spec.name, expected);
+        }
+        let xai = ProviderRegistry.specs()["xai"];
+        assert!(xai.models.contains(&"grok-4.6"));
+        assert!(xai.models.contains(&"grok-4.7"));
+        assert_eq!(ProviderRegistry.specs()["qoder"].models, &["cantus"]);
     }
 }

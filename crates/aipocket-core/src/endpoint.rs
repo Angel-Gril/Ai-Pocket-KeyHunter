@@ -53,6 +53,9 @@ pub fn canonicalize_endpoint(raw: &str, provider: &str) -> Result<CanonicalEndpo
         ("kimi", "api.moonshot.cn" | "api.moonshot.ai") => Some("/v1"),
         ("glm", "open.bigmodel.cn") => Some("/api/paas/v4"),
         ("nvidia", "integrate.api.nvidia.com") | ("ksyun", "kspmas.ksyun.com") => Some("/v1"),
+        ("xai", "api.x.ai") => Some("/v1"),
+        ("qoder", "api.qoder.com") | ("cursor", "api.cursor.com") => Some(""),
+        ("windsurf", "server.codeium.com") => Some("/api/v1"),
         ("minimax", "api.minimax.io" | "api.minimaxi.com" | "api.minimax.chat") => Some("/v1"),
         ("longcat", "api.longcat.chat") => Some(
             if parsed.path().to_ascii_lowercase().starts_with("/anthropic") {
@@ -142,6 +145,12 @@ mod tests {
                 "https://api.longcat.chat/anthropic/messages",
                 "longcat",
                 "https://api.longcat.chat/anthropic",
+            ),
+            ("https://api.x.ai/v1/models", "xai", "https://api.x.ai/v1"),
+            (
+                "https://server.codeium.com/api/v1/GetTeamCreditBalance",
+                "windsurf",
+                "https://server.codeium.com/api/v1",
             ),
         ] {
             assert_eq!(

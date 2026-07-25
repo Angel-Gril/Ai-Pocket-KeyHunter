@@ -218,6 +218,29 @@ pub struct ExtractedArtifactSecret {
     pub line_start: Option<u32>,
     pub line_end: Option<u32>,
 }
+fn provider_endpoint(text: &str, key: &str) -> &'static str {
+    if key.starts_with("xai-") {
+        "https://api.x.ai/v1"
+    } else if key.starts_with("ksk_") {
+        "https://app.kiro.dev"
+    } else if key.starts_with("crsr_") {
+        "https://api.cursor.com"
+    } else if key.starts_with("pt-") {
+        "https://api.qoder.com"
+    } else if key.starts_with("ABSK") {
+        "https://bedrock.us-east-1.amazonaws.com"
+    } else if key.starts_with("AIza") {
+        "https://generativelanguage.googleapis.com"
+    } else {
+        let lowered = text.to_ascii_lowercase();
+        if lowered.contains("windsurf_service_key") || lowered.contains("codeium_service_key") {
+            "https://server.codeium.com/api/v1"
+        } else {
+            ""
+        }
+    }
+}
+
 pub fn extract_artifact_text(
     text: &str,
     endpoint: &str,
@@ -226,7 +249,7 @@ pub fn extract_artifact_text(
     file_path: &str,
     object_sha: &str,
 ) -> Vec<ExtractedArtifactSecret> {
-    let pattern=Regex::new(r"(?:sk-[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9_-]{16,}|nvapi-[A-Za-z0-9_-]{16,}|r8_[A-Za-z0-9_-]{16,})").unwrap();
+    let pattern=Regex::new(r"(?:sk-[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9_-]{16,}|nvapi-[A-Za-z0-9_-]{16,}|r8_[A-Za-z0-9_-]{16,}|xai-[A-Za-z0-9_-]{16,}|ksk_[A-Za-z0-9_-]{16,}|crsr_[A-Za-z0-9_-]{32,}|pt-[A-Za-z0-9_-]{16,}|ABSK[A-Za-z0-9_+=/.-]{20,})").unwrap();
     let mut seen = HashSet::new();
     pattern
         .find_iter(text)
@@ -234,7 +257,11 @@ pub fn extract_artifact_text(
         .map(|item| ExtractedArtifactSecret {
             credential: Credential {
                 apikey: item.as_str().into(),
-                apiurl: endpoint.into(),
+                apiurl: if endpoint.is_empty() {
+                    provider_endpoint(text, item.as_str()).into()
+                } else {
+                    endpoint.into()
+                },
                 source: "github".into(),
                 source_type: source_kind.into(),
                 backend: "github".into(),
@@ -358,6 +385,24 @@ mod tests {
         );
         assert_eq!(secrets.len(), 1);
         assert_eq!(secrets[0].credential.apiurl, "https://github.example/item");
+        let expanded = extract_artifact_text(
+            "XAI_API_KEY=xai-abcdefghijklmnop\nKIRO_API_KEY=ksk_abcdefghijklmnop\nCURSOR_API_KEY=crsr_abcdefghijklmnopqrstuvwxyz123456\nQODER_PAT=pt-abcdefghijklmnop\nAWS_BEARER_TOKEN_BEDROCK=ABSKabcdefghijklmnopqrstuvwxyz",
+            "",
+            "blob",
+            "context",
+            ".env",
+            "sha",
+        );
+        assert_eq!(expanded.len(), 5);
+        assert_eq!(expanded[0].credential.apiurl, "https://api.x.ai/v1");
+        assert_eq!(expanded[1].credential.apiurl, "https://app.kiro.dev");
+        assert_eq!(expanded[2].credential.apiurl, "https://api.cursor.com");
+        assert_eq!(expanded[3].credential.apiurl, "https://api.qoder.com");
+        assert_eq!(
+            expanded[4].credential.apiurl,
+            "https://bedrock.us-east-1.amazonaws.com"
+        );
+
         assert_eq!(secrets[0].source_kind, "blob");
         let patch = parse_unified_patch("@@ -1,2 +1,2 @@\n-old\n+new\n same");
         assert_eq!(patch.len(), 3);
