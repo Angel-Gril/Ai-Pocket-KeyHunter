@@ -344,9 +344,9 @@ export default function HighValuePage() {
       : ""
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex flex-col gap-4 border-b border-border-primary px-8 py-[18px]">
-        <div className="flex items-center gap-4">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex flex-col gap-3 border-b border-border-primary px-4 py-4 sm:gap-4 sm:px-6 md:px-8 md:py-[18px]">
+        <div className="flex flex-wrap items-center gap-3 sm:gap-4">
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">高价值 Key</h1>
             <p className="truncate font-mono text-xs text-text-muted">
@@ -354,7 +354,7 @@ export default function HighValuePage() {
             </p>
           </div>
           {providerStats.map(([provider, count]) => (
-            <div key={provider} className="flex flex-col items-end gap-0.5 px-1">
+            <div key={provider} className="flex min-w-[56px] flex-col items-start gap-0.5 sm:items-end sm:px-1">
               <span
                 className="font-mono text-xl font-semibold"
                 style={{ color: providerBrandColor(provider) }}

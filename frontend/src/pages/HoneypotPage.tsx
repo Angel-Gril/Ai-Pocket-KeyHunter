@@ -381,8 +381,8 @@ export default function HoneypotPage() {
       : `共 ${total} 条`
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex flex-wrap items-center gap-3 border-b border-border-primary px-8 py-5">
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex flex-col gap-3 border-b border-border-primary px-4 py-4 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3 sm:px-6 md:px-8 md:py-5">
         <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
           <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">蜜罐站点</h1>
           <p className="font-mono text-xs text-text-muted">
@@ -390,19 +390,19 @@ export default function HoneypotPage() {
           </p>
         </div>
 
-        <div className="relative flex items-center">
+        <div className="relative flex w-full items-center sm:w-auto">
           <Search className="pointer-events-none absolute left-3 size-[15px] text-text-muted" />
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索 host / reason / notes…"
-            className="w-[240px] border-border-primary bg-surface-raised pl-9 text-[13px] dark:bg-surface-raised"
+            className="w-full border-border-primary bg-surface-raised pl-9 text-[13px] dark:bg-surface-raised sm:w-[240px]"
             aria-label="搜索蜜罐站点"
           />
         </div>
 
         <Select value={sourceFilter} onValueChange={setSourceFilter}>
-          <SelectTrigger className="w-[140px] border-border-primary bg-surface-raised font-mono text-[12px]">
+          <SelectTrigger className="min-h-11 w-full border-border-primary bg-surface-raised font-mono text-[12px] sm:min-h-0 sm:w-[140px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -419,7 +419,7 @@ export default function HoneypotPage() {
             type="button"
             onClick={handleBulkDelete}
             disabled={bulkDeleteMutation.isPending}
-            className="inline-flex items-center gap-2 rounded-[4px] border border-danger/40 bg-danger-dim px-4 py-[9px] text-[13px] font-semibold text-danger transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-[4px] border border-danger/40 bg-danger-dim px-4 py-[9px] text-[13px] font-semibold text-danger transition-opacity hover:opacity-90 disabled:opacity-50 sm:min-h-0"
           >
             {bulkDeleteMutation.isPending ? (
               <Loader2 className="size-[15px] animate-spin" />
@@ -433,14 +433,14 @@ export default function HoneypotPage() {
         <button
           type="button"
           onClick={() => setAddOpen(true)}
-          className="inline-flex items-center gap-2 rounded-[4px] bg-accent px-4 py-[9px] text-[13px] font-semibold text-accent-text transition-opacity hover:opacity-90"
+          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-[4px] bg-accent px-4 py-[9px] text-[13px] font-semibold text-accent-text transition-opacity hover:opacity-90 sm:min-h-0"
         >
           <Plus className="size-[15px]" />
           手动添加
         </button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 md:px-8 md:py-6">
         {listQuery.isPending ? (
           <div className="flex h-full items-center justify-center gap-2 font-mono text-sm text-text-muted">
             <Loader2 className="size-4 animate-spin" />

@@ -227,11 +227,11 @@ export function KeyListToolbar({
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center gap-2.5 border-b border-border-subtle bg-surface-base px-8 py-2.5",
+        "flex flex-wrap items-center gap-2.5 border-b border-border-subtle bg-surface-base px-4 py-3 sm:px-6 md:px-8 md:py-2.5",
         className,
       )}
     >
-      <div className="relative min-w-[200px] flex-1 basis-[220px]">
+      <div className="relative min-w-full flex-1 basis-full sm:min-w-[200px] sm:basis-[220px]">
         <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-text-muted" />
         <Input
           value={search}
@@ -245,7 +245,7 @@ export function KeyListToolbar({
       <Select value={provider} onValueChange={onProviderChange}>
         <SelectTrigger
           size="sm"
-          className="h-8 min-w-[140px] border-border-primary bg-surface-raised font-sans text-[13px] text-text-secondary dark:bg-surface-raised"
+          className="h-11 flex-1 border-border-primary bg-surface-raised font-sans text-[13px] text-text-secondary dark:bg-surface-raised sm:h-8 sm:min-w-[140px] sm:flex-none"
           aria-label="按 Provider 筛选"
         >
           <ListFilter className="size-3.5 text-text-muted" />
@@ -270,7 +270,7 @@ export function KeyListToolbar({
       >
         <SelectTrigger
           size="sm"
-          className="h-8 min-w-[150px] border-border-primary bg-surface-raised font-sans text-[13px] text-text-secondary dark:bg-surface-raised"
+          className="h-11 flex-1 border-border-primary bg-surface-raised font-sans text-[13px] text-text-secondary dark:bg-surface-raised sm:h-8 sm:min-w-[150px] sm:flex-none"
           aria-label="按余额排序"
         >
           {balanceSort === "low-to-high" ? (

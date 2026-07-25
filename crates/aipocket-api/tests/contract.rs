@@ -1,12 +1,15 @@
-use aipocket_api::{AppState, create_app};
+use aipocket_api::{AppState, auth::verify, create_app, error::ApiError};
 use aipocket_core::Settings;
 use aipocket_db::Repository;
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header},
+    response::IntoResponse,
 };
 use http_body_util::BodyExt;
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde_json::Value;
+use std::time::Instant;
 use tower::ServiceExt;
 
 async fn app() -> axum::Router {
@@ -90,6 +93,141 @@ async fn wrong_password_returns_frozen_error_contract() {
         body,
         serde_json::json!({"error":{"code":"unauthorized","message":"invalid password"}})
     );
+}
+
+#[tokio::test]
+async fn login_rate_limit_and_forwarded_client_contract() {
+    let app = app().await;
+    for attempt in 0..11 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "203.0.113.8, 10.0.0.1")
+                    .body(Body::from(r#"{"password":"wrong"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let expected = if attempt < 10 {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::TOO_MANY_REQUESTS
+        };
+        assert_eq!(response.status(), expected);
+        if attempt == 10 {
+            let body: Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(body["error"]["code"], "rate_limited");
+        }
+    }
+}
+
+#[tokio::test]
+async fn successful_login_clears_only_that_clients_failures() {
+    let state = AppState::new(
+        Settings {
+            web_password: "test-password".into(),
+            web_jwt_secret: "test-secret-that-is-long-enough".into(),
+            ..Settings::default()
+        },
+        Repository::default(),
+    )
+    .await
+    .unwrap();
+    state
+        .login_failures
+        .0
+        .lock()
+        .await
+        .insert("198.51.100.7".into(), vec![Instant::now()]);
+    let app = create_app(state.clone()).await;
+    let response = app
+        .oneshot(
+            Request::post("/api/auth/login")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", "198.51.100.7")
+                .body(Body::from(r#"{"password":"test-password"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        !state
+            .login_failures
+            .0
+            .lock()
+            .await
+            .contains_key("198.51.100.7")
+    );
+}
+
+#[tokio::test]
+async fn auth_rejects_malformed_token_and_wrong_subject() {
+    let state = AppState::new(
+        Settings {
+            web_password: "test-password".into(),
+            web_jwt_secret: "test-secret-that-is-long-enough".into(),
+            ..Settings::default()
+        },
+        Repository::default(),
+    )
+    .await
+    .unwrap();
+    let malformed = verify("not-a-jwt", &state).await.unwrap_err();
+    assert_eq!(malformed.status, StatusCode::UNAUTHORIZED);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &serde_json::json!({"sub":"someone-else","iat":now,"exp":now + 60}),
+        &EncodingKey::from_secret(b"test-secret-that-is-long-enough"),
+    )
+    .unwrap();
+    let wrong_subject = verify(&token, &state).await.unwrap_err();
+    assert_eq!(wrong_subject.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn logout_requires_bearer_token_and_error_conversions_are_stable() {
+    let app = app().await;
+    let login = app
+        .clone()
+        .oneshot(
+            Request::post("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"password":"test-password"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: Value =
+        serde_json::from_slice(&login.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let token = body["token"].as_str().unwrap();
+    let response = app
+        .oneshot(
+            Request::post("/api/auth/logout")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body, serde_json::json!({"ok": true}));
+
+    let internal = ApiError::internal("fixture failure").into_response();
+    assert_eq!(internal.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let converted: ApiError = anyhow::anyhow!("fixture failure").into();
+    assert_eq!(converted.code, "internal_error");
 }
 
 #[tokio::test]

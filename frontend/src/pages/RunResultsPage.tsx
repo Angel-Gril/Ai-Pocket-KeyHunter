@@ -492,12 +492,12 @@ export default function RunResultsPage() {
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex flex-col gap-4 border-b border-border-primary px-8 py-[18px]">
-        <div className="flex items-center gap-3">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex flex-col gap-3 border-b border-border-primary px-4 py-4 sm:gap-4 sm:px-6 md:px-8 md:py-[18px]">
+        <div className="flex items-start gap-3 sm:items-center">
           <Link
             to="/history"
-            className="inline-flex items-center gap-1.5 rounded-sm border border-border-primary bg-surface-raised px-2.5 py-1.5 font-sans text-[13px] text-text-secondary transition-colors hover:text-text-primary"
+            className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-sm border border-border-primary bg-surface-raised px-2.5 py-1.5 font-sans text-[13px] text-text-secondary transition-colors hover:text-text-primary sm:min-h-0"
           >
             <ArrowLeft className="size-3.5" />
             返回历史
@@ -540,7 +540,7 @@ export default function RunResultsPage() {
           })}
 
           {showRetry ? (
-            <div className="ml-auto flex flex-wrap items-center gap-2">
+            <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
               {failedHits > 0 || retryRunning ? (
                 <span className="font-mono text-[11px] text-warning">
                   AI 失败 {failedHits} 条

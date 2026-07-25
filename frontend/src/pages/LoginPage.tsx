@@ -36,13 +36,13 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-surface-base p-6">
+    <div className="flex min-h-dvh items-center justify-center bg-surface-base p-4 sm:p-6">
       <form
         onSubmit={(event) => {
           event.preventDefault()
           submit()
         }}
-        className="flex w-full max-w-[400px] flex-col gap-6 rounded-md border border-border-primary bg-surface-raised p-9"
+        className="flex w-full max-w-[400px] flex-col gap-6 rounded-md border border-border-primary bg-surface-raised p-5 sm:p-9"
       >
         <div className="flex items-center gap-2.5">
           <span className="size-3 rounded-full bg-accent" />

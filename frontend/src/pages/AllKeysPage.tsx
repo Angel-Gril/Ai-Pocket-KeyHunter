@@ -447,8 +447,8 @@ export default function AllKeysPage() {
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex flex-col gap-4 border-b border-border-primary px-8 py-[18px]">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex flex-col gap-3 border-b border-border-primary px-4 py-4 sm:gap-4 sm:px-6 md:px-8 md:py-[18px]">
         <div className="flex min-w-0 flex-col gap-0.5">
           <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">全部密钥</h1>
           <p className="truncate font-mono text-xs text-text-muted">
@@ -456,7 +456,7 @@ export default function AllKeysPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {KINDS.map((tabKind) => {
             const isActive = kind === tabKind
             const count = tabKind === "valid" ? validCount : suspiciousCount

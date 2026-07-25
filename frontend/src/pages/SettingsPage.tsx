@@ -253,8 +253,8 @@ function SettingsForm({ initial }: Readonly<{ initial: SettingsView }>) {
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center gap-4 border-b border-border-primary px-8 py-5">
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex flex-wrap items-center gap-3 border-b border-border-primary px-4 py-4 sm:gap-4 sm:px-6 md:px-8 md:py-5">
         <div className="flex flex-1 flex-col gap-0.5">
           <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">设置</h1>
           <p className="font-mono text-xs text-text-muted">数据源凭据 · 保存后热更新生效</p>
@@ -276,9 +276,9 @@ function SettingsForm({ initial }: Readonly<{ initial: SettingsView }>) {
         </Button>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-8 py-6">
+      <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 md:px-8 md:py-6">
         <div className="flex flex-col gap-5">
-          <section className="flex flex-col gap-[18px] rounded-md border border-border-primary bg-surface-raised p-6">
+          <section className="flex flex-col gap-4 rounded-md border border-border-primary bg-surface-raised p-4 sm:gap-[18px] sm:p-6">
             <div className="flex items-center gap-2.5">
               <span className="size-2.5 rounded-full bg-info" />
               <h2 className="text-base font-semibold text-text-primary">FOFA</h2>
@@ -326,7 +326,7 @@ function SettingsForm({ initial }: Readonly<{ initial: SettingsView }>) {
             <FofaResult isPending={fofaCheck.isPending} data={fofaCheck.data} error={fofaCheck.error} />
           </section>
 
-          <section className="flex flex-col gap-[18px] rounded-md border border-border-primary bg-surface-raised p-6">
+          <section className="flex flex-col gap-4 rounded-md border border-border-primary bg-surface-raised p-4 sm:gap-[18px] sm:p-6">
             <div className="flex items-center gap-2.5">
               <span className="size-2.5 rounded-full bg-warning" />
               <h2 className="text-base font-semibold text-text-primary">Shodan</h2>
@@ -378,7 +378,7 @@ function SettingsForm({ initial }: Readonly<{ initial: SettingsView }>) {
             />
           </section>
 
-          <section className="flex flex-col gap-[18px] rounded-md border border-border-primary bg-surface-raised p-6">
+          <section className="flex flex-col gap-4 rounded-md border border-border-primary bg-surface-raised p-4 sm:gap-[18px] sm:p-6">
             <div className="flex items-center gap-2.5">
               <span className="size-2.5 rounded-full bg-success" />
               <h2 className="text-base font-semibold text-text-primary">GitHub</h2>

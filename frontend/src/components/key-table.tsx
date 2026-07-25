@@ -77,7 +77,7 @@ function ExportButton({ icon, label, onClick, disabled }: Readonly<ExportButtonP
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex items-center gap-1.5 rounded-sm border border-border-primary bg-surface-raised px-3 py-1.5 font-sans text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
+      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-sm border border-border-primary bg-surface-raised px-3 py-1.5 font-sans text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50 sm:min-h-0"
     >
       {icon}
       {label}
@@ -115,8 +115,8 @@ export function BulkBar({
   actionPending,
 }: Readonly<BulkBarProps>) {
   return (
-    <div className="flex items-center gap-3.5 border-b border-border-subtle bg-surface-inset px-8 py-3">
-      <div className="flex flex-1 items-center gap-2.5">
+    <div className="flex flex-wrap items-center gap-2.5 border-b border-border-subtle bg-surface-inset px-4 py-3 sm:flex-nowrap sm:gap-3.5 sm:px-6 md:px-8">
+      <div className="flex min-w-full flex-1 items-center gap-2.5 sm:min-w-0">
         <Checkbox
           checked={allChecked}
           onCheckedChange={(value) => onToggleAll(value === true)}
@@ -216,7 +216,7 @@ export const IndexedKeyRow = memo(function IndexedKeyRow({
 
 export function CenterState({ children, className }: Readonly<{ children: React.ReactNode; className?: string }>) {
   return (
-    <div className={cn("flex flex-1 items-center justify-center px-8 py-16 text-sm text-text-muted", className)}>
+    <div className={cn("flex flex-1 items-center justify-center px-4 py-12 text-center text-sm text-text-muted sm:px-6 md:px-8 md:py-16", className)}>
       {children}
     </div>
   )

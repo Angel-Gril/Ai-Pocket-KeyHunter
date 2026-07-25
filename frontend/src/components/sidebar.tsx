@@ -13,10 +13,12 @@ import {
   Settings,
   ShieldAlert,
   Sun,
+  X,
 } from "lucide-react"
 import { api, type ScanStatusResponse } from "@/lib/api"
 import { useTheme } from "@/providers/theme-provider"
 import { cn } from "@/lib/utils"
+import { NAV_ITEMS } from "@/lib/navigation"
 
 interface NavItem {
   to: string
@@ -24,17 +26,22 @@ interface NavItem {
   icon: LucideIcon
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { to: "/history", label: "扫描历史", icon: LayoutList },
-  { to: "/keys", label: "全部密钥", icon: KeyRound },
-  { to: "/high-value", label: "高价值 Key", icon: Gem },
-  { to: "/scan", label: "执行扫描", icon: Radar },
-  { to: "/github", label: "GitHub 狩猎", icon: GitBranch },
-  { to: "/manual", label: "自定义狩猎", icon: Server },
-  { to: "/cve", label: "CVE 库", icon: ShieldAlert },
-  { to: "/honeypot", label: "蜜罐站点", icon: Bug },
-  { to: "/settings", label: "设置", icon: Settings },
-]
+const NAV_ICONS: Record<string, LucideIcon> = {
+  "/history": LayoutList,
+  "/keys": KeyRound,
+  "/high-value": Gem,
+  "/scan": Radar,
+  "/github": GitBranch,
+  "/manual": Server,
+  "/cve": ShieldAlert,
+  "/honeypot": Bug,
+  "/settings": Settings,
+}
+
+const SIDEBAR_ITEMS: NavItem[] = NAV_ITEMS.map((item) => ({
+  ...item,
+  icon: NAV_ICONS[item.to]!,
+}))
 
 function statusDisplay(status: ScanStatusResponse | undefined): {
   dot: string
@@ -70,7 +77,12 @@ function formatHint(status: ScanStatusResponse | undefined): string {
   return `上次扫描 ${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-export function Sidebar() {
+interface SidebarProps {
+  mobileOpen?: boolean
+  onMobileClose?: () => void
+}
+
+export function Sidebar({ mobileOpen = false, onMobileClose }: Readonly<SidebarProps>) {
   const { theme, toggleTheme } = useTheme()
   const { data: status } = useQuery({
     queryKey: ["scan-status"],
@@ -85,22 +97,37 @@ export function Sidebar() {
   const display = statusDisplay(status)
 
   return (
-    <aside className="flex h-full w-62 shrink-0 flex-col border-r border-border-primary bg-surface-raised">
-      <div className="flex items-center gap-2.5 border-b border-border-subtle px-5 py-6">
+    <aside
+      aria-label="主导航"
+      className={cn(
+        "fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(19rem,86vw)] shrink-0 flex-col border-r border-border-primary bg-surface-raised transition-transform duration-200 md:static md:h-full md:w-62 md:translate-x-0",
+        mobileOpen ? "translate-x-0" : "invisible -translate-x-full md:visible",
+      )}
+    >
+      <div className="flex min-h-14 items-center gap-2.5 border-b border-border-subtle px-4 md:px-5 md:py-6">
         <span className="size-2.5 rounded-full bg-accent" />
-        <span className="font-mono text-[17px] font-semibold tracking-[-0.3px] text-text-primary">
+        <span className="flex-1 font-mono text-[17px] font-semibold tracking-[-0.3px] text-text-primary">
           aipocket
         </span>
+        <button
+          type="button"
+          onClick={onMobileClose}
+          aria-label="关闭导航"
+          className="flex size-11 items-center justify-center rounded-md text-text-secondary hover:bg-surface-overlay hover:text-text-primary md:hidden"
+        >
+          <X className="size-5" />
+        </button>
       </div>
 
-      <nav className="flex flex-col gap-1 px-3 py-4">
-        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+      <nav className="flex flex-col gap-1 overflow-y-auto px-3 py-3 md:py-4">
+        {SIDEBAR_ITEMS.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
+            onClick={onMobileClose}
             className={({ isActive }) =>
               cn(
-                "flex items-center gap-3 rounded-sm px-3 py-2.5 text-sm transition-colors",
+                "flex min-h-11 items-center gap-3 rounded-sm px-3 py-2.5 text-sm transition-colors",
                 isActive
                   ? "bg-accent-dim font-semibold text-accent"
                   : "text-text-secondary hover:text-text-primary",
@@ -123,12 +150,12 @@ export function Sidebar() {
         <span className="font-mono text-[11px] text-text-muted">{display.hint}</span>
       </div>
 
-      <div className="border-t border-border-subtle px-3 py-3">
+      <div className="border-t border-border-subtle px-3 py-2 md:py-3">
         <button
           type="button"
           onClick={toggleTheme}
           aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
-          className="flex w-full items-center gap-3 rounded-sm px-3 py-2.5 text-sm text-text-secondary transition-colors hover:bg-surface-overlay hover:text-text-primary"
+          className="flex min-h-11 w-full items-center gap-3 rounded-sm px-3 py-2.5 text-sm text-text-secondary transition-colors hover:bg-surface-overlay hover:text-text-primary"
         >
           {theme === "dark" ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
           {theme === "dark" ? "浅色主题" : "深色主题"}

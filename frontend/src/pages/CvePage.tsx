@@ -458,8 +458,8 @@ export default function CvePage() {
       : `${cves.length} 条`
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center gap-4 border-b border-border-primary px-8 py-5">
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex flex-col gap-3 border-b border-border-primary px-4 py-4 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4 sm:px-6 md:px-8 md:py-5">
         <div className="flex flex-1 flex-col gap-[3px]">
           <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">CVE 库</h1>
           <p className="font-mono text-xs text-text-muted">
@@ -467,13 +467,13 @@ export default function CvePage() {
           </p>
         </div>
 
-        <div className="relative flex items-center">
+        <div className="relative flex w-full items-center sm:w-auto">
           <Search className="pointer-events-none absolute left-3 size-[15px] text-text-muted" />
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="搜索 CVE / 产品 / 描述…"
-            className="w-[260px] border-border-primary bg-surface-raised pl-9 text-[13px] dark:bg-surface-raised"
+            className="w-full border-border-primary bg-surface-raised pl-9 text-[13px] dark:bg-surface-raised sm:w-[260px]"
             aria-label="搜索 CVE"
           />
         </div>
@@ -481,7 +481,7 @@ export default function CvePage() {
         <button
           type="button"
           onClick={() => setAddOpen(true)}
-          className="inline-flex items-center gap-2 rounded-[4px] border border-border-primary bg-surface-raised px-4 py-[9px] text-[13px] font-semibold text-text-secondary transition-colors hover:text-text-primary"
+          className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-[4px] border border-border-primary bg-surface-raised px-4 py-[9px] text-[13px] font-semibold text-text-secondary transition-colors hover:text-text-primary sm:min-h-0 sm:flex-none"
         >
           <Plus className="size-[15px]" />
           手动添加
@@ -491,7 +491,7 @@ export default function CvePage() {
           type="button"
           onClick={handleExportJson}
           disabled={filteredRaw.length === 0 || cveQuery.isPending}
-          className="inline-flex items-center gap-2 rounded-[4px] border border-border-primary bg-surface-raised px-4 py-[9px] text-[13px] font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50"
+          className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-[4px] border border-border-primary bg-surface-raised px-4 py-[9px] text-[13px] font-semibold text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50 sm:min-h-0 sm:flex-none"
         >
           <Braces className="size-[15px]" />
           导出 JSON
@@ -501,7 +501,7 @@ export default function CvePage() {
           type="button"
           onClick={() => syncMutation.mutate()}
           disabled={syncMutation.isPending}
-          className="inline-flex items-center gap-2 rounded-[4px] bg-accent px-4 py-[9px] text-[13px] font-semibold text-accent-text transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-[4px] bg-accent px-4 py-[9px] text-[13px] font-semibold text-accent-text transition-opacity hover:opacity-90 disabled:opacity-50 sm:min-h-0 sm:flex-none"
         >
           {syncMutation.isPending ? (
             <Loader2 className="size-[15px] animate-spin" />
@@ -512,7 +512,7 @@ export default function CvePage() {
         </button>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-8 py-6">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-4 sm:px-6 md:px-8 md:py-6">
         {cveQuery.isPending ? (
           <div className="flex flex-1 items-center justify-center gap-2 font-mono text-sm text-text-muted">
             <Loader2 className="size-4 animate-spin" />

@@ -124,7 +124,7 @@ interface MetricCardProps {
 
 function MetricCard({ icon: Icon, label, value, valueClass, iconClass }: Readonly<MetricCardProps>) {
   return (
-    <div className="flex flex-1 flex-col gap-2.5 rounded-md border border-border-primary bg-surface-raised p-[18px]">
+    <div className="flex min-w-0 flex-1 flex-col gap-2.5 rounded-md border border-border-primary bg-surface-raised p-4 sm:p-[18px]">
       <div className="flex items-center gap-2">
         <Icon className={cn("size-[15px] shrink-0", iconClass ?? "text-text-primary")} />
         <span className="truncate font-mono text-[11px] tracking-[0.3px] text-text-muted">
@@ -515,8 +515,8 @@ export function ScanConsole({
     : `全局单例 · 同一时刻只允许一个扫描运行 · ${stateLabel(state)}`
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center gap-4 border-b border-border-primary px-8 py-5">
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex flex-col gap-3 border-b border-border-primary px-4 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6 md:px-8 md:py-5">
         <div className="flex flex-1 flex-col gap-[3px]">
           <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">{title}</h1>
           <p className="font-mono text-xs text-text-muted">{subtitle ?? defaultSubtitle}</p>
@@ -526,7 +526,7 @@ export function ScanConsole({
             type="button"
             onClick={() => stopMutation.mutate()}
             disabled={stopMutation.isPending || stopping}
-            className="inline-flex items-center gap-[7px] rounded-[4px] border border-danger bg-danger-dim px-4 py-[9px] text-[13px] font-semibold text-danger transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center gap-[7px] rounded-[4px] border border-danger bg-danger-dim px-4 py-[9px] text-[13px] font-semibold text-danger transition-opacity hover:opacity-90 disabled:opacity-50 sm:min-h-0"
           >
             {stopMutation.isPending || stopping ? (
               <Loader2 className="size-[14px] animate-spin" />
@@ -540,7 +540,7 @@ export function ScanConsole({
             type="button"
             onClick={() => startMutation.mutate()}
             disabled={startMutation.isPending || launchSources.length === 0}
-            className="inline-flex items-center gap-[7px] rounded-[4px] bg-accent px-4 py-[9px] text-[13px] font-semibold text-accent-text transition-opacity hover:opacity-90 disabled:opacity-50"
+            className="inline-flex min-h-11 items-center justify-center gap-[7px] rounded-[4px] bg-accent px-4 py-[9px] text-[13px] font-semibold text-accent-text transition-opacity hover:opacity-90 disabled:opacity-50 sm:min-h-0"
           >
             {startMutation.isPending ? (
               <Loader2 className="size-[14px] animate-spin" />
@@ -552,9 +552,9 @@ export function ScanConsole({
         )}
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-5 px-8 py-6">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4 sm:gap-5 sm:px-6 md:px-8 md:py-6">
         {locked ? (
-          <div className="flex items-center gap-3.5">
+          <div className="flex flex-wrap items-center gap-3.5">
             <span className="font-mono text-xs text-text-muted">数据源</span>
             <span className="inline-flex items-center gap-2 rounded-[4px] border border-accent bg-accent-dim px-4 py-[9px] text-[13px] font-semibold text-accent">
               {fixedSource === "manual" ? (
@@ -685,7 +685,7 @@ export function ScanConsole({
                 aria-expanded={packDropdownOpen}
                 onClick={() => setPackDropdownOpen((o) => !o)}
                 className={cn(
-                  "inline-flex h-9 min-w-[220px] max-w-[360px] items-center justify-between gap-2 rounded-[4px] border px-3 text-[13px] transition-colors",
+                  "inline-flex h-11 min-w-0 max-w-full flex-1 items-center justify-between gap-2 rounded-[4px] border px-3 text-[13px] transition-colors sm:h-9 sm:min-w-[220px] sm:max-w-[360px] sm:flex-none",
                   packDropdownOpen || (!running && !allPacksSelected && githubPacks.length > 0)
                     ? "border-accent bg-accent-dim font-semibold text-accent"
                     : "border-border-primary bg-surface-raised text-text-secondary hover:text-text-primary",
@@ -704,7 +704,7 @@ export function ScanConsole({
                 <div
                   role="listbox"
                   aria-multiselectable
-                  className="absolute top-[calc(100%+4px)] left-0 z-50 w-[280px] overflow-hidden rounded-md border border-border-primary bg-surface-raised shadow-lg"
+                  className="absolute top-[calc(100%+4px)] left-0 z-50 w-[min(280px,calc(100vw-2rem))] overflow-hidden rounded-md border border-border-primary bg-surface-raised shadow-lg"
                 >
                   <div className="max-h-[320px] overflow-y-auto p-1">
                     <button
@@ -775,7 +775,7 @@ export function ScanConsole({
           </div>
         ) : null}
 
-        <div className="flex items-center gap-3.5">
+        <div className="flex flex-wrap items-center gap-3.5">
           <span className="font-mono text-xs text-text-muted">扫描模式</span>
           {(["incremental", "full"] as const).map((value) => (
             <button
@@ -796,7 +796,7 @@ export function ScanConsole({
           ))}
         </div>
 
-        <div className="flex gap-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-5">
           <MetricCard icon={Server} label="原始命中" value={String(progress?.raw_hits ?? 0)} />
           <MetricCard icon={Layers} label="唯一目标" value={String(progress?.unique_targets ?? 0)} />
           <MetricCard
@@ -856,7 +856,7 @@ export function ScanConsole({
           ) : null}
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border-primary bg-surface-inset">
+        <div className="flex min-h-[300px] flex-1 flex-col overflow-hidden rounded-md border border-border-primary bg-surface-inset sm:min-h-[360px]">
           <div className="flex items-center gap-2.5 border-b border-border-subtle bg-surface-raised px-4 py-2.5">
             <Terminal className="size-[14px] text-accent" />
             <span className="flex-1 font-mono text-xs font-semibold text-text-secondary">

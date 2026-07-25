@@ -154,6 +154,9 @@
     color-scheme: dark;
   }
   body {
+    min-width: 320px;
+    min-height: 100dvh;
+    overflow-x: hidden;
     @apply bg-background text-foreground font-sans antialiased;
   }
 }

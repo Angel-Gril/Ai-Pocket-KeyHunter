@@ -132,7 +132,7 @@ export default function ManualTargetsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-border-primary px-8 py-4">
+      <div className="shrink-0 border-b border-border-primary px-4 py-4 sm:px-6 md:px-8">
         <button
           type="button"
           aria-expanded={panelOpen}
@@ -201,7 +201,7 @@ export default function ManualTargetsPage() {
               </div>
 
               {/* Stored list */}
-              <div className="max-h-[220px] overflow-y-auto">
+              <div className="max-h-[220px] overflow-auto">
                 {listQuery.isLoading ? (
                   <div className="flex items-center justify-center gap-2 py-10 text-text-muted">
                     <Loader2 className="size-4 animate-spin" />

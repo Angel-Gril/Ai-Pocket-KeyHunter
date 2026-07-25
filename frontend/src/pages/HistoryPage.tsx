@@ -45,7 +45,7 @@ function Stat({
   className,
 }: Readonly<{ value: number; label: string; className: string }>) {
   return (
-    <div className="flex flex-col items-end gap-0.5">
+    <div className="flex min-w-[58px] flex-col items-end gap-0.5 max-sm:items-start">
       <span className={cn("font-mono text-lg font-semibold tabular-nums", className)}>{value}</span>
       <span className="font-mono text-[11px] text-text-muted">{label}</span>
     </div>
@@ -59,33 +59,33 @@ function RunRow({
 }: Readonly<{ run: RunSummary; onDelete: (run: RunSummary) => void; deleting: boolean }>) {
   const navigate = useNavigate()
   return (
-    <div className="group flex items-center gap-[18px] rounded-md border border-border-primary bg-surface-raised px-[18px] py-4 transition-colors hover:bg-surface-overlay">
+    <div className="group flex flex-col gap-3 rounded-md border border-border-primary bg-surface-raised p-4 transition-colors hover:bg-surface-overlay sm:flex-row sm:items-center sm:gap-[18px] sm:px-[18px]">
       <button
         type="button"
         onClick={() => navigate(`/runs/${run.run_id}`)}
-        className="flex min-w-0 flex-1 items-center gap-[18px] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="flex min-w-0 flex-1 flex-col gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 sm:flex-row sm:items-center sm:gap-[18px]"
       >
-        <div className="flex w-[340px] shrink-0 flex-col gap-1.5">
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:w-[300px] sm:shrink-0 sm:flex-none lg:w-[340px]">
           <div className="flex items-center gap-2.5">
             <Clock3 className="size-3.5 text-text-muted" />
             <span className="font-mono text-[15px] font-semibold text-text-primary">{formatTime(run.started_at)}</span>
           </div>
           <span className="truncate font-mono text-[11px] text-text-muted">{run.run_id}</span>
         </div>
-        <div className="flex w-[150px] shrink-0 flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 sm:w-[150px] sm:shrink-0">
           {run.sources.length > 0 ? run.sources.map((source) => <SourceBadge key={source} source={source} />) : <span className="font-mono text-[11px] text-text-muted">—</span>}
         </div>
-        <div className="flex flex-1 items-center justify-end gap-7">
+        <div className="grid w-full grid-cols-3 gap-3 sm:flex sm:flex-1 sm:items-center sm:justify-end sm:gap-4 lg:gap-7">
           <Stat value={run.raw_hits} label="原始命中" className="text-text-secondary" />
           <Stat value={run.unique_targets} label="唯一目标" className="text-text-secondary" />
           <Stat value={run.final_verified} label="最终可用" className="text-success" />
           <Stat value={run.suspicious_count} label="可疑" className="text-info" />
           <Stat value={run.high_value_final} label="高价值" className="text-warning" />
         </div>
-        <ChevronRight className="size-[17px] shrink-0 text-text-secondary" />
+        <ChevronRight className="hidden size-[17px] shrink-0 text-text-secondary sm:block" />
       </button>
       {run.deletable ? (
-        <Button variant="destructive" size="icon-sm" disabled={deleting} onClick={() => onDelete(run)} aria-label={`删除 ${run.run_id}`}>
+        <Button variant="destructive" size="icon-sm" className="self-end" disabled={deleting} onClick={() => onDelete(run)} aria-label={`删除 ${run.run_id}`}>
           {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
         </Button>
       ) : null}
@@ -217,30 +217,30 @@ export default function HistoryPage() {
   }, [data, needle])
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center gap-4 border-b border-border-primary px-8 py-5">
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex flex-col gap-3 border-b border-border-primary px-4 py-4 sm:flex-row sm:items-center sm:gap-4 sm:px-6 md:px-8 md:py-5">
         <div className="flex flex-1 flex-col gap-0.5">
           <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">扫描历史</h1>
           <p className="font-mono text-xs text-text-muted">共 {totalRuns} 次扫描 · 按日期分组</p>
         </div>
 
-        <div className="relative flex items-center">
+        <div className="relative flex w-full items-center sm:w-auto">
           <Search className="pointer-events-none absolute left-3 size-[15px] text-text-muted" />
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="搜索 run / host…"
-            className="w-[260px] border-border-primary bg-surface-raised pl-9 text-[13px] dark:bg-surface-raised"
+            className="w-full border-border-primary bg-surface-raised pl-9 text-[13px] dark:bg-surface-raised sm:w-[260px]"
           />
         </div>
 
-        <Button onClick={() => navigate("/scan")}>
+        <Button className="min-h-11 sm:min-h-9" onClick={() => navigate("/scan")}>
           <Plus />
           执行扫描
         </Button>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-8 py-6">
+      <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 md:px-8 md:py-6">
         <HistoryContent
           isPending={isPending}
           isError={isError}
