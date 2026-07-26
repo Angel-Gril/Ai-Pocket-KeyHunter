@@ -195,6 +195,20 @@ fn tag_hit(mut hit: Value, source: &str, query_id: &str) -> Value {
     }
     hit
 }
+
+fn tag_product_for_query(mut hit: Value, source: &str, query_id: &str) -> Value {
+    let product = match source {
+        "fofa" => crate::legacy_queries::product_for_query(query_id),
+        "shodan" => crate::legacy_queries::product_for_shodan_query(query_id),
+        _ => None,
+    };
+    if let Some(product) = product
+        && let Value::Object(map) = &mut hit
+    {
+        map.insert("_product".into(), Value::String(product.into()));
+    }
+    hit
+}
 fn report_progress(
     budgets: &SourceBudgets,
     source: &str,
@@ -258,10 +272,13 @@ impl DiscoverySource for FofaSource {
                             .cloned()
                             .unwrap_or_default();
                         let count = rows.len();
-                        result.host_hits.extend(
-                            rows.iter()
-                                .map(|row| tag_hit(normalize_fofa_row(row), "fofa", query)),
-                        );
+                        result.host_hits.extend(rows.iter().map(|row| {
+                            tag_product_for_query(
+                                tag_hit(normalize_fofa_row(row), "fofa", query),
+                                "fofa",
+                                query,
+                            )
+                        }));
                         result.query_usage.push(QueryUsage {
                             source: "fofa".into(),
                             query: query.clone(),
@@ -333,10 +350,13 @@ impl DiscoverySource for ShodanSource {
                             .cloned()
                             .unwrap_or_default();
                         let count = rows.len();
-                        result.host_hits.extend(
-                            rows.iter()
-                                .map(|row| tag_hit(normalize_shodan_match(row), "shodan", query)),
-                        );
+                        result.host_hits.extend(rows.iter().map(|row| {
+                            tag_product_for_query(
+                                tag_hit(normalize_shodan_match(row), "shodan", query),
+                                "shodan",
+                                query,
+                            )
+                        }));
                         result.query_usage.push(QueryUsage {
                             source: "shodan".into(),
                             query: query.clone(),
@@ -887,5 +907,15 @@ mod tests {
         let row = json!({"host": "h", "body": "BANNER_BODY", "header": "H"});
         let hit = normalize_fofa_row(&row);
         assert_eq!(hit["banner"], "BANNER_BODY");
+    }
+
+    #[test]
+    fn legacy_product_queries_tag_discovery_hits() {
+        let hit = tag_product_for_query(
+            json!({"host":"https://litellm.example"}),
+            "fofa",
+            "body=\"litellm\" && body=\"sk-\" && status_code=\"200\"",
+        );
+        assert_eq!(hit["_product"], "litellm");
     }
 }

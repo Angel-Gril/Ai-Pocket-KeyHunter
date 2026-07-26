@@ -1,8 +1,15 @@
 use aipocket_clients::{FofaClient, GithubClient, ShodanClient};
 use aipocket_core::Settings;
-use axum::{Json, Router, extract::Query, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::get,
+};
+use parking_lot::Mutex;
 use serde_json::{Value, json};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 async fn fixture(Query(query): Query<std::collections::HashMap<String, String>>) -> Json<Value> {
     if query.contains_key("qbase64") {
@@ -39,6 +46,60 @@ async fn server() -> (String, tokio::task::JoinHandle<()>) {
     let address: SocketAddr = listener.local_addr().unwrap();
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (format!("http://{address}"), task)
+}
+
+async fn rotating_search(
+    State(tokens): State<Arc<Mutex<Vec<String>>>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let authorization = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    tokens.lock().push(authorization.clone());
+    if authorization == "Bearer exhausted" {
+        (
+            StatusCode::FORBIDDEN,
+            [("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "1")],
+            Json(json!({"message":"API rate limit exceeded"})),
+        )
+            .into_response()
+    } else {
+        Json(json!({"items":[{"name":".env"}]})).into_response()
+    }
+}
+
+#[tokio::test]
+async fn github_search_rotates_tokens_after_rate_limit() {
+    let tokens = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/search/code", get(rotating_search))
+        .with_state(tokens.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let github = GithubClient::new(
+        reqwest::Client::new(),
+        &Settings {
+            github_tokens: "exhausted,healthy".into(),
+            github_api_base_url: format!("http://{address}"),
+            github_rate_limit_max_wait_seconds: 0.0,
+            ..Settings::default()
+        },
+    );
+    assert_eq!(
+        github.search_code("test", 1, 1).await.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        tokens.lock().as_slice(),
+        ["Bearer exhausted", "Bearer healthy"]
+    );
+    task.abort();
 }
 
 #[tokio::test]

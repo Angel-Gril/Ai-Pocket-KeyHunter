@@ -180,6 +180,67 @@ pub const PRODUCT_QUERIES: &[(&str, &[&str])] = &[
     ("Codex CLI", &["body=\"codex\" && body=\"OPENAI_API_KEY\""]),
 ];
 
+pub fn product_for_query(query: &str) -> Option<&'static str> {
+    PRODUCT_QUERIES.iter().find_map(|(product, queries)| {
+        queries
+            .iter()
+            .map(|value| format!("{value} && status_code=\"200\""))
+            .any(|candidate| candidate == query)
+            .then(|| canonical_product(product))
+    })
+}
+
+pub fn shodan_product_queries() -> Vec<String> {
+    let mut out = PRODUCT_QUERIES
+        .iter()
+        .flat_map(|(_, queries)| queries.iter())
+        .map(|query| {
+            query
+                .replace("body=\"", "http.html:\"")
+                .replace(" && ", " ")
+                .replace(" || ", " OR ")
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+pub fn product_for_shodan_query(query: &str) -> Option<&'static str> {
+    PRODUCT_QUERIES.iter().find_map(|(product, queries)| {
+        queries
+            .iter()
+            .map(|query| {
+                query
+                    .replace("body=\"", "http.html:\"")
+                    .replace(" && ", " ")
+                    .replace(" || ", " OR ")
+            })
+            .any(|candidate| candidate == query)
+            .then(|| canonical_product(product))
+    })
+}
+
+fn canonical_product(product: &str) -> &'static str {
+    match product {
+        "LiteLLM" => "litellm",
+        "Flowise" => "flowise",
+        "Dify" => "dify",
+        "LibreChat" => "librechat",
+        "OpenWebUI" => "openwebui",
+        "Langflow" => "langflow",
+        "MLflow" => "mlflow",
+        "Portkey AI Gateway" => "portkey",
+        "FastGPT" => "fastgpt",
+        "New-API" => "newapi",
+        "AnythingLLM" => "anythingllm",
+        "ChatGPT-Next-Web" => "chatgpt_next_web",
+        "OpenRouter" => "openrouter",
+        "LobeChat" => "lobechat",
+        _ => "generic",
+    }
+}
+
 pub fn fofa_queries() -> Vec<String> {
     let mut out: Vec<String> = DIRECT_CREDENTIAL_QUERIES
         .iter()
@@ -205,5 +266,22 @@ mod tests {
         assert_eq!(DIRECT_CREDENTIAL_QUERIES.len(), 31);
         assert_eq!(PRODUCT_QUERIES.len(), 25);
         assert!(fofa_queries().len() > 60);
+    }
+    #[test]
+    fn product_query_attribution_is_stable() {
+        assert_eq!(
+            product_for_query("body=\"litellm\" && body=\"sk-\" && status_code=\"200\""),
+            Some("litellm")
+        );
+        assert_eq!(product_for_query("body=\"sk-\""), None);
+        assert!(
+            shodan_product_queries()
+                .iter()
+                .any(|query| query.contains("litellm"))
+        );
+        assert_eq!(
+            product_for_shodan_query("http.html:\"dify\" http.html:\"sk-\""),
+            Some("dify")
+        );
     }
 }

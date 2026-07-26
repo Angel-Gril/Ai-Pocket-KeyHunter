@@ -21,12 +21,29 @@ pub struct EngineResult {
 
 pub async fn execute_plan(
     http: &reqwest::Client,
-    mut context: EngineContext,
+    context: EngineContext,
     specs: &[ProbeSpec],
     policy: &RiskPolicy,
     request_budget: usize,
 ) -> EngineResult {
-    let planned = crate::plan_specs(&context.product, specs, &context.target, policy, &[]);
+    execute_plan_with_advisories(http, context, specs, policy, request_budget, &[]).await
+}
+
+pub async fn execute_plan_with_advisories(
+    http: &reqwest::Client,
+    mut context: EngineContext,
+    specs: &[ProbeSpec],
+    policy: &RiskPolicy,
+    request_budget: usize,
+    advisory_ids: &[String],
+) -> EngineResult {
+    let planned = crate::plan_specs(
+        &context.product,
+        specs,
+        &context.target,
+        policy,
+        advisory_ids,
+    );
     let planned_ids: HashSet<_> = planned.iter().map(|spec| spec.id.clone()).collect();
     let mut result = EngineResult::default();
     for spec in specs.iter().filter(|spec| !planned_ids.contains(&spec.id)) {

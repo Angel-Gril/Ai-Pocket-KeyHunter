@@ -142,7 +142,7 @@ impl RiskPolicy {
                 )));
             }
         };
-        let authorized_scope = settings
+        let authorized_scope: Vec<String> = settings
             .authorized_probe_scope
             .split(',')
             .map(str::trim)
@@ -152,7 +152,7 @@ impl RiskPolicy {
         Ok(Self {
             enabled_classes,
             max_risk,
-            intrusive_checks: settings.intrusive_checks,
+            intrusive_checks: settings.intrusive_checks && !authorized_scope.is_empty(),
             authorized_scope,
             ssrf_enabled: settings.probe_ssrf_enabled,
             sqli_enabled: settings.probe_sqli_enabled,
@@ -271,5 +271,8 @@ mod tests {
         };
         assert!(policy.allows(&spec, "https://allowed.example/path"));
         assert!(!policy.allows(&spec, "https://evil.example"));
+        settings.authorized_probe_scope.clear();
+        let unrestricted = RiskPolicy::from_settings(&settings).unwrap();
+        assert!(!unrestricted.allows(&spec, "https://allowed.example/path"));
     }
 }

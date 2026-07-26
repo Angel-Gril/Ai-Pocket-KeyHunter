@@ -256,21 +256,63 @@ fn parse_failed_batch(path: &std::path::Path) -> (usize, Option<i64>) {
 }
 
 async fn cve_sync(_: Auth, State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let value = s.tavily().await.search("AI security CVE latest").await?;
-    let items = value
-        .get("results")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let queries = [
+        "latest AI infrastructure security CVE GHSA Dify LiteLLM Flowise Langflow Open WebUI",
+        "latest AI gateway agent framework CVE GHSA MLflow vLLM OpenRouter FastGPT",
+    ];
     let mut added = 0;
-    for item in &items {
-        if s.repository.upsert_cve(item).await.unwrap_or(false) {
-            added += 1;
+    let mut discovered = 0;
+    for query in queries {
+        let value = s.tavily().await.search(query).await?;
+        for item in value
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            for record in cve_records_from_search_item(item) {
+                discovered += 1;
+                if s.repository.upsert_cve(&record).await? {
+                    added += 1;
+                }
+            }
         }
     }
-    Ok(Json(
-        json!({"total":s.repository.cves().await?.len(),"added":added}),
-    ))
+    Ok(Json(json!({
+        "total": s.repository.cves().await?.len(),
+        "discovered": discovered,
+        "added": added,
+    })))
+}
+
+fn cve_records_from_search_item(item: &Value) -> Vec<Value> {
+    static ADVISORY_ID: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\b(?:CVE-\d{4}-\d{4,7}|GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4})\b")
+            .expect("advisory id regex")
+    });
+    let text = ["id", "cve_id", "advisory_id", "title", "content", "url"]
+        .into_iter()
+        .filter_map(|key| item.get(key).and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut seen = std::collections::BTreeSet::new();
+    ADVISORY_ID
+        .find_iter(&text)
+        .filter_map(|found| {
+            let id = found.as_str().to_ascii_uppercase();
+            if !seen.insert(id.clone()) {
+                return None;
+            }
+            Some(json!({
+                "id": id,
+                "title": item.get("title"),
+                "description": item.get("content"),
+                "source_url": item.get("url"),
+                "source": "tavily",
+                "synced_at": chrono::Utc::now().to_rfc3339(),
+            }))
+        })
+        .collect()
 }
 #[derive(Deserialize)]
 struct CveAdd {
@@ -993,6 +1035,57 @@ struct ScanStart {
 fn all_source() -> String {
     "all".into()
 }
+fn discovery_queries(
+    selected_packs: &[&aipocket_discovery::packs::ProviderPack],
+) -> (Vec<String>, Vec<String>) {
+    let mut fofa = aipocket_discovery::legacy_queries::fofa_queries();
+    fofa.extend(
+        selected_packs
+            .iter()
+            .flat_map(|pack| pack.fofa_queries)
+            .map(|query| query.to_string()),
+    );
+    let mut shodan = selected_packs
+        .iter()
+        .flat_map(|pack| pack.shodan_queries)
+        .map(|query| query.to_string())
+        .collect::<Vec<_>>();
+    shodan.extend(aipocket_discovery::legacy_queries::shodan_product_queries());
+    fofa.sort();
+    fofa.dedup();
+    shodan.sort();
+    shodan.dedup();
+    (fofa, shodan)
+}
+
+#[cfg(test)]
+mod scan_query_tests {
+    use super::*;
+
+    #[test]
+    fn web_full_scan_includes_legacy_product_queries() {
+        let registry = aipocket_discovery::packs::registry();
+        let selected = registry.values().copied().collect::<Vec<_>>();
+        let (fofa, shodan) = discovery_queries(&selected);
+        assert!(fofa.len() > 60);
+        assert!(fofa.iter().any(|query| query.contains("litellm_proxy")));
+        assert!(fofa.iter().any(|query| query.contains("dify")));
+        assert!(shodan.iter().any(|query| query == "http.html:sk-"));
+        assert!(shodan.iter().any(|query| query.contains("litellm_proxy")));
+    }
+
+    #[test]
+    fn cve_search_items_are_normalized_before_persistence() {
+        let rows = cve_records_from_search_item(&json!({
+            "title":"Dify CVE-2026-12345 and GHSA-2345-6789-cfgh",
+            "content":"CVE-2026-12345",
+            "url":"https://example.test/advisory"
+        }));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"], "CVE-2026-12345");
+        assert_eq!(rows[1]["id"], "GHSA-2345-6789-CFGH");
+    }
+}
 async fn scan_start(
     _: Auth,
     State(s): State<AppState>,
@@ -1044,17 +1137,14 @@ async fn scan_start(
                     .filter_map(|id| registry.get(id.as_str()).copied())
                     .collect()
             };
+        let (fofa_queries, shodan_queries) = discovery_queries(&selected_packs);
         let mut discovery: Vec<std::sync::Arc<dyn aipocket_discovery::DiscoverySource>> =
             Vec::new();
         if sources.iter().any(|v| v == "all" || v == "fofa") {
             discovery.push(std::sync::Arc::new(
                 aipocket_discovery::sources::FofaSource {
                     client: aipocket_clients::FofaClient::new(http.clone(), &settings),
-                    queries: selected_packs
-                        .iter()
-                        .flat_map(|p| p.fofa_queries)
-                        .map(|v| v.to_string())
-                        .collect(),
+                    queries: fofa_queries,
                     page_size: settings.fofa_page_size,
                     max_pages: settings.fofa_max_pages,
                     page_delay: settings.fofa_page_delay,
@@ -1065,11 +1155,7 @@ async fn scan_start(
             discovery.push(std::sync::Arc::new(
                 aipocket_discovery::sources::ShodanSource {
                     client: aipocket_clients::ShodanClient::new(http.clone(), &settings),
-                    queries: selected_packs
-                        .iter()
-                        .flat_map(|p| p.shodan_queries)
-                        .map(|v| v.to_string())
-                        .collect(),
+                    queries: shodan_queries,
                     max_pages: settings.shodan_max_pages,
                     page_delay: settings.shodan_page_delay,
                 },

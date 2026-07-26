@@ -208,9 +208,9 @@ impl ScanPolicy {
             ScanMode::Full => Self {
                 mode,
                 discovery_scope: "full".into(),
-                use_cross_run_dedup: true,
-                require_fresh_verification: false,
-                require_fresh_balance: false,
+                use_cross_run_dedup: false,
+                require_fresh_verification: true,
+                require_fresh_balance: true,
                 write_checkpoints: true,
             },
             ScanMode::Incremental => Self {
@@ -318,17 +318,18 @@ mod tests {
     fn phases_policies_observations_and_fingerprints_are_stable() {
         assert!(ScanPhase::Finished.at_least(ScanPhase::Discovery));
         assert!(!ScanPhase::Extract.at_least(ScanPhase::Validate));
-        for mode in [ScanMode::Full, ScanMode::Incremental] {
-            let policy = ScanPolicy::from_mode(mode);
-            assert!(policy.use_cross_run_dedup);
-            assert!(policy.write_checkpoints);
-            assert!(!policy.require_fresh_verification);
-        }
         let full = ScanPolicy::from_mode(ScanMode::Full);
+        assert!(!full.use_cross_run_dedup);
+        assert!(full.require_fresh_verification);
+        assert!(full.require_fresh_balance);
+        assert!(full.write_checkpoints);
         let incremental = ScanPolicy::from_mode(ScanMode::Incremental);
+        assert!(incremental.use_cross_run_dedup);
+        assert!(!incremental.require_fresh_verification);
+        assert!(!incremental.require_fresh_balance);
+        assert!(incremental.write_checkpoints);
         assert_eq!(full.discovery_scope, "full");
         assert_eq!(incremental.discovery_scope, "incremental");
-        assert!(!full.require_fresh_balance);
         let identity = CredentialIdentity {
             apikey: "sk-fixture".into(),
             apiurl: "https://api.example/v1".into(),

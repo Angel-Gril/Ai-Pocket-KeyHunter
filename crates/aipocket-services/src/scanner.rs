@@ -131,19 +131,18 @@ impl Scanner {
                 if cancel.is_cancelled() {
                     return self.interrupt(&run_id, progress, lease, &events).await;
                 }
+                let query_ids = source.query_ids();
                 let source_budgets = if policy.discovery_scope == "full" {
-                    SourceBudgets::default()
+                    SourceBudgets {
+                        github_code: (source.name() == "github").then_some(query_ids.len()),
+                        github_commit: (source.name() == "github").then_some(query_ids.len()),
+                        ..Default::default()
+                    }
                 } else {
                     budgets.clone()
                 };
-                let query_ids = source.query_ids();
-                let query_budget = match source.name() {
-                    "fofa" => source_budgets.fofa,
-                    "shodan" => source_budgets.shodan,
-                    "github" => source_budgets.github_code,
-                    _ => None,
-                }
-                .unwrap_or(query_ids.len());
+                let query_budget =
+                    source_query_budget(source.name(), &source_budgets, query_ids.len());
                 let selected_queries = self
                     .repository
                     .plan_query_ids(
@@ -337,7 +336,7 @@ impl Scanner {
                 serde_json::json!({"raw_hits":progress.raw_hits}),
             )
             .await?;
-        progress.unique_targets = hits.len() as u64;
+        progress.unique_targets = distinct_target_count(&hits);
         for metric in query_metrics.values_mut() {
             metric.funnel.unique_targets = metric.funnel.raw_hits;
         }
@@ -352,7 +351,10 @@ impl Scanner {
                 .or_else(|| hit.get("url"))
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if target.is_empty() || !dedup.target_seen("probe", target).await {
+            if !policy.use_cross_run_dedup
+                || target.is_empty()
+                || !dedup.target_seen("probe", target).await
+            {
                 unseen_hits.push(hit);
             }
         }
@@ -426,15 +428,17 @@ impl Scanner {
             ));
             let mut tasks = tokio::task::JoinSet::new();
             for credential in chunk.iter().cloned() {
-                if let Some(cached) = dedup
-                    .get_success::<aipocket_core::ValidationResult>(&credential)
-                    .await
-                {
-                    outcomes.push(cached);
-                    continue;
-                }
-                if dedup.get_outcome(&credential).await.is_some() {
-                    continue;
+                if !policy.require_fresh_verification {
+                    if let Some(cached) = dedup
+                        .get_success::<aipocket_core::ValidationResult>(&credential)
+                        .await
+                    {
+                        outcomes.push(cached);
+                        continue;
+                    }
+                    if dedup.get_outcome(&credential).await.is_some() {
+                        continue;
+                    }
                 }
                 progress.active_requests += 1;
                 let validator = validator.clone();
@@ -519,9 +523,10 @@ impl Scanner {
             if cancel.is_cancelled() {
                 return self.interrupt(&run_id, progress, lease, &events).await;
             }
-            if let Some(cached) = dedup
-                .get_balance::<crate::BalanceResult>(&result.credential)
-                .await
+            if !policy.require_fresh_balance
+                && let Some(cached) = dedup
+                    .get_balance::<crate::BalanceResult>(&result.credential)
+                    .await
             {
                 apply_balance(result, cached);
                 dedup.set_success(&result.credential, result).await;
@@ -557,11 +562,15 @@ impl Scanner {
             if cancel.is_cancelled() {
                 return self.interrupt(&run_id, progress, lease, &events).await;
             }
-            let enriched = if let Some(cached) = dedup
-                .get_balance::<crate::BalanceResult>(&result.credential)
-                .await
-            {
-                Some(cached)
+            let enriched = if !policy.require_fresh_balance {
+                dedup
+                    .get_balance::<crate::BalanceResult>(&result.credential)
+                    .await
+            } else {
+                None
+            };
+            let enriched = if enriched.is_some() {
+                enriched
             } else {
                 let balance_result = tokio::select! {
                     _ = cancel.cancelled() => {
@@ -673,6 +682,14 @@ impl Scanner {
                     .unwrap_or("generic")
                     .to_ascii_lowercase()
                     .replace('-', "_");
+                let advisory_ids = hit
+                    .get("_cves")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
                 let http = self.http.clone();
                 let settings = self.settings.clone();
                 let policy = policy.clone();
@@ -699,7 +716,7 @@ impl Scanner {
                     }
                     let specs = aipocket_prober::product_specs::specs_for(&hint);
                     if !specs.is_empty() {
-                        let engine = aipocket_prober::execute_plan(
+                        let engine = aipocket_prober::execute_plan_with_advisories(
                             &http,
                             aipocket_prober::EngineContext {
                                 target,
@@ -709,6 +726,7 @@ impl Scanner {
                             &specs,
                             &policy,
                             settings.max_requests_per_target.max(1),
+                            &advisory_ids,
                         )
                         .await;
                         found.extend(engine.credentials);
@@ -891,6 +909,7 @@ impl Scanner {
     async fn interrupt(
         &self,
         run_id: &str,
+
         progress: ScanProgress,
         lease: Option<ScanLease>,
         events: &mpsc::UnboundedSender<ScanEvent>,
@@ -910,6 +929,36 @@ impl Scanner {
         Ok(run_id.to_owned())
     }
 }
+
+fn source_query_budget(source: &str, budgets: &SourceBudgets, query_count: usize) -> usize {
+    match source {
+        "fofa" => budgets.fofa,
+        "shodan" => budgets.shodan,
+        "github" => Some(
+            budgets
+                .github_code
+                .unwrap_or_default()
+                .max(budgets.github_commit.unwrap_or_default()),
+        ),
+        _ => None,
+    }
+    .unwrap_or(query_count)
+}
+fn distinct_target_count(hits: &[Value]) -> u64 {
+    let mut targets = std::collections::HashSet::new();
+    for hit in hits {
+        let target = hit
+            .get("host")
+            .or_else(|| hit.get("url"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !target.is_empty() {
+            targets.insert(target);
+        }
+    }
+    targets.len() as u64
+}
+
 fn discovery_progress_line(progress: &DiscoveryProgress) -> String {
     let page = if progress.page == 0 {
         "准备请求".to_owned()
@@ -1357,6 +1406,18 @@ mod tests {
             "host":"https://example.com",
             "body":"OPENAI_API_KEY=sk-a1b2c3d4e5f6g7h8"
         })];
+        assert_eq!(
+            source_query_budget(
+                "github",
+                &SourceBudgets {
+                    github_code: Some(0),
+                    github_commit: Some(12),
+                    ..Default::default()
+                },
+                33,
+            ),
+            12
+        );
         let rows = extract_credentials(&hits);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].apikey, "sk-a1b2c3d4e5f6g7h8");
@@ -1368,6 +1429,14 @@ mod tests {
         assert_eq!(mode_name(&ScanMode::Incremental), "incremental");
         assert!(phase_rank("finished") > phase_rank("validate"));
         assert!(phase_rank("extract") < phase_rank("validate"));
+        assert_eq!(
+            distinct_target_count(&[
+                json!({"host":"https://a.example"}),
+                json!({"host":"https://a.example"}),
+                json!({"url":"https://b.example"}),
+            ]),
+            2
+        );
         assert_eq!(phase_rank("unknown"), 0);
         assert!(!github_shard_id("code_snapshot", "openai", "q").is_empty());
 

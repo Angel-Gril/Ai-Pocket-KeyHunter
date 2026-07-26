@@ -88,6 +88,7 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",
