@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ChevronRight, Clock3, FileText, Inbox, Loader2, Plus, Search, Trash2 } from "lucide-react"
+import { Clock3, FileText, Inbox, Loader2, Plus, Search, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { api, type RunDay, type RunSummary } from "@/lib/api"
 import { Button } from "@/components/ui/button"
@@ -89,22 +89,32 @@ function RunRow({
           <Stat value={run.suspicious_count} label="可疑" className="text-info" />
           <Stat value={run.high_value_final} label="高价值" className="text-warning" />
         </div>
-        <ChevronRight className="hidden size-[17px] shrink-0 text-text-secondary sm:block" />
       </button>
-      <Button
-        variant="outline"
-        size="icon-sm"
-        className="self-end"
-        onClick={() => onLog(run)}
-        aria-label={`查看 ${run.run_id} 日志`}
-      >
-        <FileText />
-      </Button>
-      {run.deletable ? (
-        <Button variant="destructive" size="icon-sm" className="self-end" disabled={deleting} onClick={() => onDelete(run)} aria-label={`删除 ${run.run_id}`}>
-          {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
+      <div className="flex shrink-0 items-center justify-end gap-1 self-stretch border-t border-border-subtle pt-3 sm:self-auto sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-text-secondary hover:text-text-primary"
+          onClick={() => onLog(run)}
+          aria-label={`查看 ${run.run_id} 日志`}
+        >
+          <FileText />
+          日志
         </Button>
-      ) : null}
+        {run.deletable ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-text-muted hover:bg-danger-dim hover:text-danger"
+            disabled={deleting}
+            onClick={() => onDelete(run)}
+            aria-label={`删除 ${run.run_id}`}
+          >
+            {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
+            删除
+          </Button>
+        ) : null}
+      </div>
     </div>
   )
 }
