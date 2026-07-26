@@ -909,6 +909,61 @@ mod tests {
         assert_eq!(hit["banner"], "BANNER_BODY");
     }
 
+    #[tokio::test]
+    async fn normalization_and_manual_source_cover_fallback_boundaries() {
+        assert_eq!(normalize_fofa_row(&json!(true))["_raw"], "true");
+        assert_eq!(
+            normalize_fofa_row(&json!(["only-host"]))["host"],
+            "only-host"
+        );
+        assert_eq!(normalize_fofa_row(&json!(["only-host"]))["ip"], "");
+
+        let normalized = normalize_shodan_match(&json!({
+            "ip": "192.0.2.10",
+            "port": 443,
+            "host": "fallback.example",
+            "header": "fixture-header",
+            "banner": "fixture-banner",
+            "title": "fixture-title",
+            "cert": "fixture-cert",
+            "server": "fixture-server"
+        }));
+        assert_eq!(normalized["host"], "192.0.2.10");
+        assert_eq!(normalized["protocol"], "https");
+        assert_eq!(normalized["header"], "fixture-header");
+        assert_eq!(normalized["banner"], "fixture-banner");
+        assert_eq!(normalized["cert"], "fixture-cert");
+        assert_eq!(normalized["server"], "fixture-server");
+
+        let certificate = normalize_shodan_match(&json!({
+            "ip_str": "192.0.2.11",
+            "port": 80,
+            "ssl": {"cert": {
+                "subject": [{"commonname": "subject.example", "organizationname": "Subject Org"}],
+                "issuer": {"commonName": "Fixture CA", "organizationName": "Issuer Org"},
+                "issued": 123
+            }}
+        }));
+        assert_eq!(
+            certificate["cert"],
+            "subject.example Subject Org Fixture CA Issuer Org 123"
+        );
+
+        let source = ManualSource {
+            targets: vec!["https://one.example".into(), "two.example".into()],
+        };
+        assert_eq!(source.name(), "manual");
+        assert!(source.query_ids().is_empty());
+        assert!(source.is_configured());
+        let fetched = source
+            .fetch(&SourceBudgets::default(), ScanMode::Incremental)
+            .await
+            .unwrap();
+        assert_eq!(fetched.host_hit_count, Some(2));
+        assert_eq!(fetched.host_hits[1]["url"], "two.example");
+        assert_eq!(fetched.host_hits[1]["_source"], "manual");
+    }
+
     #[test]
     fn legacy_product_queries_tag_discovery_hits() {
         let hit = tag_product_for_query(
