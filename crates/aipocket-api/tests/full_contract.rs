@@ -119,7 +119,7 @@ async fn complete_frontend_api_contract_smoke() {
     let repo = Repository::new(Some(pool));
     let run_id = "run_2099_02_02_00-00-00";
     let _ = repo.delete_run(run_id).await;
-    repo.create_run(run_id, Utc::now(), "incremental")
+    repo.create_run(run_id, Utc::now(), "incremental", &[])
         .await
         .unwrap();
     let record = json!({"credential":{"apikey":"sk-contract-plaintext","apiurl":base,"host":"fixture","backend":"manual"},"valid":true,"validation_state":"final_verified","provider_info":{"provider":"unknown"},"tier":"paid","balance":"1"});

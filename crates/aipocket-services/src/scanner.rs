@@ -81,12 +81,16 @@ impl Scanner {
         cancel: CancellationToken,
         events: mpsc::UnboundedSender<ScanEvent>,
     ) -> Result<String> {
+        let source_names = sources
+            .iter()
+            .map(|source| source.name().to_owned())
+            .collect::<Vec<_>>();
         let started_at = chrono::Utc::now();
         let lease = ScanLease::acquire(&self.settings).await?;
         let run_id = resume_run_id
             .unwrap_or_else(|| format!("run_{}", started_at.format("%Y_%m_%d_%H-%M-%S")));
         self.repository
-            .create_run(&run_id, started_at, mode_name(&mode))
+            .create_run(&run_id, started_at, mode_name(&mode), &source_names)
             .await?;
         events
             .send(ScanEvent::Started {

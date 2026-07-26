@@ -20,7 +20,7 @@ async fn existing_schema_records_round_trip_without_migration() {
     ensure_schema(&pool).await.unwrap();
     let repo = Repository::new(Some(pool));
     let run_id = "run_2099_01_01_00-00-00";
-    repo.create_run(run_id, Utc::now(), "incremental")
+    repo.create_run(run_id, Utc::now(), "incremental", &["manual".into()])
         .await
         .unwrap();
     let record = json!({"credential":{"apikey":"sk-plaintext-test","apiurl":"https://example.com","host":"example.com"},"valid":true,"validation_state":"final_verified","provider_info":{"provider":"openai"}});
@@ -53,6 +53,15 @@ async fn existing_schema_records_round_trip_without_migration() {
             .iter()
             .any(|day| day.runs.iter().any(|run| run.run_id == run_id))
     );
+    let summary = repo
+        .list_runs()
+        .await
+        .unwrap()
+        .into_iter()
+        .flat_map(|day| day.runs)
+        .find(|run| run.run_id == run_id)
+        .unwrap();
+    assert_eq!(summary.sources, vec!["manual"]);
     assert!(repo.delete_run(run_id).await.unwrap());
 }
 
@@ -183,7 +192,7 @@ async fn query_metrics_and_run_ledger_state_replace_atomically() {
         "run_2099_01_01_metrics_{}",
         Utc::now().timestamp_nanos_opt().unwrap()
     );
-    repo.create_run(&run_id, Utc::now(), "incremental")
+    repo.create_run(&run_id, Utc::now(), "incremental", &[])
         .await
         .unwrap();
     let mut metric = QueryMetricRecord {
@@ -219,6 +228,15 @@ async fn query_metrics_and_run_ledger_state_replace_atomically() {
     assert_eq!(row.2, 2);
     assert!(!row.3);
     assert_eq!(row.4, "partial instrumentation");
+    let summary = repo
+        .list_runs()
+        .await
+        .unwrap()
+        .into_iter()
+        .flat_map(|day| day.runs)
+        .find(|run| run.run_id == run_id)
+        .unwrap();
+    assert_eq!(summary.sources, vec!["github"]);
     assert!(repo.delete_run(&run_id).await.unwrap());
 }
 
@@ -238,7 +256,7 @@ async fn spill_tables_round_trip_candidates_hits_and_validation_results() {
         Utc::now().timestamp_nanos_opt().unwrap()
     );
     let repo = Repository::new(Some(pool.clone()));
-    repo.create_run(&run_id, Utc::now(), "incremental")
+    repo.create_run(&run_id, Utc::now(), "incremental", &[])
         .await
         .unwrap();
     let credential = Credential {
@@ -308,7 +326,9 @@ async fn repository_resume_append_balance_and_high_value_paths_persist() {
         "run_2099_01_01_repo_{}",
         Utc::now().timestamp_nanos_opt().unwrap()
     );
-    repo.create_run(&run_id, Utc::now(), "full").await.unwrap();
+    repo.create_run(&run_id, Utc::now(), "full", &[])
+        .await
+        .unwrap();
     repo.update_phase(&run_id, "validate", json!({"page":2}))
         .await
         .unwrap();

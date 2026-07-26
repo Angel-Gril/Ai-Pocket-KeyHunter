@@ -79,7 +79,14 @@ impl Repository {
                 r.hits_by_source, (r.log IS NOT NULL AND r.log <> '') AS has_log,
                 COUNT(*) FILTER (WHERE x.kind='valid') AS valid_count,
                 COUNT(*) FILTER (WHERE x.kind='suspicious') AS suspicious_count,
-                COALESCE((SELECT COUNT(*) FROM high_value_keys h WHERE h.run_id=r.run_id),0) AS hv_count
+                COALESCE((SELECT COUNT(*) FROM high_value_keys h WHERE h.run_id=r.run_id),0) AS hv_count,
+                COALESCE((SELECT jsonb_agg(source ORDER BY source) FROM (
+                    SELECT DISTINCT source FROM scan_discovery_hits d
+                    WHERE d.run_id=r.run_id AND source <> ''
+                    UNION
+                    SELECT DISTINCT source FROM query_metrics q
+                    WHERE q.run_id=r.run_id AND source <> ''
+                ) inferred), '[]'::jsonb) AS inferred_sources
                FROM runs r LEFT JOIN results x ON x.run_id=r.run_id
                GROUP BY r.run_id ORDER BY r.run_id DESC"#,
         ).fetch_all(pool).await?;
@@ -131,7 +138,7 @@ impl Repository {
                 } else {
                     row.try_get::<i32, _>("suspicious")? as i64
                 },
-                sources: json_strings(sources),
+                sources: effective_sources(sources, row.try_get("inferred_sources")?),
                 scan_mode: row.try_get("scan_mode")?,
                 high_value_final: if metrics_version >= 2 {
                     stored_hv as i64
@@ -383,12 +390,18 @@ impl Repository {
         run_id: &str,
         started_at: DateTime<Utc>,
         scan_mode: &str,
+        sources: &[String],
     ) -> Result<()> {
         let Some(pool) = self.pool() else {
             return Ok(());
         };
-        sqlx::query("INSERT INTO runs(run_id,started_at,state,scan_mode) VALUES($1,$2,'running',$3) ON CONFLICT(run_id) DO NOTHING")
-            .bind(run_id).bind(started_at).bind(scan_mode).execute(pool).await?;
+        sqlx::query("INSERT INTO runs(run_id,started_at,state,scan_mode,sources) VALUES($1,$2,'running',$3,$4) ON CONFLICT(run_id) DO UPDATE SET sources=CASE WHEN jsonb_array_length(EXCLUDED.sources) > 0 THEN EXCLUDED.sources ELSE runs.sources END")
+            .bind(run_id)
+            .bind(started_at)
+            .bind(scan_mode)
+            .bind(serde_json::to_value(sources)?)
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
@@ -860,6 +873,15 @@ fn json_strings(value: Option<Value>) -> Vec<String> {
         _ => vec![],
     }
 }
+
+fn effective_sources(stored: Option<Value>, inferred: Option<Value>) -> Vec<String> {
+    let stored = json_strings(stored);
+    if stored.is_empty() {
+        json_strings(inferred)
+    } else {
+        stored
+    }
+}
 fn run_day(id: &str) -> String {
     let parts: Vec<_> = id.split('_').collect();
     if parts.len() >= 4 {
@@ -875,6 +897,21 @@ mod tests {
     #[test]
     fn masks_key_but_keeps_shape() {
         assert_eq!(mask_apikey("sk-1234567890"), "sk-1****7890");
+    }
+
+    #[test]
+    fn prefers_stored_sources_and_recovers_missing_legacy_sources() {
+        assert_eq!(
+            effective_sources(
+                Some(serde_json::json!(["manual"])),
+                Some(serde_json::json!(["fofa"])),
+            ),
+            vec!["manual"]
+        );
+        assert_eq!(
+            effective_sources(None, Some(serde_json::json!(["fofa", "shodan"]))),
+            vec!["fofa", "shodan"]
+        );
     }
     #[test]
     fn groups_run_day() {
