@@ -86,6 +86,9 @@ impl Repository {
                     UNION
                     SELECT DISTINCT source FROM query_metrics q
                     WHERE q.run_id=r.run_id AND source <> ''
+                    UNION
+                    SELECT 'github' FROM github_artifacts g
+                    WHERE g.run_id=r.run_id
                 ) inferred), '[]'::jsonb) AS inferred_sources
                FROM runs r LEFT JOIN results x ON x.run_id=r.run_id
                GROUP BY r.run_id ORDER BY r.run_id DESC"#,
@@ -909,8 +912,8 @@ mod tests {
             vec!["manual"]
         );
         assert_eq!(
-            effective_sources(None, Some(serde_json::json!(["fofa", "shodan"]))),
-            vec!["fofa", "shodan"]
+            effective_sources(None, Some(serde_json::json!(["fofa", "github", "shodan"]))),
+            vec!["fofa", "github", "shodan"]
         );
     }
     #[test]

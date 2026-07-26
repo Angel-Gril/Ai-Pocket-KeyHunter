@@ -182,6 +182,51 @@ async fn github_checkpoint_and_work_advance_atomically_and_keep_terminal_state()
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL on TEST_DATABASE_URL"]
+async fn legacy_run_sources_recover_from_github_artifact_work() {
+    use aipocket_db::{ArtifactWorkItem, advance_checkpoints_with_work};
+
+    let pool = connect_pg(&settings()).await.unwrap().unwrap();
+    ensure_schema(&pool).await.unwrap();
+    let repo = Repository::new(Some(pool.clone()));
+    let suffix = Utc::now().timestamp_nanos_opt().unwrap();
+    let run_id = format!("run_2099_01_01_github_{suffix}");
+    repo.create_run(&run_id, Utc::now(), "incremental", &[])
+        .await
+        .unwrap();
+    let work = ArtifactWorkItem {
+        repo_id: format!("legacy-github-{suffix}"),
+        repository_full_name: "fixture/repo".into(),
+        commit_sha: "commit".into(),
+        file_path: ".env".into(),
+        object_sha: "blob".into(),
+        source_kind: "code_snapshot".into(),
+        work_status: "terminal".into(),
+        current_stage: "terminal".into(),
+        run_id: run_id.clone(),
+        query_id: "query".into(),
+        pack_id: "openai".into(),
+        lane: "code_snapshot".into(),
+        coverage_mode: "complete".into(),
+        ..Default::default()
+    };
+    advance_checkpoints_with_work(&pool, &[], &[work])
+        .await
+        .unwrap();
+
+    let summary = repo
+        .list_runs()
+        .await
+        .unwrap()
+        .into_iter()
+        .flat_map(|day| day.runs)
+        .find(|run| run.run_id == run_id)
+        .unwrap();
+    assert_eq!(summary.sources, vec!["github"]);
+    assert!(repo.delete_run(&run_id).await.unwrap());
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL on TEST_DATABASE_URL"]
 async fn query_metrics_and_run_ledger_state_replace_atomically() {
     use aipocket_core::QueryFunnel;
     use aipocket_db::QueryMetricRecord;
