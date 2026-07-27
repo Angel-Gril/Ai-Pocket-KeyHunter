@@ -157,6 +157,8 @@ pub struct HoneypotSite {
     pub hit_count: i64,
     pub run_id: String,
     pub notes: String,
+    #[serde(default)]
+    pub member_count: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

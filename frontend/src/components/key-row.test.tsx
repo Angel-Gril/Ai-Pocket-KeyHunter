@@ -54,12 +54,26 @@ describe("provider evidence presentation", () => {
     expect(screen.getByText("现金余额状态：已耗尽（无数值余额）")).toBeInTheDocument()
   })
 
-  it("exposes per-row promotion action and invokes it once", async () => {
+
+  it("exposes all manual status transition actions", async () => {
     const user = userEvent.setup()
-    const onPromote = vi.fn()
-    render(<KeyRow maskedKey="sk-…masked" onPromote={onPromote} />)
+    const onMarkValid = vi.fn()
+    const onMarkSuspicious = vi.fn()
+    const onMarkUnavailable = vi.fn()
+    render(
+      <KeyRow
+        maskedKey="sk-…masked"
+        onMarkValid={onMarkValid}
+        onMarkSuspicious={onMarkSuspicious}
+        onMarkUnavailable={onMarkUnavailable}
+      />,
+    )
     await user.click(screen.getByRole("button", { name: "标为可用" }))
-    expect(onPromote).toHaveBeenCalledOnce()
+    await user.click(screen.getByRole("button", { name: "标为疑似" }))
+    await user.click(screen.getByRole("button", { name: "标为不可用" }))
+    expect(onMarkValid).toHaveBeenCalledOnce()
+    expect(onMarkSuspicious).toHaveBeenCalledOnce()
+    expect(onMarkUnavailable).toHaveBeenCalledOnce()
   })
 })
 

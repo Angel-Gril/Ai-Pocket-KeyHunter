@@ -237,17 +237,13 @@ impl Analyzer {
             "{}/chat/completions",
             self.settings.gpt_base_url.trim_end_matches('/')
         );
-        let mut payload = json!({
-            "model": self.settings.gpt_model,
-            "messages": [{"role":"system","content":system},{"role":"user","content":user}],
-            "max_tokens": max_tokens,
-            "temperature": 0,
-        });
-        if !self.settings.gpt_reasoning_effort.is_empty()
-            && self.settings.gpt_reasoning_effort != "none"
-        {
-            payload["reasoning_effort"] = Value::String(self.settings.gpt_reasoning_effort.clone());
-        }
+        let payload = chat_payload(
+            &self.settings.gpt_model,
+            system,
+            user,
+            max_tokens,
+            &self.settings.gpt_reasoning_effort,
+        );
         let response = self
             .http
             .post(url)
@@ -356,6 +352,33 @@ impl Analyzer {
         );
         Ok(report)
     }
+}
+
+fn chat_payload(
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: usize,
+    reasoning_effort: &str,
+) -> Value {
+    let reasoning_model = model.trim().to_ascii_lowercase().starts_with("gpt-5");
+    let mut payload = json!({
+        "model": model,
+        "messages": [{"role":"system","content":system},{"role":"user","content":user}],
+    });
+    let token_field = if reasoning_model {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
+    payload[token_field] = Value::from(max_tokens);
+    if !reasoning_model {
+        payload["temperature"] = Value::from(0);
+    }
+    if !reasoning_effort.is_empty() && reasoning_effort != "none" {
+        payload["reasoning_effort"] = Value::String(reasoning_effort.into());
+    }
+    payload
 }
 
 fn content_from_chat_response(body: &Value) -> Result<String> {
@@ -962,5 +985,18 @@ mod tests {
             provider_hint("MYSTERY_KEY", "sk-abcdefghijklmnop"),
             "openai"
         );
+    }
+    #[test]
+    fn gpt5_chat_uses_completion_token_parameter() {
+        let payload = chat_payload("gpt-5.6", "system", "user", 8000, "high");
+        assert_eq!(payload["max_completion_tokens"], 8000);
+        assert!(payload.get("max_tokens").is_none());
+        assert!(payload.get("temperature").is_none());
+        assert_eq!(payload["reasoning_effort"], "high");
+
+        let legacy = chat_payload("gpt-4o-mini", "system", "user", 200, "none");
+        assert_eq!(legacy["max_tokens"], 200);
+        assert!(legacy.get("max_completion_tokens").is_none());
+        assert_eq!(legacy["temperature"], 0);
     }
 }

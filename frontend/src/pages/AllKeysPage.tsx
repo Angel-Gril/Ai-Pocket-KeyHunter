@@ -10,9 +10,6 @@ import {
   type ResultKind,
 } from "@/lib/api"
 import { ChatTestDialog } from "@/components/chat-test-dialog"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
 import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
 import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
@@ -22,9 +19,8 @@ import { cn, copyToClipboard } from "@/lib/utils"
 type Revealed = { apikey: string; apiurl: string }
 type RowBusy = { models?: boolean; balance?: boolean; chat?: boolean }
 type BalanceInfo = { balance?: string; tier?: string }
-type PromotionRequest = { resultIds: number[]; note: string }
 
-const KINDS: ResultKind[] = ["valid", "suspicious"]
+const KINDS: ResultKind[] = ["valid", "suspicious", "unavailable"]
 
 function rowKeyOf(kind: ResultKind, index: number): string {
   return `${kind}:${index}`
@@ -42,10 +38,8 @@ export default function AllKeysPage() {
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [exporting, setExporting] = useState(false)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
-  const [promotion, setPromotion] = useState<PromotionRequest | null>(null)
-  const [promotionNote, setPromotionNote] = useState("")
 
-  const actionWidth = kind === "suspicious" ? 384 : 280
+  const actionWidth = 470
   const { table, columnSizeVars, sizingContainerRef } = useKeyTableSizing(actionWidth)
 
   const validQuery = useQuery({
@@ -56,11 +50,16 @@ export default function AllKeysPage() {
     queryKey: ["keys", "suspicious"],
     queryFn: () => api.getAllKeys("suspicious"),
   })
+  const unavailableQuery = useQuery({
+    queryKey: ["keys", "unavailable"],
+    queryFn: () => api.getAllKeys("unavailable"),
+  })
 
-  const activeQuery = kind === "valid" ? validQuery : suspiciousQuery
+  const activeQuery = kind === "valid" ? validQuery : kind === "suspicious" ? suspiciousQuery : unavailableQuery
   const records = useMemo<KeyRecord[]>(() => activeQuery.data?.results ?? [], [activeQuery.data])
   const validCount = validQuery.data?.results.length ?? 0
   const suspiciousCount = suspiciousQuery.data?.results.length ?? 0
+  const unavailableCount = unavailableQuery.data?.results.length ?? 0
 
   const balanceOverrides = useMemo(() => {
     const out: Record<number, string | undefined> = {}
@@ -98,57 +97,47 @@ export default function AllKeysPage() {
   const { mutateAsync: modelsAsync } = useMutation({ mutationFn: api.keyModels })
   const { mutateAsync: balanceAsync } = useMutation({ mutationFn: api.keyBalance })
   const { mutateAsync: chatAsync } = useMutation({ mutationFn: api.keyChat })
-  const promoteMutation = useMutation({
-    mutationFn: (request: PromotionRequest) => api.promoteKeys(request.resultIds, request.note),
-    onSuccess: async (report) => {
-      setPromotion(null)
-      setPromotionNote("")
+  const statusMutation = useMutation({
+    mutationFn: ({ resultIds, status }: { resultIds: number[]; status: "valid" | "suspicious" | "unavailable" }) =>
+      api.transitionKeys(resultIds, status),
+    onSuccess: async (report, variables) => {
       setSelected(new Set())
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["keys", "valid"] }),
         queryClient.invalidateQueries({ queryKey: ["keys", "suspicious"] }),
+        queryClient.invalidateQueries({ queryKey: ["keys", "unavailable"] }),
         queryClient.invalidateQueries({ queryKey: ["runs"] }),
         queryClient.invalidateQueries({ queryKey: ["high-value"] }),
       ])
-      toast.success(`已标为可用 ${report.promoted.length} 条`)
+      toast.success(
+        variables.status === "valid"
+          ? `已标为可用 ${report.transitioned.length} 条`
+          : variables.status === "unavailable"
+            ? `已标为不可用 ${report.transitioned.length} 条`
+            : `已标为疑似 ${report.transitioned.length} 条`,
+      )
     },
     onError: (error) => {
-      toast.error("标为可用失败", { description: errorMessage(error, "状态已变化，请刷新后重试") })
+      toast.error("状态转换失败", { description: errorMessage(error, "状态已变化，请刷新后重试") })
     },
   })
 
-  const requestPromotion = useCallback(
-    (resultIds: number[]) => {
-      const ids = [...new Set(resultIds)]
-      if (ids.length === 0) {
-        toast.error("所选记录缺少稳定 result_id")
+  const transitionRow = useCallback(
+    (index: number, status: "valid" | "suspicious" | "unavailable") => {
+      const resultId = records[index]?.result_id
+      if (typeof resultId !== "number") {
+        toast.error("该记录缺少稳定 result_id")
         return
       }
-      setPromotion({ resultIds: ids, note: "" })
-      setPromotionNote("")
+      statusMutation.mutate({ resultIds: [resultId], status })
     },
-    [],
+    [records, statusMutation],
   )
+  const markRowValid = useCallback((index: number) => transitionRow(index, "valid"), [transitionRow])
+  const markRowSuspicious = useCallback((index: number) => transitionRow(index, "suspicious"), [transitionRow])
+  const markRowUnavailable = useCallback((index: number) => transitionRow(index, "unavailable"), [transitionRow])
 
-  const promoteSelected = useCallback(() => {
-    const ids = [...selected]
-      .map((index) => records[index]?.result_id)
-      .filter((id): id is number => typeof id === "number")
-    requestPromotion(ids)
-  }, [records, requestPromotion, selected])
 
-  const promoteRow = useCallback(
-    (index: number) => {
-      const resultId = records[index]?.result_id
-      requestPromotion(typeof resultId === "number" ? [resultId] : [])
-    },
-    [records, requestPromotion],
-  )
-
-  const confirmPromotion = useCallback(() => {
-    if (!promotion) return
-    promoteMutation.mutate({ ...promotion, note: promotionNote.trim() })
-  }, [promotion, promotionNote, promoteMutation])
 
   const setRowBusy = useCallback((key: string, patch: RowBusy) => {
     setBusy((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }))
@@ -408,8 +397,10 @@ export default function AllKeysPage() {
           const balanceInfo = balances[key]
           return (
             <IndexedKeyRow
-              onPromote={kind === "suspicious" ? promoteRow : undefined}
-              promotePending={kind === "suspicious" && promoteMutation.isPending}
+              onMarkValid={kind === "suspicious" || kind === "unavailable" ? markRowValid : undefined}
+              onMarkSuspicious={kind === "valid" ? markRowSuspicious : undefined}
+              onMarkUnavailable={kind === "valid" ? markRowUnavailable : undefined}
+              statusPending={statusMutation.isPending}
               key={key}
               index={originalIndex}
               maskedKey={fields.maskedKey}
@@ -452,15 +443,14 @@ export default function AllKeysPage() {
         <div className="flex min-w-0 flex-col gap-0.5">
           <h1 className="text-xl font-semibold tracking-[-0.3px] text-text-primary">全部密钥</h1>
           <p className="truncate font-mono text-xs text-text-muted">
-            跨所有扫描累积 · 按 apikey 去重 · 可用 {validCount} · 疑似 {suspiciousCount}
+            跨所有扫描累积 · 按 apikey 去重 · 可用 {validCount} · 疑似 {suspiciousCount} · 不可用 {unavailableCount}
           </p>
         </div>
-
         <div className="flex flex-wrap items-center gap-2">
           {KINDS.map((tabKind) => {
             const isActive = kind === tabKind
-            const count = tabKind === "valid" ? validCount : suspiciousCount
-            const label = tabKind === "valid" ? "可用密钥" : "疑似"
+            const count = tabKind === "valid" ? validCount : tabKind === "suspicious" ? suspiciousCount : unavailableCount
+            const label = tabKind === "valid" ? "可用密钥" : tabKind === "suspicious" ? "疑似" : "不可用"
             return (
               <button
                 key={tabKind}
@@ -508,11 +498,15 @@ export default function AllKeysPage() {
         total={rows.length}
         allChecked={allChecked}
         onToggleAll={handleToggleAll}
-        onExportJson={() => void runExport("json")}
+        onExport={(format) => void runExport(format)}
         actionLabel={kind === "suspicious" ? "标为可用" : undefined}
-        onAction={kind === "suspicious" ? promoteSelected : undefined}
-        actionPending={promoteMutation.isPending}
-        onExportCsv={() => void runExport("csv")}
+        onAction={kind === "suspicious" ? () => {
+          const resultIds = [...selected]
+            .map((index) => records[index]?.result_id)
+            .filter((id): id is number => typeof id === "number")
+          statusMutation.mutate({ resultIds, status: "valid" })
+        } : undefined}
+        actionPending={statusMutation.isPending}
         exporting={exporting}
       />
 
@@ -527,37 +521,6 @@ export default function AllKeysPage() {
         </div>
       </div>
 
-      <Dialog
-        open={promotion !== null}
-        onOpenChange={(open) => {
-          if (!open && !promoteMutation.isPending) setPromotion(null)
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>确认标为可用</DialogTitle>
-            <DialogDescription>
-              将 {promotion?.resultIds.length ?? 0} 条疑似记录提升为可用，并写入人工审核审计字段。此操作不会自动重新探测余额。
-            </DialogDescription>
-          </DialogHeader>
-          <Input
-            value={promotionNote}
-            onChange={(event) => setPromotionNote(event.target.value)}
-            placeholder="备注（可选，例如：人工复核余额通过）"
-            maxLength={1000}
-            disabled={promoteMutation.isPending}
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPromotion(null)} disabled={promoteMutation.isPending}>
-              取消
-            </Button>
-            <Button onClick={confirmPromotion} disabled={promoteMutation.isPending}>
-              {promoteMutation.isPending ? <Loader2 className="animate-spin" /> : null}
-              确认提升
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <ChatTestDialog
         open={chatIndex !== null}

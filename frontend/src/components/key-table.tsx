@@ -1,11 +1,13 @@
 import { memo, useCallback } from "react"
-import { Braces, Loader2, Table as TableIcon } from "lucide-react"
+import { Download, Loader2 } from "lucide-react"
 import type { Header, Table } from "@tanstack/react-table"
 import { BalanceHelpButton } from "@/components/balance-help"
 import { KeyRow, type KeyRowProps } from "@/components/key-row"
 import { colWidthStyle, type KeyColumnId } from "@/components/key-table-columns"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import type { ExportFormat } from "@/lib/api"
 
 const COLUMN_LABELS: Record<KeyColumnId, string> = {
   apikey: "APIKEY",
@@ -64,14 +66,14 @@ export function KeyTableHeader({ table, actionWidth }: Readonly<{ table: Table<u
   )
 }
 
-interface ExportButtonProps {
+interface ActionButtonProps {
   icon: React.ReactNode
   label: string
   onClick: () => void
   disabled?: boolean
 }
 
-function ExportButton({ icon, label, onClick, disabled }: Readonly<ExportButtonProps>) {
+function ExportButton({ icon, label, onClick, disabled }: Readonly<ActionButtonProps>) {
   return (
     <button
       type="button"
@@ -85,16 +87,37 @@ function ExportButton({ icon, label, onClick, disabled }: Readonly<ExportButtonP
   )
 }
 
+interface ExportMenuProps {
+  onExport: (format: ExportFormat) => void
+  disabled?: boolean
+  exporting?: boolean
+  label?: string
+}
+
+function ExportMenu({ onExport, disabled, exporting, label = "导出" }: Readonly<ExportMenuProps>) {
+  return (
+    <Select disabled={disabled || exporting} onValueChange={(value) => onExport(value as ExportFormat)}>
+      <SelectTrigger className="min-h-11 w-[136px] border-border-primary bg-surface-raised font-sans text-xs font-medium text-text-secondary sm:min-h-0">
+        {exporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+        <SelectValue placeholder={label} />
+      </SelectTrigger>
+      <SelectContent align="end">
+        <SelectItem value="json">JSON</SelectItem>
+        <SelectItem value="csv">CSV</SelectItem>
+        <SelectItem value="sub2api">Sub2API</SelectItem>
+      </SelectContent>
+    </Select>
+  )
+}
+
 export interface BulkBarProps {
   selectedCount: number
   total: number
   allChecked: boolean
   onToggleAll: (checked: boolean) => void
-  onExportJson: () => void
-  onExportCsv: () => void
+  onExport: (format: ExportFormat) => void
   exporting?: boolean
-  jsonLabel?: string
-  csvLabel?: string
+  exportLabel?: string
   actionLabel?: string
   onAction?: () => void
   actionPending?: boolean
@@ -105,11 +128,9 @@ export function BulkBar({
   total,
   allChecked,
   onToggleAll,
-  onExportJson,
-  onExportCsv,
+  onExport,
   exporting,
-  jsonLabel = "导出 JSON",
-  csvLabel = "导出 CSV",
+  exportLabel,
   actionLabel,
   onAction,
   actionPending,
@@ -135,17 +156,11 @@ export function BulkBar({
           disabled={actionPending || selectedCount === 0}
         />
       ) : null}
-      <ExportButton
-        icon={exporting ? <Loader2 className="size-3.5 animate-spin" /> : <Braces className="size-3.5" />}
-        label={jsonLabel}
-        onClick={onExportJson}
-        disabled={exporting || total === 0}
-      />
-      <ExportButton
-        icon={exporting ? <Loader2 className="size-3.5 animate-spin" /> : <TableIcon className="size-3.5" />}
-        label={csvLabel}
-        onClick={onExportCsv}
-        disabled={exporting || total === 0}
+      <ExportMenu
+        onExport={onExport}
+        exporting={exporting}
+        disabled={total === 0}
+        label={exportLabel}
       />
     </div>
   )
@@ -159,7 +174,7 @@ export function BulkBar({
 export interface IndexedKeyRowProps
   extends Omit<
     KeyRowProps,
-    "onSelectedChange" | "onExpandedChange" | "onReveal" | "onCopy" | "onLoadModels" | "onBalance" | "onChat" | "onPromote"
+    "onSelectedChange" | "onExpandedChange" | "onReveal" | "onCopy" | "onLoadModels" | "onBalance" | "onChat" | "onMarkValid" | "onMarkUnavailable" | "onMarkSuspicious"
   > {
   index: number
   onSelectedChange?: (index: number, checked: boolean) => void
@@ -169,7 +184,9 @@ export interface IndexedKeyRowProps
   onLoadModels?: (index: number) => void
   onBalance?: (index: number) => void
   onChat?: (index: number) => void
-  onPromote?: (index: number) => void
+  onMarkValid?: (index: number) => void
+  onMarkUnavailable?: (index: number) => void
+  onMarkSuspicious?: (index: number) => void
 }
 
 export const IndexedKeyRow = memo(function IndexedKeyRow({
@@ -181,7 +198,9 @@ export const IndexedKeyRow = memo(function IndexedKeyRow({
   onLoadModels,
   onBalance,
   onChat,
-  onPromote,
+  onMarkValid,
+  onMarkUnavailable,
+  onMarkSuspicious,
   ...rest
 }: Readonly<IndexedKeyRowProps>) {
   const handleSelected = useCallback(
@@ -197,7 +216,9 @@ export const IndexedKeyRow = memo(function IndexedKeyRow({
   const handleLoadModels = useCallback(() => onLoadModels?.(index), [onLoadModels, index])
   const handleBalance = useCallback(() => onBalance?.(index), [onBalance, index])
   const handleChat = useCallback(() => onChat?.(index), [onChat, index])
-  const handlePromote = useCallback(() => onPromote?.(index), [onPromote, index])
+  const handleMarkValid = useCallback(() => onMarkValid?.(index), [onMarkValid, index])
+  const handleMarkUnavailable = useCallback(() => onMarkUnavailable?.(index), [onMarkUnavailable, index])
+  const handleMarkSuspicious = useCallback(() => onMarkSuspicious?.(index), [onMarkSuspicious, index])
 
   return (
     <KeyRow
@@ -209,7 +230,9 @@ export const IndexedKeyRow = memo(function IndexedKeyRow({
       onLoadModels={onLoadModels ? handleLoadModels : undefined}
       onBalance={onBalance ? handleBalance : undefined}
       onChat={onChat ? handleChat : undefined}
-      onPromote={onPromote ? handlePromote : undefined}
+      onMarkValid={onMarkValid ? handleMarkValid : undefined}
+      onMarkUnavailable={onMarkUnavailable ? handleMarkUnavailable : undefined}
+      onMarkSuspicious={onMarkSuspicious ? handleMarkSuspicious : undefined}
     />
   )
 })

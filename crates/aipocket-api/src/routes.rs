@@ -35,7 +35,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/high-value", get(high_value))
         .route("/api/high-value/reveal", post(high_value_reveal))
         .route("/api/keys/{kind}", get(all_keys))
-        .route("/api/keys/promote", post(promote_keys))
+        .route("/api/keys/status", post(transition_keys))
         .route("/api/key/models", post(key_models))
         .route("/api/key/balance", post(key_balance))
         .route("/api/key/chat", post(key_chat))
@@ -74,19 +74,31 @@ pub fn router() -> Router<AppState> {
         .route("/api/system/restart", post(system_restart))
 }
 #[derive(Deserialize)]
-struct PromoteRequest {
+struct TransitionRequest {
     result_ids: Vec<i64>,
+    status: String,
     #[serde(default)]
     note: String,
 }
-async fn promote_keys(
+async fn transition_keys(
     _: Auth,
     State(s): State<AppState>,
-    Json(b): Json<PromoteRequest>,
+    Json(b): Json<TransitionRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let (promoted, skipped) = s.repository.promote_results(&b.result_ids, &b.note).await?;
-    Ok(Json(json!({"promoted":promoted,"skipped":skipped})))
+    if !matches!(b.status.as_str(), "valid" | "suspicious" | "unavailable") {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "status must be valid, suspicious, or unavailable",
+        ));
+    }
+    let (transitioned, skipped) = s
+        .repository
+        .transition_results(&b.result_ids, &b.status, &b.note)
+        .await?;
+    Ok(Json(json!({"transitioned":transitioned,"skipped":skipped})))
 }
+
 async fn delete_run(
     _: Auth,
     State(s): State<AppState>,
@@ -705,54 +717,56 @@ async fn export(
             ));
         }
     };
-    let (content, media, ext) = if b.format == "csv" {
-        let mut w = csv::Writer::from_writer(vec![]);
-        w.write_record([
-            "apikey", "apiurl", "provider", "valid", "tier", "balance", "gateway",
-        ])
-        .map_err(ApiError::internal)?;
-        for row in rows {
-            let key = row
-                .get("apikey")
-                .and_then(Value::as_str)
-                .or_else(|| row.pointer("/credential/apikey").and_then(Value::as_str))
-                .unwrap_or_default();
-            let url = row
-                .get("apiurl")
-                .and_then(Value::as_str)
-                .or_else(|| row.pointer("/credential/apiurl").and_then(Value::as_str))
-                .unwrap_or_default();
+    let (content, media, ext) = match b.format.as_str() {
+        "csv" => {
+            let mut w = csv::Writer::from_writer(vec![]);
             w.write_record([
-                key,
-                url,
-                row.pointer("/provider_info/provider")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-                &row.get("valid")
-                    .and_then(Value::as_bool)
-                    .unwrap_or_default()
-                    .to_string(),
-                row.get("tier").and_then(Value::as_str).unwrap_or_default(),
-                row.get("balance")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-                row.get("gateway")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
+                "apikey", "apiurl", "provider", "valid", "tier", "balance", "gateway",
             ])
             .map_err(ApiError::internal)?;
+            for row in &rows {
+                let (key, url) = export_key_url(row);
+                w.write_record([
+                    key,
+                    url,
+                    export_provider(row),
+                    &row.get("valid")
+                        .and_then(Value::as_bool)
+                        .unwrap_or_default()
+                        .to_string(),
+                    row.get("tier").and_then(Value::as_str).unwrap_or_default(),
+                    row.get("balance")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                    row.get("gateway")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                ])
+                .map_err(ApiError::internal)?;
+            }
+            (
+                w.into_inner().map_err(ApiError::internal)?,
+                "text/csv",
+                "csv",
+            )
         }
-        (
-            w.into_inner().map_err(ApiError::internal)?,
-            "text/csv",
-            "csv",
-        )
-    } else {
-        (
+        "sub2api" => (
+            serde_json::to_vec_pretty(&sub2api_payload(&rows)).map_err(ApiError::internal)?,
+            "application/json",
+            "sub2api.json",
+        ),
+        "json" => (
             serde_json::to_vec_pretty(&rows).map_err(ApiError::internal)?,
             "application/json",
             "json",
-        )
+        ),
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "format must be json, csv, or sub2api",
+            ));
+        }
     };
     Ok((
         [
@@ -766,6 +780,71 @@ async fn export(
     )
         .into_response())
 }
+fn export_key_url(row: &Value) -> (&str, &str) {
+    let key = row
+        .get("apikey")
+        .and_then(Value::as_str)
+        .or_else(|| row.pointer("/credential/apikey").and_then(Value::as_str))
+        .unwrap_or_default();
+    let url = row
+        .get("apiurl")
+        .and_then(Value::as_str)
+        .or_else(|| row.pointer("/credential/apiurl").and_then(Value::as_str))
+        .unwrap_or_default();
+    (key, url)
+}
+
+fn export_provider(row: &Value) -> &str {
+    row.pointer("/provider_info/provider")
+        .and_then(Value::as_str)
+        .or_else(|| row.get("provider").and_then(Value::as_str))
+        .unwrap_or("openai")
+}
+
+fn sub2api_payload(rows: &[Value]) -> Value {
+    let accounts = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            let (key, url) = export_key_url(row);
+            if key.is_empty() {
+                return None;
+            }
+            let provider = export_provider(row).to_ascii_lowercase();
+            let platform = match provider.as_str() {
+                "anthropic" => "anthropic",
+                "gemini" | "google" | "vertex" => "gemini",
+                "xai" | "grok" => "grok",
+                _ => "openai",
+            };
+            let mut credentials = serde_json::Map::new();
+            credentials.insert("api_key".into(), Value::String(key.into()));
+            if !url.is_empty() {
+                credentials.insert(
+                    "base_url".into(),
+                    Value::String(url.trim_end_matches('/').trim_end_matches("/v1").into()),
+                );
+            }
+            Some(json!({
+                "name": format!("AIPocket {} {}", platform, index + 1),
+                "platform": platform,
+                "type": "apikey",
+                "credentials": credentials,
+                "concurrency": 3,
+                "priority": 50,
+                "rate_multiplier": 1.0
+            }))
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "type": "sub2api-data",
+        "version": 1,
+        "exported_at": chrono::Utc::now().to_rfc3339(),
+        "proxies": [],
+        "accounts": accounts
+    })
+}
+
 async fn cves(_: Auth, State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
     let cves = s.repository.cves().await?;
     Ok(Json(json!({"cves":cves,"advisories":cves})))
@@ -1012,9 +1091,23 @@ async fn check_github(_: Auth, State(s): State<AppState>) -> Json<Value> {
         Ok(v) => Json(
             json!({"status":"ok","message":"reachable","core_remaining":v.pointer("/resources/core/remaining"),"search_remaining":v.pointer("/resources/search/remaining"),"code_search_remaining":v.pointer("/resources/code_search/remaining"),"n_tokens":n}),
         ),
-        Err(e) => Json(
-            json!({"status":"invalid","message":e.to_string(),"core_remaining":null,"search_remaining":null,"code_search_remaining":null,"n_tokens":n}),
-        ),
+        Err(e) => {
+            let detail = e.to_string();
+            let message = if detail.contains("Bad credentials") {
+                format!("GitHub token 无效或已撤销。{detail}")
+            } else if detail.contains("rate limit") || detail.contains("remaining=0") {
+                format!("GitHub token 有效但额度已耗尽或触发限流。{detail}")
+            } else if detail.contains("403") {
+                format!(
+                    "GitHub 拒绝了全部 token；可能是权限不足、账号风控或 token 已失效。{detail}"
+                )
+            } else {
+                detail
+            };
+            Json(
+                json!({"status":"invalid","message":message,"core_remaining":null,"search_remaining":null,"code_search_remaining":null,"n_tokens":n}),
+            )
+        }
     }
 }
 #[derive(Deserialize)]

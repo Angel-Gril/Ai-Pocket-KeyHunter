@@ -29,7 +29,7 @@ export default function HighValuePage() {
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
 
-  const actionWidth = 280
+  const actionWidth = 470
   const { table, columnSizeVars, sizingContainerRef } = useKeyTableSizing(actionWidth)
 
   const { data, isLoading, isError, error } = useQuery({
@@ -74,6 +74,29 @@ export default function HighValuePage() {
   const { mutateAsync: modelsAsync } = useMutation({ mutationFn: api.keyModels })
   const { mutateAsync: balanceAsync } = useMutation({ mutationFn: api.keyBalance })
   const { mutateAsync: chatAsync } = useMutation({ mutationFn: api.keyChat })
+  const statusMutation = useMutation({
+    mutationFn: ({ index, status }: { index: number; status: "valid" | "suspicious" | "unavailable" }) => {
+      const resultId = stateRef.current.records[index]?.result_id
+      if (typeof resultId !== "number") throw new Error("missing backing result")
+      return api.transitionKeys([resultId], status)
+    },
+    onSuccess: async (report, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["high-value"] }),
+        queryClient.invalidateQueries({ queryKey: ["keys"] }),
+        queryClient.invalidateQueries({ queryKey: ["runs"] }),
+      ])
+      toast.success(
+        variables.status === "valid"
+          ? `已标为可用 ${report.transitioned.length} 条`
+          : variables.status === "unavailable"
+            ? `已标为不可用 ${report.transitioned.length} 条`
+            : `已标为疑似 ${report.transitioned.length} 条`,
+      )
+    },
+    onError: (err) => toast.error("状态转换失败", { description: errorMessage(err, "无法定位原始记录") }),
+  })
+
 
   const setRowBusy = useCallback((key: string, patch: RowBusy) => {
     setBusy((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }))
@@ -273,6 +296,10 @@ export default function HighValuePage() {
       setExporting(false)
     }
   }, [])
+  const markValid = useCallback((index: number) => statusMutation.mutate({ index, status: "valid" }), [statusMutation])
+  const markSuspicious = useCallback((index: number) => statusMutation.mutate({ index, status: "suspicious" }), [statusMutation])
+  const markUnavailable = useCallback((index: number) => statusMutation.mutate({ index, status: "unavailable" }), [statusMutation])
+
 
   const visibleIndices = useMemo(() => rows.map((r) => r.originalIndex), [rows])
   const allChecked =
@@ -331,6 +358,10 @@ export default function HighValuePage() {
               onLoadModels={loadModels}
               onBalance={handleBalance}
               onChat={openChat}
+              onMarkValid={status.label !== "可用" ? markValid : undefined}
+              onMarkSuspicious={status.label !== "疑似" ? markSuspicious : undefined}
+              onMarkUnavailable={status.label !== "不可用" ? markUnavailable : undefined}
+              statusPending={statusMutation.isPending}
             />
           )
         })}
@@ -388,11 +419,9 @@ export default function HighValuePage() {
         total={rows.length}
         allChecked={allChecked}
         onToggleAll={handleToggleAll}
-        onExportJson={() => void runExport("json")}
-        onExportCsv={() => void runExport("csv")}
+        onExport={(format) => void runExport(format)}
         exporting={exporting}
-        jsonLabel="导出全部 · JSON"
-        csvLabel="导出全部 · CSV"
+        exportLabel="导出全部"
       />
 
       {/* @container lets expanded KeyRow panels size to the scrollport (100cqw). */}
