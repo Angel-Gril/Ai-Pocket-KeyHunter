@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
+import { useCallback, useDeferredValue, useEffect, useMemo, useState, type FormEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Bug,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Loader2,
   Pencil,
   Plus,
@@ -62,6 +66,8 @@ const SOURCE_FILTERS = [
   { value: "auto", label: "自动检测" },
   { value: "manual", label: "手动添加" },
 ] as const
+
+const PAGE_SIZE = 100
 
 function AddDialog({
   open,
@@ -262,33 +268,32 @@ function EditDialog({
 export default function HoneypotPage() {
   const queryClient = useQueryClient()
   const [query, setQuery] = useState("")
+  const deferredQuery = useDeferredValue(query.trim())
   const [sourceFilter, setSourceFilter] = useState<string>("all")
+  const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [addOpen, setAddOpen] = useState(false)
   const [editSite, setEditSite] = useState<HoneypotSite | null>(null)
 
   const listQuery = useQuery({
-    queryKey: ["honeypot", sourceFilter],
+    queryKey: ["honeypot", sourceFilter, deferredQuery, page],
     queryFn: () =>
       api.getHoneypots({
+        q: deferredQuery,
         source: sourceFilter === "all" ? "" : sourceFilter,
-        limit: 2000,
+        limit: PAGE_SIZE,
+        offset: (page - 1) * PAGE_SIZE,
       }),
   })
 
   const sites = useMemo(() => listQuery.data?.results ?? [], [listQuery.data])
-  const total = listQuery.data?.total ?? sites.length
+  const total = listQuery.data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const currentPage = Math.min(page, totalPages)
 
-  const needle = query.trim().toLowerCase()
-  const filtered = useMemo(() => {
-    if (!needle) return sites
-    return sites.filter((s) => {
-      const hay = [s.host_key, s.host, s.reason, s.notes, s.source, s.run_id]
-        .join(" ")
-        .toLowerCase()
-      return hay.includes(needle)
-    })
-  }, [sites, needle])
+  useEffect(() => {
+    if (listQuery.data && page > totalPages) setPage(totalPages)
+  }, [listQuery.data, page, totalPages])
 
   const invalidate = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["honeypot"] })
@@ -341,15 +346,18 @@ export default function HoneypotPage() {
     },
   })
 
-  const allFilteredSelected =
-    filtered.length > 0 && filtered.every((s) => selected.has(s.host_key))
+  const allPageSelected =
+    sites.length > 0 && sites.every((site) => selected.has(site.host_key))
 
   const toggleAll = () => {
-    if (allFilteredSelected) {
-      setSelected(new Set())
-      return
-    }
-    setSelected(new Set(filtered.map((s) => s.host_key)))
+    setSelected((previous) => {
+      const next = new Set(previous)
+      for (const site of sites) {
+        if (allPageSelected) next.delete(site.host_key)
+        else next.add(site.host_key)
+      }
+      return next
+    })
   }
 
   const toggleOne = (key: string) => {
@@ -376,10 +384,10 @@ export default function HoneypotPage() {
     bulkDeleteMutation.mutate(keys)
   }
 
-  const countLabel =
-    needle.length > 0
-      ? `显示 ${filtered.length} / ${sites.length} 条 · 库内 ${total}`
-      : `共 ${total} 条`
+  const pageStart = total === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1
+  const pageEnd = Math.min(currentPage * PAGE_SIZE, total)
+  const countLabel = total === 0 ? "共 0 条" : `显示 ${pageStart}–${pageEnd} / 共 ${total} 条`
+  const hasFilters = deferredQuery.length > 0 || sourceFilter !== "all"
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -395,14 +403,25 @@ export default function HoneypotPage() {
           <Search className="pointer-events-none absolute left-3 size-[15px] text-text-muted" />
           <Input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value)
+              setSelected(new Set())
+              setPage(1)
+            }}
             placeholder="搜索 host / reason / notes…"
             className="w-full border-border-primary bg-surface-raised pl-9 text-[13px] dark:bg-surface-raised sm:w-[240px]"
             aria-label="搜索蜜罐站点"
           />
         </div>
 
-        <Select value={sourceFilter} onValueChange={setSourceFilter}>
+        <Select
+          value={sourceFilter}
+          onValueChange={(value) => {
+            setSourceFilter(value)
+            setSelected(new Set())
+            setPage(1)
+          }}
+        >
           <SelectTrigger className="min-h-11 w-full border-border-primary bg-surface-raised font-mono text-[12px] sm:min-h-0 sm:w-[140px]">
             <SelectValue />
           </SelectTrigger>
@@ -452,7 +471,7 @@ export default function HoneypotPage() {
             <Bug className="size-6 text-danger" />
             <span className="font-mono text-sm">加载蜜罐列表失败（需配置 PostgreSQL）</span>
           </div>
-        ) : sites.length === 0 ? (
+        ) : total === 0 && !hasFilters ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-text-muted">
             <Bug className="size-6 text-text-muted" />
             <span className="font-mono text-sm">暂无蜜罐站点 · 跑一次全量扫描后会自动累积</span>
@@ -461,7 +480,7 @@ export default function HoneypotPage() {
               下次扫描 discovery 后直接跳过请求。
             </span>
           </div>
-        ) : filtered.length === 0 ? (
+        ) : total === 0 || sites.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-text-muted">
             <Bug className="size-6 text-text-muted" />
             <span className="font-mono text-sm">无匹配结果</span>
@@ -474,7 +493,7 @@ export default function HoneypotPage() {
                   <TableHead className="w-10">
                     <input
                       type="checkbox"
-                      checked={allFilteredSelected}
+                      checked={allPageSelected}
                       onChange={toggleAll}
                       aria-label="全选"
                       className="size-3.5 accent-[var(--color-accent)]"
@@ -490,7 +509,7 @@ export default function HoneypotPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((site) => (
+                {sites.map((site) => (
                   <TableRow key={site.host_key}>
                     <TableCell>
                       <input
@@ -567,6 +586,52 @@ export default function HoneypotPage() {
                 ))}
               </TableBody>
             </Table>
+            <div className="flex flex-col gap-3 border-t border-border-primary px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <span className="font-mono text-[11px] text-text-muted">
+                第 {currentPage} / {totalPages} 页 · 每页 {PAGE_SIZE} 条
+              </span>
+              <nav className="flex items-center gap-1" aria-label="蜜罐列表分页">
+                <button
+                  type="button"
+                  onClick={() => setPage(1)}
+                  disabled={currentPage === 1 || listQuery.isFetching}
+                  className="inline-flex size-8 items-center justify-center rounded-[4px] border border-border-primary text-text-muted transition-colors hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
+                  aria-label="第一页"
+                >
+                  <ChevronsLeft className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  disabled={currentPage === 1 || listQuery.isFetching}
+                  className="inline-flex size-8 items-center justify-center rounded-[4px] border border-border-primary text-text-muted transition-colors hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
+                  aria-label="上一页"
+                >
+                  <ChevronLeft className="size-3.5" />
+                </button>
+                <span className="min-w-16 px-2 text-center font-mono text-[11px] text-text-secondary">
+                  {pageStart}–{pageEnd}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                  disabled={currentPage === totalPages || listQuery.isFetching}
+                  className="inline-flex size-8 items-center justify-center rounded-[4px] border border-border-primary text-text-muted transition-colors hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
+                  aria-label="下一页"
+                >
+                  <ChevronRight className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPage(totalPages)}
+                  disabled={currentPage === totalPages || listQuery.isFetching}
+                  className="inline-flex size-8 items-center justify-center rounded-[4px] border border-border-primary text-text-muted transition-colors hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
+                  aria-label="最后一页"
+                >
+                  <ChevronsRight className="size-3.5" />
+                </button>
+              </nav>
+            </div>
           </div>
         )}
       </div>
