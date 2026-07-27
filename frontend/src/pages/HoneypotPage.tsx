@@ -67,7 +67,8 @@ const SOURCE_FILTERS = [
   { value: "manual", label: "手动添加" },
 ] as const
 
-const PAGE_SIZE = 100
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
+const DEFAULT_PAGE_SIZE = 50
 
 function AddDialog({
   open,
@@ -271,24 +272,25 @@ export default function HoneypotPage() {
   const deferredQuery = useDeferredValue(query.trim())
   const [sourceFilter, setSourceFilter] = useState<string>("all")
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [addOpen, setAddOpen] = useState(false)
   const [editSite, setEditSite] = useState<HoneypotSite | null>(null)
 
   const listQuery = useQuery({
-    queryKey: ["honeypot", sourceFilter, deferredQuery, page],
+    queryKey: ["honeypot", sourceFilter, deferredQuery, page, pageSize],
     queryFn: () =>
       api.getHoneypots({
         q: deferredQuery,
         source: sourceFilter === "all" ? "" : sourceFilter,
-        limit: PAGE_SIZE,
-        offset: (page - 1) * PAGE_SIZE,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
       }),
   })
 
   const sites = useMemo(() => listQuery.data?.results ?? [], [listQuery.data])
   const total = listQuery.data?.total ?? 0
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const currentPage = Math.min(page, totalPages)
 
   useEffect(() => {
@@ -384,8 +386,8 @@ export default function HoneypotPage() {
     bulkDeleteMutation.mutate(keys)
   }
 
-  const pageStart = total === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1
-  const pageEnd = Math.min(currentPage * PAGE_SIZE, total)
+  const pageStart = total === 0 ? 0 : (currentPage - 1) * pageSize + 1
+  const pageEnd = Math.min(currentPage * pageSize, total)
   const countLabel = total === 0 ? "共 0 条" : `显示 ${pageStart}–${pageEnd} / 共 ${total} 条`
   const hasFilters = deferredQuery.length > 0 || sourceFilter !== "all"
 
@@ -587,9 +589,28 @@ export default function HoneypotPage() {
               </TableBody>
             </Table>
             <div className="flex flex-col gap-3 border-t border-border-primary px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-              <span className="font-mono text-[11px] text-text-muted">
-                第 {currentPage} / {totalPages} 页 · 每页 {PAGE_SIZE} 条
-              </span>
+              <div className="flex items-center gap-2 font-mono text-[11px] text-text-muted">
+                <span>第 {currentPage} / {totalPages} 页</span>
+                <Select
+                  value={String(pageSize)}
+                  onValueChange={(value) => {
+                    setPageSize(Number(value))
+                    setSelected(new Set())
+                    setPage(1)
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-[92px] border-border-primary bg-surface-overlay font-mono text-[11px]" aria-label="每页条数">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PAGE_SIZE_OPTIONS.map((size) => (
+                      <SelectItem key={size} value={String(size)} className="font-mono text-xs">
+                        {size} 条/页
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <nav className="flex items-center gap-1" aria-label="蜜罐列表分页">
                 <button
                   type="button"
