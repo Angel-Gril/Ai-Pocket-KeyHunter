@@ -103,6 +103,37 @@ async fn github_search_rotates_tokens_after_rate_limit() {
 }
 
 #[tokio::test]
+async fn github_rate_limit_rotates_past_forbidden_tokens() {
+    let tokens = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/rate_limit", get(rotating_search))
+        .with_state(tokens.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let github = GithubClient::new(
+        reqwest::Client::new(),
+        &Settings {
+            github_tokens: "exhausted,healthy".into(),
+            github_api_base_url: format!("http://{address}"),
+            ..Settings::default()
+        },
+    );
+    assert_eq!(
+        github.rate_limit().await.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        tokens.lock().as_slice(),
+        ["Bearer exhausted", "Bearer healthy"]
+    );
+    task.abort();
+}
+
+#[tokio::test]
 async fn clients_parse_recorded_fixture_shapes() {
     let (base, task) = server().await;
     let settings = Settings {

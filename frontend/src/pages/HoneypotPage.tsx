@@ -362,7 +362,8 @@ export default function HoneypotPage() {
   }
 
   const handleDeleteOne = (site: HoneypotSite) => {
-    if (!window.confirm(`确认从蜜罐缓存删除？\n${site.host_key}\n删除后下次扫描会重新请求该站点。`)) {
+    const members = site.member_count ?? 1
+    if (!window.confirm(`确认从蜜罐缓存删除该组的 ${members} 个站点？\n${site.host}\n删除后下次扫描会重新请求该域名组。`)) {
       return
     }
     deleteMutation.mutate(site.host_key)
@@ -504,6 +505,11 @@ export default function HoneypotPage() {
                       <span className="block truncate font-mono text-[12px] text-text-primary" title={site.host_key}>
                         {site.host || site.host_key}
                       </span>
+                      {(site.member_count ?? 1) > 1 ? (
+                        <span className="font-mono text-[10px] text-text-muted">
+                          已合并 {site.member_count} 个子域名 / 端口
+                        </span>
+                      ) : null}
                     </TableCell>
                     <TableCell>
                       <span

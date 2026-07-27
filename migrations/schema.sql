@@ -365,6 +365,27 @@ CREATE TABLE IF NOT EXISTS honeypot_sites (
 CREATE INDEX IF NOT EXISTS idx_honeypot_sites_last_seen ON honeypot_sites (last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_honeypot_sites_reason ON honeypot_sites (reason);
 CREATE INDEX IF NOT EXISTS idx_honeypot_sites_source ON honeypot_sites (source);
+CREATE OR REPLACE FUNCTION aipocket_honeypot_group_key(value TEXT)
+RETURNS TEXT
+LANGUAGE SQL
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+    SELECT CASE
+        WHEN split_part(value, ':', 1) ~ '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+            THEN split_part(value, ':', 1)
+        WHEN array_length(string_to_array(split_part(value, ':', 1), '.'), 1) >= 3
+            THEN array_to_string(
+                (string_to_array(split_part(value, ':', 1), '.'))[
+                    array_length(string_to_array(split_part(value, ':', 1), '.'), 1)-1:
+                    array_length(string_to_array(split_part(value, ':', 1), '.'), 1)
+                ],
+                '.'
+            )
+        ELSE split_part(value, ':', 1)
+    END
+$$;
+
 
 -- User-supplied relay / gateway origins for manual (non-FOFA/Shodan/GitHub) scans.
 -- URL is the canonical scheme://host[:port] form after sanitization (no path).

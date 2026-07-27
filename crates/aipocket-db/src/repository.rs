@@ -235,8 +235,15 @@ impl Repository {
 
     pub async fn high_value(&self, masked: bool) -> Result<Vec<Value>> {
         let pool = self.require_pool()?;
-        let rows = sqlx::query("SELECT apikey, run_id, saved_at, record FROM high_value_keys ORDER BY saved_at DESC NULLS LAST")
-            .fetch_all(pool).await?;
+        let rows = sqlx::query(
+            r#"SELECT h.apikey, h.run_id, h.saved_at, h.record,
+                      (SELECT r.id FROM results r
+                       WHERE r.apikey=h.apikey AND r.kind IN ('valid','suspicious','unavailable')
+                       ORDER BY r.run_id DESC, r.seq DESC LIMIT 1) AS result_id
+               FROM high_value_keys h ORDER BY h.saved_at DESC NULLS LAST"#,
+        )
+        .fetch_all(pool)
+        .await?;
         Ok(rows
             .into_iter()
             .filter_map(|row| {
@@ -244,12 +251,27 @@ impl Repository {
                 let mut record: Value = row.try_get("record").ok()?;
                 let object = record.as_object_mut()?;
                 object.entry("apikey").or_insert_with(|| Value::String(key));
+                if let Ok(Some(result_id)) = row.try_get::<Option<i64>, _>("result_id") {
+                    object.insert("result_id".into(), Value::from(result_id));
+                }
                 if masked && let Some(value) = object.get_mut("apikey") {
                     *value = Value::String(mask_apikey(value.as_str().unwrap_or_default()));
                 }
                 Some(record)
             })
             .collect())
+    }
+    pub async fn high_value_result_ids(&self, apikeys: &[String]) -> Result<Vec<i64>> {
+        let pool = self.require_pool()?;
+        if apikeys.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_scalar(
+            "SELECT DISTINCT ON (apikey) id FROM results WHERE apikey = ANY($1) AND kind IN ('valid','suspicious') ORDER BY apikey, run_id DESC, seq DESC",
+        )
+        .bind(apikeys)
+        .fetch_all(pool)
+        .await?)
     }
 
     pub async fn cves(&self) -> Result<Vec<Value>> {
@@ -281,23 +303,54 @@ impl Repository {
         offset: i64,
     ) -> Result<(Vec<HoneypotSite>, i64)> {
         let pool = self.require_pool()?;
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM honeypot_sites WHERE ($1='' OR host ILIKE '%'||$1||'%' OR reason ILIKE '%'||$1||'%') AND ($2::text IS NULL OR source=$2)")
-            .bind(q).bind(source).fetch_one(pool).await?;
-        let rows = sqlx::query("SELECT host_key,host,reason,source,first_seen,last_seen,hit_count,COALESCE(run_id,''),notes FROM honeypot_sites WHERE ($1='' OR host ILIKE '%'||$1||'%' OR reason ILIKE '%'||$1||'%') AND ($2::text IS NULL OR source=$2) ORDER BY last_seen DESC LIMIT $3 OFFSET $4")
-            .bind(q).bind(source).bind(limit).bind(offset).fetch_all(pool).await?;
+        let total: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(DISTINCT aipocket_honeypot_group_key(host_key))
+               FROM honeypot_sites
+               WHERE ($1='' OR host ILIKE '%'||$1||'%' OR reason ILIKE '%'||$1||'%')
+                 AND ($2::text IS NULL OR source=$2)"#,
+        )
+        .bind(q)
+        .bind(source)
+        .fetch_one(pool)
+        .await?;
+        let rows = sqlx::query(
+            r#"SELECT
+                 MIN(host_key) AS host_key,
+                 aipocket_honeypot_group_key(host_key) AS host,
+                 (ARRAY_AGG(reason ORDER BY last_seen DESC))[1] AS reason,
+                 CASE WHEN BOOL_OR(source='manual') THEN 'manual' ELSE 'auto' END AS source,
+                 MIN(first_seen) AS first_seen,
+                 MAX(last_seen) AS last_seen,
+                 SUM(hit_count)::bigint AS hit_count,
+                 COALESCE((ARRAY_AGG(run_id ORDER BY last_seen DESC) FILTER (WHERE run_id IS NOT NULL))[1],'') AS run_id,
+                 COALESCE((ARRAY_AGG(notes ORDER BY last_seen DESC) FILTER (WHERE notes<>''))[1],'') AS notes,
+                 COUNT(*)::bigint AS member_count
+               FROM honeypot_sites
+               WHERE ($1='' OR host ILIKE '%'||$1||'%' OR reason ILIKE '%'||$1||'%')
+                 AND ($2::text IS NULL OR source=$2)
+               GROUP BY aipocket_honeypot_group_key(host_key)
+               ORDER BY MAX(last_seen) DESC LIMIT $3 OFFSET $4"#,
+        )
+        .bind(q)
+        .bind(source)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
         let items = rows
             .into_iter()
             .map(|r| {
                 Ok(HoneypotSite {
-                    host_key: r.try_get(0)?,
-                    host: r.try_get(1)?,
-                    reason: r.try_get(2)?,
-                    source: r.try_get(3)?,
-                    first_seen: r.try_get::<DateTime<Utc>, _>(4)?.to_rfc3339(),
-                    last_seen: r.try_get::<DateTime<Utc>, _>(5)?.to_rfc3339(),
-                    hit_count: i64::from(r.try_get::<i32, _>(6)?),
-                    run_id: r.try_get(7)?,
-                    notes: r.try_get(8)?,
+                    host_key: r.try_get("host_key")?,
+                    host: r.try_get("host")?,
+                    reason: r.try_get("reason")?,
+                    source: r.try_get("source")?,
+                    first_seen: r.try_get::<DateTime<Utc>, _>("first_seen")?.to_rfc3339(),
+                    last_seen: r.try_get::<DateTime<Utc>, _>("last_seen")?.to_rfc3339(),
+                    hit_count: r.try_get("hit_count")?,
+                    run_id: r.try_get("run_id")?,
+                    notes: r.try_get("notes")?,
+                    member_count: r.try_get("member_count")?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -335,6 +388,54 @@ impl Repository {
             .collect::<Result<Vec<_>>>()?;
         Ok((items, total))
     }
+    pub async fn known_honeypot_groups(&self) -> Result<std::collections::HashSet<String>> {
+        let Some(pool) = self.pool() else {
+            return Ok(std::collections::HashSet::new());
+        };
+        Ok(sqlx::query_scalar(
+            "SELECT DISTINCT aipocket_honeypot_group_key(host_key) FROM honeypot_sites",
+        )
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect())
+    }
+
+    pub async fn upsert_honeypot_results(
+        &self,
+        run_id: &str,
+        results: &[aipocket_core::ValidationResult],
+    ) -> Result<u64> {
+        let Some(pool) = self.pool() else {
+            return Ok(0);
+        };
+        let mut written = 0;
+        for result in results.iter().filter(|result| {
+            !result.valid
+                && (result.error.starts_with("honeypot:")
+                    || result.validation_state == "no_auth_endpoint")
+        }) {
+            let raw = if result.credential.host.is_empty() {
+                &result.credential.apiurl
+            } else {
+                &result.credential.host
+            };
+            let Ok(host_key) = aipocket_core::url_sanitize::host_key(raw) else {
+                continue;
+            };
+            let record = serde_json::to_value(result)?;
+            written += sqlx::query("INSERT INTO honeypot_sites(host_key,host,reason,source,run_id,record) VALUES($1,$1,$2,'auto',$3,$4) ON CONFLICT(host_key) DO UPDATE SET reason=EXCLUDED.reason,source='auto',run_id=EXCLUDED.run_id,last_seen=NOW(),hit_count=honeypot_sites.hit_count+1,record=EXCLUDED.record")
+                .bind(&host_key)
+                .bind(&result.error)
+                .bind(run_id)
+                .bind(record)
+                .execute(pool)
+                .await?
+                .rows_affected();
+        }
+        Ok(written)
+    }
+
     pub async fn create_honeypot(
         &self,
         host: &str,
@@ -343,7 +444,7 @@ impl Repository {
         notes: &str,
     ) -> Result<HoneypotSite> {
         let pool = self.require_pool()?;
-        let row = sqlx::query("INSERT INTO honeypot_sites(host_key,host,reason,source,notes) VALUES($1,$2,$3,'manual',$4) ON CONFLICT(host_key) DO UPDATE SET host=EXCLUDED.host, reason=EXCLUDED.reason, notes=EXCLUDED.notes, source='manual', last_seen=NOW(), hit_count=honeypot_sites.hit_count+1 RETURNING host_key,host,reason,source,first_seen,last_seen,hit_count,COALESCE(run_id,''),notes")
+        let row = sqlx::query("INSERT INTO honeypot_sites(host_key,host,reason,source,notes) VALUES($1,$2,$3,'manual',$4) ON CONFLICT(host_key) DO UPDATE SET host=EXCLUDED.host, reason=EXCLUDED.reason, notes=EXCLUDED.notes, source='manual', last_seen=NOW(), hit_count=honeypot_sites.hit_count+1 RETURNING host_key,host,reason,source,first_seen,last_seen,hit_count::bigint,COALESCE(run_id,''),notes,1::bigint")
             .bind(host_key).bind(host).bind(reason).bind(notes).fetch_one(pool).await?;
         row_to_honeypot(&row)
     }
@@ -355,7 +456,7 @@ impl Repository {
         notes: Option<&str>,
     ) -> Result<Option<HoneypotSite>> {
         let pool = self.require_pool()?;
-        let row = sqlx::query("UPDATE honeypot_sites SET reason=COALESCE($2,reason),notes=COALESCE($3,notes),last_seen=NOW() WHERE host_key=$1 RETURNING host_key,host,reason,source,first_seen,last_seen,hit_count,COALESCE(run_id,''),notes")
+        let row = sqlx::query("UPDATE honeypot_sites SET reason=COALESCE($2,reason),notes=COALESCE($3,notes),last_seen=NOW() WHERE aipocket_honeypot_group_key(host_key)=aipocket_honeypot_group_key($1) RETURNING host_key,host,reason,source,first_seen,last_seen,hit_count::bigint,COALESCE(run_id,''),notes,1::bigint")
             .bind(host_key).bind(reason).bind(notes).fetch_optional(pool).await?;
         row.as_ref().map(row_to_honeypot).transpose()
     }
@@ -363,7 +464,7 @@ impl Repository {
     pub async fn delete_honeypots(&self, host_keys: &[String]) -> Result<u64> {
         let pool = self.require_pool()?;
         Ok(
-            sqlx::query("DELETE FROM honeypot_sites WHERE host_key = ANY($1)")
+            sqlx::query("DELETE FROM honeypot_sites WHERE aipocket_honeypot_group_key(host_key) IN (SELECT aipocket_honeypot_group_key(value) FROM UNNEST($1::text[]) AS value)")
                 .bind(host_keys)
                 .execute(pool)
                 .await?
@@ -673,43 +774,89 @@ impl Repository {
             > 0)
     }
 
-    pub async fn promote_results(
+    pub async fn transition_results(
         &self,
         result_ids: &[i64],
+        target: &str,
         note: &str,
     ) -> Result<(Vec<i64>, Vec<i64>)> {
+        anyhow::ensure!(
+            matches!(target, "valid" | "suspicious" | "unavailable"),
+            "invalid key status: {target}"
+        );
         let pool = self.require_pool()?;
+        let mut transaction = pool.begin().await?;
         let rows = sqlx::query(
-            "SELECT id,run_id,apikey,record FROM results WHERE id = ANY($1) AND kind='valid'",
+            "SELECT id,run_id,apikey,record FROM results WHERE id = ANY($1) AND kind IN ('valid','suspicious','unavailable') FOR UPDATE",
         )
         .bind(result_ids)
-        .fetch_all(pool)
+        .fetch_all(&mut *transaction)
         .await?;
-        let mut promoted = Vec::new();
+        let mut transitioned = Vec::new();
         let mut found = std::collections::HashSet::new();
         for row in rows {
             let id: i64 = row.try_get("id")?;
             found.insert(id);
-            let key: String = row
+            let run_id: String = row.try_get("run_id")?;
+            let apikey = row
                 .try_get::<Option<String>, _>("apikey")?
                 .unwrap_or_default();
-            if key.is_empty() {
-                continue;
-            }
             let mut record: Value = row.try_get("record")?;
-            if let Some(object) = record.as_object_mut() {
-                object.insert("note".into(), Value::String(note.into()));
-                object.insert("saved_at".into(), Value::String(Utc::now().to_rfc3339()));
+            let object = record
+                .as_object_mut()
+                .context("result record must be an object")?;
+            object.insert("manual_status".into(), Value::String(target.into()));
+            object.insert("manual_status_note".into(), Value::String(note.into()));
+            object.insert(
+                "manual_status_updated_at".into(),
+                Value::String(Utc::now().to_rfc3339()),
+            );
+            let (kind, valid, validation_state, suspicious) = match target {
+                "valid" => ("valid", true, "final_verified", false),
+                "suspicious" => ("suspicious", false, "suspicious", true),
+                "unavailable" => ("unavailable", false, "rejected", false),
+                _ => unreachable!(),
+            };
+            object.insert("valid".into(), Value::Bool(valid));
+            object.insert(
+                "validation_state".into(),
+                Value::String(validation_state.into()),
+            );
+            object.insert("suspicious".into(), Value::Bool(suspicious));
+            if target == "unavailable" {
+                object.insert("error".into(), Value::String("manual:unavailable".into()));
             }
-            sqlx::query("INSERT INTO high_value_keys(apikey,run_id,saved_at,record) VALUES($1,$2,NOW(),$3) ON CONFLICT(apikey) DO UPDATE SET run_id=EXCLUDED.run_id,saved_at=EXCLUDED.saved_at,record=EXCLUDED.record").bind(key).bind(row.try_get::<String,_>("run_id")?).bind(record).execute(pool).await?;
-            promoted.push(id);
+            let next_seq: i32 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(seq)+1,0) FROM results WHERE run_id=$1 AND kind=$2",
+            )
+            .bind(&run_id)
+            .bind(kind)
+            .fetch_one(&mut *transaction)
+            .await?;
+            sqlx::query("UPDATE results SET kind=$2,seq=$3,valid=$4,record=$5 WHERE id=$1")
+                .bind(id)
+                .bind(kind)
+                .bind(next_seq)
+                .bind(valid)
+                .bind(&record)
+                .execute(&mut *transaction)
+                .await?;
+            if !apikey.is_empty() {
+                sqlx::query("UPDATE high_value_keys SET record=$2,saved_at=NOW() WHERE apikey=$1")
+                    .bind(&apikey)
+                    .bind(&record)
+                    .execute(&mut *transaction)
+                    .await?;
+            }
+            transitioned.push(id);
         }
+        transaction.commit().await?;
         let skipped = result_ids
             .iter()
             .copied()
             .filter(|id| !found.contains(id))
             .collect();
-        Ok((promoted, skipped))
+        Ok((transitioned, skipped))
     }
 
     pub async fn append_results(&self, run_id: &str, kind: &str, rows: &[Value]) -> Result<()> {
@@ -803,9 +950,10 @@ fn row_to_honeypot(row: &sqlx::postgres::PgRow) -> Result<HoneypotSite> {
         source: row.try_get(3)?,
         first_seen: row.try_get::<DateTime<Utc>, _>(4)?.to_rfc3339(),
         last_seen: row.try_get::<DateTime<Utc>, _>(5)?.to_rfc3339(),
-        hit_count: i64::from(row.try_get::<i32, _>(6)?),
+        hit_count: row.try_get(6)?,
         run_id: row.try_get(7)?,
         notes: row.try_get(8)?,
+        member_count: row.try_get(9)?,
     })
 }
 
@@ -845,7 +993,7 @@ fn mask_record(record: &mut Value) {
 }
 fn validate_kind(kind: &str) -> Result<()> {
     anyhow::ensure!(
-        matches!(kind, "valid" | "suspicious"),
+        matches!(kind, "valid" | "suspicious" | "unavailable"),
         "invalid kind: {kind}"
     );
     Ok(())

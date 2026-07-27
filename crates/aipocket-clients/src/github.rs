@@ -103,13 +103,32 @@ impl GithubClient {
         }
     }
     pub async fn rate_limit(&self) -> Result<Value> {
-        Ok(self
-            .request("/rate_limit")?
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?)
+        let token_count = self.tokens.len();
+        anyhow::ensure!(token_count > 0, "GITHUB_TOKENS not configured");
+        let start = self.next_token.fetch_add(1, Ordering::Relaxed) % token_count;
+        let mut failures = Vec::with_capacity(token_count);
+        for offset in 0..token_count {
+            let response = self
+                .request_with_token("/rate_limit", &self.tokens[(start + offset) % token_count])
+                .send()
+                .await?;
+            let status = response.status();
+            let remaining = header_u64(&response, "x-ratelimit-remaining");
+            let bytes = response.bytes().await?;
+            if status.is_success() {
+                return serde_json::from_slice(&bytes).context("github rate-limit JSON");
+            }
+            failures.push(format!(
+                "token {}: status={status} remaining={} response={}",
+                offset + 1,
+                remaining.map_or_else(|| "unknown".into(), |value| value.to_string()),
+                response_preview(&bytes)
+            ));
+        }
+        anyhow::bail!(
+            "github rate-limit check failed for all {token_count} token(s): {}",
+            failures.join("; ")
+        )
     }
     pub async fn search_code(&self, query: &str, page: usize, per_page: usize) -> Result<Value> {
         self.search("/search/code", query, page, per_page).await

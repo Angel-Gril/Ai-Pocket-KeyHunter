@@ -344,6 +344,7 @@ impl Scanner {
             .send(ScanEvent::Phase("extract_validate".into()))
             .ok();
         let dedup = DedupStore::connect(&self.settings).await;
+        let known_honeypot_groups = self.repository.known_honeypot_groups().await?;
         let mut unseen_hits = Vec::with_capacity(hits.len());
         for hit in hits {
             let target = hit
@@ -351,6 +352,13 @@ impl Scanner {
                 .or_else(|| hit.get("url"))
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            let group = aipocket_core::url_sanitize::honeypot_group_key(target).ok();
+            if group
+                .as_ref()
+                .is_some_and(|group| known_honeypot_groups.contains(group))
+            {
+                continue;
+            }
             if !policy.use_cross_run_dedup
                 || target.is_empty()
                 || !dedup.target_seen("probe", target).await
@@ -514,6 +522,9 @@ impl Scanner {
             }
             _ = analyzer.recheck(&mut outcomes) => {}
         }
+        self.repository
+            .upsert_honeypot_results(&run_id, &outcomes)
+            .await?;
         let (mut valid_results, mut suspicious_results) = finalize_results(outcomes);
         events
             .send(ScanEvent::Phase("balance_finalize".into()))

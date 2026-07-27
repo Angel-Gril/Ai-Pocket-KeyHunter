@@ -600,8 +600,7 @@ export default function RunResultsPage() {
         total={rows.length}
         allChecked={allChecked}
         onToggleAll={handleToggleAll}
-        onExportJson={() => void runExport("json")}
-        onExportCsv={() => void runExport("csv")}
+        onExport={(format) => void runExport(format)}
         exporting={exporting}
       />
 

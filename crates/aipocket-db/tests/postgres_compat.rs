@@ -427,6 +427,69 @@ async fn repository_resume_append_balance_and_high_value_paths_persist() {
             .any(|row| { row["apikey"] == "sk-repo-abcdefghijkl" && row["balance"] == "42.00" })
     );
 
+    let (transitioned, skipped) = repo
+        .transition_results(&[result_id], "unavailable", "manual rejection")
+        .await
+        .unwrap();
+    assert_eq!(transitioned, [result_id]);
+    assert!(skipped.is_empty());
+    assert!(
+        repo.run_records(&run_id, "valid", false)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let unavailable = repo
+        .run_records(&run_id, "unavailable", false)
+        .await
+        .unwrap();
+    assert_eq!(unavailable[0]["manual_status"], "unavailable");
+    let (restored, skipped) = repo
+        .transition_results(&[result_id], "valid", "manual restore")
+        .await
+        .unwrap();
+    assert_eq!(restored, [result_id]);
+    assert!(skipped.is_empty());
+    let restored_rows = repo.run_records(&run_id, "valid", false).await.unwrap();
+    assert_eq!(restored_rows[0]["manual_status"], "valid");
+
+    let first_host = "a.ip.linodeusercontent.com:443";
+    let second_host = "b.ip.linodeusercontent.com:8443";
+    for host in [first_host, second_host] {
+        sqlx::query("INSERT INTO honeypot_sites(host_key,host,reason,source) VALUES($1,$1,'honeypot:fixture','auto') ON CONFLICT(host_key) DO UPDATE SET reason=EXCLUDED.reason")
+            .bind(host)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let grouped = repo
+        .list_honeypots("linodeusercontent", None, 10, 0)
+        .await
+        .unwrap();
+    let group = grouped
+        .0
+        .iter()
+        .find(|row| row.host == "linodeusercontent.com")
+        .unwrap();
+    assert_eq!(group.member_count, 2);
+    repo.update_honeypot(&group.host_key, None, Some("group note"))
+        .await
+        .unwrap();
+    let noted: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM honeypot_sites WHERE host_key = ANY($1) AND notes='group note'",
+    )
+    .bind(vec![first_host, second_host])
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(noted, 2);
+    assert_eq!(
+        repo.delete_honeypots(std::slice::from_ref(&group.host_key))
+            .await
+            .unwrap(),
+        2
+    );
+
     assert!(repo.delete_run(&run_id).await.unwrap());
     sqlx::query("DELETE FROM high_value_keys WHERE apikey=$1")
         .bind("sk-repo-abcdefghijkl")

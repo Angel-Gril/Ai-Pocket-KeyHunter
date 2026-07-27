@@ -31,9 +31,9 @@ export type GitHubPackId =
   | "azure_openai"
   | "minimax"
   | "longcat"
-export type ExportFormat = "json" | "csv"
+export type ExportFormat = "json" | "csv" | "sub2api"
 export type ExportDataset = "selected" | "run" | "high-value" | "all"
-export type ResultKind = "valid" | "suspicious"
+export type ResultKind = "valid" | "suspicious" | "unavailable"
 
 export interface LoginResponse {
   token: string
@@ -288,6 +288,7 @@ export interface KeyRecord {
   /** Originating run for cross-run aggregate lists (reveal/export). */
   source_run_id?: string
   source_index?: number
+  manual_status?: KeyStatus
   [key: string]: unknown
 }
 
@@ -309,8 +310,11 @@ export interface ProviderEvidence {
   detail?: Record<string, unknown>
 }
 
-export interface PromoteKeysResponse {
-  promoted: number[]
+
+export type KeyStatus = "valid" | "suspicious" | "unavailable"
+
+export interface TransitionKeysResponse {
+  transitioned: number[]
   skipped: number[]
 }
 
@@ -416,6 +420,7 @@ export interface HoneypotSite {
   hit_count: number
   run_id: string
   notes: string
+  member_count?: number
 }
 
 export interface HoneypotListResponse {
@@ -632,10 +637,10 @@ export const api = {
 
   // Cross-run keys (deduped valid / suspicious)
   getAllKeys: (kind: ResultKind) => request<AllKeysResponse>(`/keys/${kind}`),
-  promoteKeys: (resultIds: number[], note = "") =>
-    request<PromoteKeysResponse>("/keys/promote", {
+  transitionKeys: (resultIds: number[], status: KeyStatus, note = "") =>
+    request<TransitionKeysResponse>("/keys/status", {
       method: "POST",
-      body: { result_ids: resultIds, note },
+      body: { result_ids: resultIds, status, note },
     }),
 
   // Single-key testing
@@ -659,7 +664,7 @@ export const api = {
     }
     if (!res.ok) throw await parseError(res)
     const blob = await res.blob()
-    const fallback = `aipocket-export.${body.format ?? "json"}`
+    const fallback = `aipocket-export.${body.format === "sub2api" ? "sub2api.json" : body.format ?? "json"}`
     triggerBlobDownload(blob, filenameFromDisposition(res.headers.get("content-disposition"), fallback))
   },
 

@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Check, ChevronDown, Copy, Eye, EyeOff, List, Loader2, MessageSquare, Wallet } from "lucide-react"
+import { Check, ChevronDown, CircleOff, Copy, Eye, EyeOff, List, Loader2, MessageSquare, ShieldQuestion, Wallet } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ProviderBadge } from "@/components/provider-badge"
 import { colCellClass, colStyle, colWidthStyle } from "@/components/key-table-columns"
@@ -38,8 +38,10 @@ export interface KeyRowProps {
   onLoadModels?: () => void
   onBalance?: () => void
   onChat?: () => void
-  onPromote?: () => void
-  promotePending?: boolean
+  onMarkValid?: () => void
+  onMarkUnavailable?: () => void
+  onMarkSuspicious?: () => void
+  statusPending?: boolean
   busy?: { models?: boolean; balance?: boolean; chat?: boolean }
   actionWidth?: number
   className?: string
@@ -128,8 +130,10 @@ interface RowActionsProps {
   onLoadModels?: () => void
   onBalance?: () => void
   onChat?: () => void
-  onPromote?: () => void
-  promotePending?: boolean
+  onMarkValid?: () => void
+  onMarkUnavailable?: () => void
+  onMarkSuspicious?: () => void
+  statusPending?: boolean
   busy?: KeyRowProps["busy"]
   canExpand: boolean
   isExpanded: boolean
@@ -141,8 +145,10 @@ function RowActions({
   onLoadModels,
   onBalance,
   onChat,
-  onPromote,
-  promotePending,
+  onMarkValid,
+  onMarkUnavailable,
+  onMarkSuspicious,
+  statusPending,
   busy,
   canExpand,
   isExpanded,
@@ -157,8 +163,14 @@ function RowActions({
       {onBalance ? (
         <ActionButton icon={<Wallet className="size-3.5 shrink-0" />} label="余额" onClick={onBalance} loading={busy?.balance} />
       ) : null}
-      {onPromote ? (
-        <ActionButton icon={<Check className="size-3.5 shrink-0" />} label="标为可用" onClick={onPromote} loading={promotePending} />
+      {onMarkValid ? (
+        <ActionButton icon={<Check className="size-3.5 shrink-0" />} label="标为可用" onClick={onMarkValid} loading={statusPending} />
+      ) : null}
+      {onMarkSuspicious ? (
+        <ActionButton icon={<ShieldQuestion className="size-3.5 shrink-0" />} label="标为疑似" onClick={onMarkSuspicious} loading={statusPending} />
+      ) : null}
+      {onMarkUnavailable ? (
+        <ActionButton icon={<CircleOff className="size-3.5 shrink-0" />} label="标为不可用" onClick={onMarkUnavailable} loading={statusPending} />
       ) : null}
       {onChat ? (
         <ActionButton icon={<MessageSquare className="size-3.5 shrink-0" />} label="测对话" onClick={onChat} loading={busy?.chat} />
@@ -262,14 +274,16 @@ export function KeyRow({
   selected,
   onSelectedChange,
   expanded,
-  onExpandedChange,
-  onReveal,
   onCopy,
+  onReveal,
+  onExpandedChange,
   onLoadModels,
   onBalance,
   onChat,
-  onPromote,
-  promotePending,
+  onMarkValid,
+  onMarkUnavailable,
+  onMarkSuspicious,
+  statusPending,
   busy,
   className,
   actionWidth = 280,
@@ -371,13 +385,14 @@ export function KeyRow({
             <span className="max-w-full truncate font-mono text-[10px] text-text-muted">{validationState}</span>
           ) : null}
         </div>
-
         <RowActions
           onLoadModels={onLoadModels}
           onBalance={onBalance}
           onChat={onChat}
-          onPromote={onPromote}
-          promotePending={promotePending}
+          onMarkValid={onMarkValid}
+          onMarkUnavailable={onMarkUnavailable}
+          onMarkSuspicious={onMarkSuspicious}
+          statusPending={statusPending}
           busy={busy}
           actionWidth={actionWidth}
           canExpand={canExpand}

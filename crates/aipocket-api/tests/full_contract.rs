@@ -251,8 +251,8 @@ async fn complete_frontend_api_contract_smoke() {
             StatusCode::OK
         );
     }
-    for format in ["json", "csv"] {
-        let (status, _, headers) = request(
+    for format in ["json", "csv", "sub2api"] {
+        let (status, payload, headers) = request(
             &app,
             "POST",
             "/api/export",
@@ -262,6 +262,16 @@ async fn complete_frontend_api_contract_smoke() {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(headers.contains_key("content-disposition"));
+        if format == "sub2api" {
+            assert_eq!(payload["type"], "sub2api-data");
+            assert_eq!(payload["version"], 1);
+            assert_eq!(payload["accounts"][0]["type"], "apikey");
+            assert_eq!(
+                payload["accounts"][0]["credentials"]["api_key"],
+                "sk-contract-plaintext"
+            );
+            assert_eq!(payload["accounts"][0]["rate_multiplier"], 1.0);
+        }
     }
     for (dataset, body) in [
         (
@@ -308,15 +318,33 @@ async fn complete_frontend_api_contract_smoke() {
         .0,
         StatusCode::BAD_REQUEST
     );
-    let (_, promoted, _) = request(
+    let (_, valid, _) = request(
         &app,
         "POST",
-        "/api/keys/promote",
+        "/api/keys/status",
         Some(token),
-        Some(json!({"result_ids":[result_id],"note":"fixture"})),
+        Some(json!({"result_ids":[result_id],"status":"valid","note":"fixture"})),
     )
     .await;
-    assert_eq!(promoted["promoted"][0], result_id);
+    assert_eq!(valid["transitioned"][0], result_id);
+    let (_, suspicious, _) = request(
+        &app,
+        "POST",
+        "/api/keys/status",
+        Some(token),
+        Some(json!({"result_ids":[result_id],"status":"suspicious"})),
+    )
+    .await;
+    assert_eq!(suspicious["transitioned"][0], result_id);
+    let (_, restored, _) = request(
+        &app,
+        "POST",
+        "/api/keys/status",
+        Some(token),
+        Some(json!({"result_ids":[result_id],"status":"valid"})),
+    )
+    .await;
+    assert_eq!(restored["transitioned"][0], result_id);
     let (_, high, _) = request(&app, "GET", "/api/high-value", Some(token), None).await;
     let high_masked = high["results"][0]["apikey"]
         .as_str()

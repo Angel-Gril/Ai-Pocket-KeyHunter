@@ -84,6 +84,15 @@ export function extractKeyFields(rec: KeyRecord): KeyFields {
 }
 
 export function deriveKeyStatus(rec: KeyRecord): KeyRowStatus {
+  if (rec.manual_status === "valid") {
+    return { variant: "success", label: "可用" }
+  }
+  if (rec.manual_status === "suspicious") {
+    return { variant: "warning", label: "疑似" }
+  }
+  if (rec.manual_status === "unavailable") {
+    return { variant: "danger", label: "不可用" }
+  }
   if (rec.suspicious || rec.validation_state === "rate_limited_unconfirmed") {
     return { variant: "warning", label: "疑似" }
   }

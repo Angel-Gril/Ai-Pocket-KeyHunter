@@ -1308,11 +1308,18 @@ impl BalanceService {
                 .post(url)
                 .query(&[("key", &routed.apikey)])
                 .json(&json!({"contents":[{"parts":[{"text":"Reply OK"}]}],"generationConfig":{"maxOutputTokens":4}})),
-            _ => self
-                .http
-                .post(url)
-                .bearer_auth(&routed.apikey)
-                .json(&json!({"model":model,"messages":[{"role":"user","content":"Reply OK"}],"max_tokens":4})),
+            _ => {
+                let mut payload = json!({"model":model,"messages":[{"role":"user","content":"Reply OK"}]});
+                if model.trim().to_ascii_lowercase().starts_with("gpt-5") {
+                    payload["max_completion_tokens"] = Value::from(4);
+                } else {
+                    payload["max_tokens"] = Value::from(4);
+                }
+                self.http
+                    .post(url)
+                    .bearer_auth(&routed.apikey)
+                    .json(&payload)
+            }
         };
         let response = match request.send().await {
             Ok(response) => response,

@@ -1654,7 +1654,18 @@ async fn verify_gpt_credential(
             .map(|value| format!("{}/chat/completions", value.api_base.trim_end_matches('/')))
             .unwrap_or_else(|_| format!("{}/chat/completions", base.trim_end_matches('/')));
         for model in models {
-            let response = client.post(&endpoint).bearer_auth(&credential.apikey).json(&json!({"model":model,"messages":[{"role":"user","content":"Say exactly: hello world"}],"max_tokens":10,"stream":false})).send().await;
+            let mut payload = json!({"model":model,"messages":[{"role":"user","content":"Say exactly: hello world"}],"stream":false});
+            if model.trim().to_ascii_lowercase().starts_with("gpt-5") {
+                payload["max_completion_tokens"] = Value::from(10);
+            } else {
+                payload["max_tokens"] = Value::from(10);
+            }
+            let response = client
+                .post(&endpoint)
+                .bearer_auth(&credential.apikey)
+                .json(&payload)
+                .send()
+                .await;
             let test = match response {
                 Ok(response) => {
                     let status_code = response.status().as_u16();
@@ -2070,6 +2081,32 @@ mod tests {
         assert_eq!(selected.len(), 2);
         assert!(selected.iter().any(|value| value["product"] == "Dify"));
         assert!(selected.iter().any(|value| value["product"] == "Flowise"));
+    }
+
+    #[tokio::test]
+    async fn gpt_probe_uses_completion_tokens_for_gpt5() {
+        async fn chat(Json(payload): Json<Value>) -> Json<Value> {
+            assert_eq!(payload["max_completion_tokens"], 10);
+            assert!(payload.get("max_tokens").is_none());
+            Json(json!({"model":"gpt-5.5","choices":[{"message":{"content":"hello world"}}]}))
+        }
+        let app = Router::new().route("/v1/chat/completions", post(chat));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let tests = verify_gpt_credential(
+            &reqwest::Client::new(),
+            &Credential {
+                apikey: "sk-fixture".into(),
+                apiurl: base.clone(),
+                ..Default::default()
+            },
+            &[base],
+            &["gpt-5.5".into()],
+        )
+        .await;
+        assert_eq!(gpt_verdict(&tests), "LIVE_GPT");
+        server.abort();
     }
 
     #[tokio::test]
