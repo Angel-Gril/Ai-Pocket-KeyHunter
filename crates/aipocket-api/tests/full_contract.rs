@@ -126,6 +126,21 @@ async fn complete_frontend_api_contract_smoke() {
     repo.insert_results(run_id, "valid", std::slice::from_ref(&record))
         .await
         .unwrap();
+    repo.upsert_high_value(
+        run_id,
+        &json!({
+            "apikey":"sk-contract-plaintext",
+            "apiurl":base,
+            "credential":{"apikey":"sk-contract-plaintext","apiurl":base,"host":"fixture","backend":"manual"},
+            "valid":true,
+            "validation_state":"final_verified",
+            "provider_info":{"provider":"unknown"},
+            "tier":"paid",
+            "balance":"1"
+        }),
+    )
+    .await
+    .unwrap();
     repo.finish_run(
         run_id,
         "finished",
