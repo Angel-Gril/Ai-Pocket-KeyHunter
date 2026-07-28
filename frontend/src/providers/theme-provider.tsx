@@ -15,8 +15,11 @@ const ThemeContext = createContext<ThemeContextValue | null>(null)
 /** Read the persisted theme, defaulting to dark (the app's original theme). */
 function readStoredTheme(): Theme {
   if (typeof window === "undefined") return "dark"
-  const stored = window.localStorage.getItem(STORAGE_KEY)
-  return stored === "light" ? "light" : "dark"
+  try {
+    return window.localStorage.getItem(STORAGE_KEY) === "light" ? "light" : "dark"
+  } catch {
+    return "dark"
+  }
 }
 
 /** Toggle the `dark` class on <html> so the CSS custom-property palette swaps. */
@@ -30,7 +33,11 @@ export function ThemeProvider({ children }: Readonly<{ children: React.ReactNode
 
   useEffect(() => {
     applyTheme(theme)
-    window.localStorage.setItem(STORAGE_KEY, theme)
+    try {
+      window.localStorage.setItem(STORAGE_KEY, theme)
+    } catch {
+      // Storage can be unavailable in hardened browsers; in-memory state still works.
+    }
   }, [theme])
 
   const setTheme = useCallback((next: Theme) => setThemeState(next), [])

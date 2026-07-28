@@ -12,7 +12,7 @@ import {
 } from "@/lib/api"
 import { ChatTestDialog } from "@/components/chat-test-dialog"
 import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
-import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
+import { BulkBar, CenterState, IndexedKeyRow, KeyPagination, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
 import { extractKeyFields, formatBalance } from "@/components/key-record"
 import { Button } from "@/components/ui/button"
@@ -57,6 +57,8 @@ export default function RunResultsPage() {
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
   const [logOpen, setLogOpen] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   /** Local flag so the button stays busy between POST and first poll. */
   const [retryStarting, setRetryStarting] = useState(false)
   /**
@@ -126,9 +128,15 @@ export default function RunResultsPage() {
 
   const listView = useKeyListView(records, balanceOverrides)
   const { rows } = listView
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const pageRows = useMemo(
+    () => rows.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [rows, currentPage, pageSize],
+  )
 
-  const stateRef = useRef({ records, kind, revealed, models, rows })
-  stateRef.current = { records, kind, revealed, models, rows }
+  const stateRef = useRef({ records, kind, revealed, models, rows: pageRows })
+  stateRef.current = { records, kind, revealed, models, rows: pageRows }
 
   // Destructure the STABLE `mutateAsync` refs (the mutation objects themselves
   // change identity every render); depending on these keeps the row callbacks
@@ -335,6 +343,7 @@ export default function RunResultsPage() {
   const switchKind = useCallback((next: ResultKind) => {
     setKind(next)
     setSelected(new Set())
+    setPage(1)
   }, [])
 
   const gptFailed = gptFailedQuery.data
@@ -432,7 +441,7 @@ export default function RunResultsPage() {
     [runId, selected],
   )
 
-  const visibleIndices = useMemo(() => rows.map((r) => r.originalIndex), [rows])
+  const visibleIndices = useMemo(() => pageRows.map((r) => r.originalIndex), [pageRows])
   const allChecked =
     visibleIndices.length > 0 && visibleIndices.every((i) => selected.has(i))
 
@@ -456,7 +465,7 @@ export default function RunResultsPage() {
   } else {
     body = (
       <div>
-        {rows.map(({ fields, status, originalIndex }) => {
+        {pageRows.map(({ fields, status, originalIndex }) => {
           const key = rowKeyOf(kind, originalIndex)
           const reveal = revealed[key]
           const balanceInfo = balances[key]
@@ -583,21 +592,21 @@ export default function RunResultsPage() {
 
       <KeyListToolbar
         search={listView.search}
-        onSearchChange={listView.setSearch}
+        onSearchChange={(value) => { listView.setSearch(value); setPage(1); setSelected(new Set()) }}
         provider={listView.provider}
-        onProviderChange={listView.setProvider}
+        onProviderChange={(value) => { listView.setProvider(value); setPage(1); setSelected(new Set()) }}
         providers={listView.providers}
         balanceSort={listView.balanceSort}
-        onBalanceSortChange={listView.setBalanceSort}
+        onBalanceSortChange={(value) => { listView.setBalanceSort(value); setPage(1); setSelected(new Set()) }}
         filteredCount={listView.filteredCount}
         total={listView.total}
         hasActiveFilters={listView.hasActiveFilters}
-        onClear={listView.clearFilters}
+        onClear={() => { listView.clearFilters(); setPage(1); setSelected(new Set()) }}
       />
 
       <BulkBar
-        selectedCount={selected.size}
-        total={rows.length}
+        selectedCount={visibleIndices.filter((index) => selected.has(index)).length}
+        total={pageRows.length}
         allChecked={allChecked}
         onToggleAll={handleToggleAll}
         onExport={(format) => void runExport(format)}
@@ -614,6 +623,13 @@ export default function RunResultsPage() {
           {body}
         </div>
       </div>
+      <KeyPagination
+        page={currentPage}
+        pageSize={pageSize}
+        totalItems={rows.length}
+        onPageChange={(nextPage) => { setPage(nextPage); setSelected(new Set()) }}
+        onPageSizeChange={(nextPageSize) => { setPageSize(nextPageSize); setPage(1); setSelected(new Set()) }}
+      />
 
       <ChatTestDialog
         open={chatIndex !== null}

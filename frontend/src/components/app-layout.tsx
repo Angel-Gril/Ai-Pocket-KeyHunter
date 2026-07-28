@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useCallback, useState } from "react"
 import { Menu } from "lucide-react"
 import { Outlet, useLocation } from "react-router-dom"
 import { Sidebar } from "@/components/sidebar"
@@ -24,10 +24,11 @@ function writeSidebarCollapsed(collapsed: boolean): void {
 export function AppLayout() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed)
-  const handleSidebarCollapsedChange = (collapsed: boolean) => {
+  const handleSidebarCollapsedChange = useCallback((collapsed: boolean) => {
     setSidebarCollapsed(collapsed)
     writeSidebarCollapsed(collapsed)
-  }
+  }, [])
+  const closeMobileNav = useCallback(() => setMobileNavOpen(false), [])
   const location = useLocation()
 
   return (
@@ -36,13 +37,13 @@ export function AppLayout() {
         collapsed={sidebarCollapsed}
         mobileOpen={mobileNavOpen}
         onCollapsedChange={handleSidebarCollapsedChange}
-        onMobileClose={() => setMobileNavOpen(false)}
+        onMobileClose={closeMobileNav}
       />
       {mobileNavOpen ? (
         <button
           type="button"
           aria-label="关闭导航"
-          onClick={() => setMobileNavOpen(false)}
+          onClick={closeMobileNav}
           className="fixed inset-0 z-40 bg-black/55 backdrop-blur-[1px] md:hidden"
         />
       ) : null}

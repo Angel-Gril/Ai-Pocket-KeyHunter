@@ -20,11 +20,11 @@ import {
 import { api, type ScanStatusResponse } from "@/lib/api"
 import { useTheme } from "@/providers/theme-provider"
 import { cn } from "@/lib/utils"
-import { NAV_ITEMS } from "@/lib/navigation"
+import { NAV_ITEMS, preloadNavPath, type NavPath } from "@/lib/navigation"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 interface NavItem {
-  to: string
+  to: NavPath
   label: string
   icon: LucideIcon
 }
@@ -142,28 +142,27 @@ export function Sidebar({
 
       <nav className={cn("flex flex-col gap-1 overflow-y-auto px-3 py-3 md:py-4", collapsed && "md:px-2")}>
         {SIDEBAR_ITEMS.map(({ to, label, icon: Icon }) => (
-          <Tooltip key={to}>
-            <TooltipTrigger asChild>
-              <NavLink
-                to={to}
-                onClick={onMobileClose}
-                aria-label={collapsed ? label : undefined}
-                className={({ isActive }) =>
-                  cn(
-                    "flex min-h-11 items-center gap-3 rounded-sm px-3 py-2.5 text-sm transition-colors",
-                    collapsed && "md:justify-center md:px-0",
-                    isActive
-                      ? "bg-accent-dim font-semibold text-accent"
-                      : "text-text-secondary hover:bg-surface-overlay hover:text-text-primary",
-                  )
-                }
-              >
-                <Icon className="size-[18px] shrink-0" />
-                <span className={cn(collapsed && "md:hidden")}>{label}</span>
-              </NavLink>
-            </TooltipTrigger>
-            {collapsed ? <TooltipContent side="right" sideOffset={8}>{label}</TooltipContent> : null}
-          </Tooltip>
+          <NavLink
+            key={to}
+            to={to}
+            onClick={onMobileClose}
+            onPointerEnter={() => preloadNavPath(to)}
+            onFocus={() => preloadNavPath(to)}
+            aria-label={collapsed ? label : undefined}
+            title={collapsed ? label : undefined}
+            className={({ isActive }) =>
+              cn(
+                "flex min-h-11 items-center gap-3 rounded-sm px-3 py-2.5 text-sm transition-colors",
+                collapsed && "md:justify-center md:px-0",
+                isActive
+                  ? "bg-accent-dim font-semibold text-accent"
+                  : "text-text-secondary hover:bg-surface-overlay hover:text-text-primary",
+              )
+            }
+          >
+            <Icon className="size-[18px] shrink-0" />
+            <span className={cn("whitespace-nowrap", collapsed && "md:hidden")}>{label}</span>
+          </NavLink>
         ))}
       </nav>
 

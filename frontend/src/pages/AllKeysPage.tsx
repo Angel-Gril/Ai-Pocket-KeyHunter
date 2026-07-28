@@ -105,7 +105,7 @@ export default function AllKeysPage() {
   const { mutateAsync: modelsAsync } = useMutation({ mutationFn: api.keyModels })
   const { mutateAsync: balanceAsync } = useMutation({ mutationFn: api.keyBalance })
   const { mutateAsync: chatAsync } = useMutation({ mutationFn: api.keyChat })
-  const statusMutation = useMutation({
+  const { mutate: transitionKeys, isPending: statusPending } = useMutation({
     mutationFn: ({ resultIds, status }: { resultIds: number[]; status: "valid" | "suspicious" | "unavailable" }) =>
       api.transitionKeys(resultIds, status),
     onSuccess: async (report, variables) => {
@@ -137,9 +137,9 @@ export default function AllKeysPage() {
         toast.error("该记录缺少稳定 result_id")
         return
       }
-      statusMutation.mutate({ resultIds: [resultId], status })
+      transitionKeys({ resultIds: [resultId], status })
     },
-    [records, statusMutation],
+    [records, transitionKeys],
   )
   const markRowValid = useCallback((index: number) => transitionRow(index, "valid"), [transitionRow])
   const markRowSuspicious = useCallback((index: number) => transitionRow(index, "suspicious"), [transitionRow])
@@ -411,7 +411,7 @@ export default function AllKeysPage() {
               onMarkValid={kind === "suspicious" || kind === "unavailable" ? markRowValid : undefined}
               onMarkSuspicious={kind === "valid" ? markRowSuspicious : undefined}
               onMarkUnavailable={kind === "valid" ? markRowUnavailable : undefined}
-              statusPending={statusMutation.isPending}
+              statusPending={statusPending}
               key={key}
               index={originalIndex}
               maskedKey={fields.maskedKey}
@@ -515,9 +515,9 @@ export default function AllKeysPage() {
           const resultIds = [...selected]
             .map((index) => records[index]?.result_id)
             .filter((id): id is number => typeof id === "number")
-          statusMutation.mutate({ resultIds, status: "valid" })
+          transitionKeys({ resultIds, status: "valid" })
         } : undefined}
-        actionPending={statusMutation.isPending}
+        actionPending={statusPending}
         exportLabel="导出全部"
         exporting={exporting}
       />

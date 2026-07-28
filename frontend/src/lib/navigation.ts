@@ -11,6 +11,23 @@ export const NAV_ITEMS = [
 ] as const
 
 export type NavPath = (typeof NAV_ITEMS)[number]["to"]
+const PAGE_LOADERS: Record<NavPath, () => Promise<unknown>> = {
+  "/history": () => import("@/pages/HistoryPage"),
+  "/keys": () => import("@/pages/AllKeysPage"),
+  "/high-value": () => import("@/pages/HighValuePage"),
+  "/scan": () => import("@/pages/ScanPage"),
+  "/github": () => import("@/pages/GithubHunterPage"),
+  "/manual": () => import("@/pages/ManualTargetsPage"),
+  "/cve": () => import("@/pages/CvePage"),
+  "/honeypot": () => import("@/pages/HoneypotPage"),
+  "/settings": () => import("@/pages/SettingsPage"),
+}
+
+export function preloadNavPath(path: NavPath): void {
+  void PAGE_LOADERS[path]().catch(() => {
+    // Hover/focus preloading is best-effort; navigation will surface real load failures.
+  })
+}
 
 export function navLabelForPath(pathname: string): string {
   if (pathname.startsWith("/runs/")) return "扫描结果"

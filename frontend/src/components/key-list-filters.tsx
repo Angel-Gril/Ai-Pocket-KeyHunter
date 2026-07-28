@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useCallback, useDeferredValue, useMemo, useState } from "react"
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ListFilter, Search, X } from "lucide-react"
 import type { KeyRecord } from "@/lib/api"
 import {
@@ -116,6 +116,7 @@ export function useKeyListView(
   const [search, setSearch] = useState("")
   const [provider, setProvider] = useState<string>("all")
   const [balanceSort, setBalanceSort] = useState<BalanceSort>("none")
+  const deferredSearch = useDeferredValue(search)
 
   const providers = useMemo(() => {
     const counts = new Map<string, number>()
@@ -130,7 +131,7 @@ export function useKeyListView(
   const activeProvider = provider === "all" || providers.some(([p]) => p === provider) ? provider : "all"
 
   const rows = useMemo(() => {
-    const needle = search.trim().toLowerCase()
+    const needle = deferredSearch.trim().toLowerCase()
     let items: KeyListViewRow[] = records.map((rec, originalIndex) => {
       const fields = extractKeyFields(rec)
       const effectiveBalance = balanceOverrides[originalIndex] ?? fields.balance
@@ -166,16 +167,16 @@ export function useKeyListView(
     }
 
     return items
-  }, [records, search, activeProvider, balanceSort, balanceOverrides])
+  }, [records, deferredSearch, activeProvider, balanceSort, balanceOverrides])
 
   const hasActiveFilters =
     search.trim().length > 0 || activeProvider !== "all" || balanceSort !== "none"
 
-  const clearFilters = () => {
+  const clearFilters = useCallback(() => {
     setSearch("")
     setProvider("all")
     setBalanceSort("none")
-  }
+  }, [])
 
   return {
     search,

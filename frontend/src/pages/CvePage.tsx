@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
+import { useCallback, useDeferredValue, useEffect, useMemo, useState, type FormEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Braces,
@@ -108,7 +108,7 @@ function normalize(record: CveRecord): NormalCve {
 function CveCard({ cve }: Readonly<{ cve: NormalCve }>) {
   const meta = SEVERITY_META[cve.severity]
   return (
-    <article className="flex flex-col gap-2.5 rounded-md border border-border-primary bg-surface-raised p-[18px]">
+    <article className="flex flex-col gap-2.5 rounded-md border border-border-primary bg-surface-raised p-[18px] [content-visibility:auto] [contain-intrinsic-size:auto_150px]">
       <div className="flex items-center gap-3">
         <span className="font-mono text-sm font-semibold text-accent">{cve.id}</span>
         <span
@@ -381,27 +381,26 @@ export default function CvePage() {
   const queryClient = useQueryClient()
   const [query, setQuery] = useState("")
   const [addOpen, setAddOpen] = useState(false)
+  const deferredQuery = useDeferredValue(query)
 
   const cveQuery = useQuery({
     queryKey: ["cve"],
     queryFn: api.getCve,
   })
 
-  const rawCves = useMemo(() => cveQuery.data?.cves ?? [], [cveQuery.data])
-
-  const cves = useMemo(() => rawCves.map(normalize), [rawCves])
-
-  const needle = query.trim().toLowerCase()
-  const filtered = useMemo(
-    () => (needle ? cves.filter((cve) => matchesCve(cve, needle)) : cves),
-    [cves, needle],
+  const indexedCves = useMemo(
+    () => (cveQuery.data?.cves ?? []).map((raw) => ({ raw, normalized: normalize(raw) })),
+    [cveQuery.data],
   )
 
-  // Keep raw records aligned with the filtered view so export matches what's shown.
-  const filteredRaw = useMemo(() => {
-    if (!needle) return rawCves
-    return rawCves.filter((record) => matchesCve(normalize(record), needle))
-  }, [rawCves, needle])
+  const needle = deferredQuery.trim().toLowerCase()
+  const filteredCves = useMemo(
+    () => (needle ? indexedCves.filter(({ normalized }) => matchesCve(normalized, needle)) : indexedCves),
+    [indexedCves, needle],
+  )
+  const cves = useMemo(() => indexedCves.map(({ normalized }) => normalized), [indexedCves])
+  const filtered = useMemo(() => filteredCves.map(({ normalized }) => normalized), [filteredCves])
+  const filteredRaw = useMemo(() => filteredCves.map(({ raw }) => raw), [filteredCves])
 
   const syncMutation = useMutation({
     mutationFn: api.cveSync,

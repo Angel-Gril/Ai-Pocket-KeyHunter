@@ -19,6 +19,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { Checkbox } from "@/components/ui/checkbox"
+import * as PopoverPrimitive from "@radix-ui/react-popover"
 
 import {
   api,
@@ -195,7 +196,6 @@ export function ScanConsole({
 
   const lastSeqRef = useRef(0)
   const logViewRef = useRef<HTMLDivElement>(null)
-  const packDropdownRef = useRef<HTMLDivElement>(null)
 
   // Keep locked source in sync if prop changes.
   useEffect(() => {
@@ -211,24 +211,6 @@ export function ScanConsole({
     }
   }, [fixedSource, manualEnrich])
 
-  // Close provider multi-select on outside click / Escape.
-  useEffect(() => {
-    if (!packDropdownOpen) return
-    const onPointerDown = (e: MouseEvent) => {
-      if (packDropdownRef.current && !packDropdownRef.current.contains(e.target as Node)) {
-        setPackDropdownOpen(false)
-      }
-    }
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPackDropdownOpen(false)
-    }
-    document.addEventListener("mousedown", onPointerDown)
-    document.addEventListener("keydown", onKeyDown)
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown)
-      document.removeEventListener("keydown", onKeyDown)
-    }
-  }, [packDropdownOpen])
 
   const statusQuery = useQuery({
     queryKey: ["scan-status"],
@@ -666,34 +648,37 @@ export function ScanConsole({
         {activeSources.includes("github") ? (
           <div className="flex flex-wrap items-center gap-3.5">
             <span className="font-mono text-xs text-text-muted">GitHub Provider 包</span>
-            <div ref={packDropdownRef} className="relative">
-              <button
-                type="button"
-                disabled={running}
-                aria-haspopup="listbox"
-                aria-expanded={packDropdownOpen}
-                onClick={() => setPackDropdownOpen((o) => !o)}
-                className={cn(
-                  "inline-flex h-11 min-w-0 max-w-full flex-1 items-center justify-between gap-2 rounded-[4px] border px-3 text-[13px] transition-colors sm:h-9 sm:min-w-[220px] sm:max-w-[360px] sm:flex-none",
-                  packDropdownOpen || (!running && !allPacksSelected && githubPacks.length > 0)
-                    ? "border-accent bg-accent-dim font-semibold text-accent"
-                    : "border-border-primary bg-surface-raised text-text-secondary hover:text-text-primary",
-                  running && "cursor-not-allowed opacity-50",
-                )}
-              >
-                <span className="truncate">{activeGithubPackLabel}</span>
-                <ChevronDown
+            <PopoverPrimitive.Root
+              open={packDropdownOpen && !running}
+              onOpenChange={setPackDropdownOpen}
+            >
+              <PopoverPrimitive.Trigger asChild>
+                <button
+                  type="button"
+                  disabled={running}
+                  aria-label="选择 GitHub Provider 包"
                   className={cn(
-                    "size-4 shrink-0 opacity-60 transition-transform",
-                    packDropdownOpen && "rotate-180",
+                    "inline-flex h-11 min-w-0 max-w-full flex-1 items-center justify-between gap-2 rounded-[4px] border px-3 text-[13px] transition-colors sm:h-9 sm:min-w-[220px] sm:max-w-[360px] sm:flex-none",
+                    packDropdownOpen || (!running && !allPacksSelected && githubPacks.length > 0)
+                      ? "border-accent bg-accent-dim font-semibold text-accent"
+                      : "border-border-primary bg-surface-raised text-text-secondary hover:text-text-primary",
+                    running && "cursor-not-allowed opacity-50",
                   )}
-                />
-              </button>
-              {packDropdownOpen && !running ? (
-                <div
-                  role="listbox"
-                  aria-multiselectable
-                  className="absolute top-[calc(100%+4px)] left-0 z-50 w-[min(280px,calc(100vw-2rem))] overflow-hidden rounded-md border border-border-primary bg-surface-raised shadow-lg"
+                >
+                  <span className="truncate">{activeGithubPackLabel}</span>
+                  <ChevronDown
+                    className={cn(
+                      "size-4 shrink-0 opacity-60 transition-transform",
+                      packDropdownOpen && "rotate-180",
+                    )}
+                  />
+                </button>
+              </PopoverPrimitive.Trigger>
+              <PopoverPrimitive.Portal>
+                <PopoverPrimitive.Content
+                  align="start"
+                  sideOffset={4}
+                  className="z-50 w-[min(280px,calc(100vw-2rem))] overflow-hidden rounded-md border border-border-primary bg-surface-raised shadow-lg outline-none"
                 >
                   <div className="max-h-[320px] overflow-y-auto p-1">
                     <button
@@ -749,9 +734,9 @@ export function ScanConsole({
                   <div className="border-t border-border-primary px-2.5 py-1.5 font-mono text-[11px] text-text-muted">
                     已选 {selectedPackCount} / {ALL_PACK_IDS.length}
                   </div>
-                </div>
-              ) : null}
-            </div>
+                </PopoverPrimitive.Content>
+              </PopoverPrimitive.Portal>
+            </PopoverPrimitive.Root>
             {running ? (
               <span className="font-mono text-[11px] text-text-muted">
                 运行中不可修改

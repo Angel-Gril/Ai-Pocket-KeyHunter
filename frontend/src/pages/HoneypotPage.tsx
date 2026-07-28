@@ -1,5 +1,5 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useState, type FormEvent } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useCallback, useDeferredValue, useEffect, useState, type FormEvent } from "react"
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Bug,
   ChevronLeft,
@@ -286,9 +286,10 @@ export default function HoneypotPage() {
         limit: pageSize,
         offset: (page - 1) * pageSize,
       }),
+    placeholderData: keepPreviousData,
   })
 
-  const sites = useMemo(() => listQuery.data?.results ?? [], [listQuery.data])
+  const sites = listQuery.data?.results ?? []
   const total = listQuery.data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const currentPage = Math.min(page, totalPages)

@@ -66,7 +66,7 @@ function RunRow({
 }>) {
   const navigate = useNavigate()
   return (
-    <div className="group flex flex-col gap-3 rounded-md border border-border-primary bg-surface-raised p-4 transition-colors hover:bg-surface-overlay sm:flex-row sm:items-center sm:gap-[18px] sm:px-[18px]">
+    <div className="group flex flex-col gap-3 rounded-md border border-border-primary bg-surface-raised p-4 transition-colors hover:bg-surface-overlay sm:flex-row sm:items-center sm:gap-[18px] sm:px-[18px] [content-visibility:auto] [contain-intrinsic-size:auto_112px]">
       <button
         type="button"
         onClick={() => navigate(`/runs/${run.run_id}`)}

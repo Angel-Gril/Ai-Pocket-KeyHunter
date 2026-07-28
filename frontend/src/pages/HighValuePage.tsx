@@ -82,7 +82,7 @@ export default function HighValuePage() {
   const { mutateAsync: modelsAsync } = useMutation({ mutationFn: api.keyModels })
   const { mutateAsync: balanceAsync } = useMutation({ mutationFn: api.keyBalance })
   const { mutateAsync: chatAsync } = useMutation({ mutationFn: api.keyChat })
-  const statusMutation = useMutation({
+  const { mutate: transitionKey, isPending: statusPending } = useMutation({
     mutationFn: ({ index, status }: { index: number; status: "valid" | "suspicious" | "unavailable" }) => {
       const resultId = stateRef.current.records[index]?.result_id
       if (typeof resultId !== "number") throw new Error("missing backing result")
@@ -315,9 +315,9 @@ export default function HighValuePage() {
       setExporting(false)
     }
   }, [])
-  const markValid = useCallback((index: number) => statusMutation.mutate({ index, status: "valid" }), [statusMutation])
-  const markSuspicious = useCallback((index: number) => statusMutation.mutate({ index, status: "suspicious" }), [statusMutation])
-  const markUnavailable = useCallback((index: number) => statusMutation.mutate({ index, status: "unavailable" }), [statusMutation])
+  const markValid = useCallback((index: number) => transitionKey({ index, status: "valid" }), [transitionKey])
+  const markSuspicious = useCallback((index: number) => transitionKey({ index, status: "suspicious" }), [transitionKey])
+  const markUnavailable = useCallback((index: number) => transitionKey({ index, status: "unavailable" }), [transitionKey])
 
 
   const visibleIndices = useMemo(() => pageRows.map((r) => r.originalIndex), [pageRows])
@@ -380,7 +380,7 @@ export default function HighValuePage() {
               onMarkValid={status.label !== "可用" ? markValid : undefined}
               onMarkSuspicious={status.label !== "疑似" ? markSuspicious : undefined}
               onMarkUnavailable={status.label !== "不可用" ? markUnavailable : undefined}
-              statusPending={statusMutation.isPending}
+              statusPending={statusPending}
             />
           )
         })}

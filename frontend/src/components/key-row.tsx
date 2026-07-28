@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { Check, ChevronDown, CircleOff, Copy, Eye, EyeOff, List, Loader2, MessageSquare, RefreshCw, ShieldQuestion, Wallet } from "lucide-react"
-import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
+import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ProviderBadge } from "@/components/provider-badge"
 import { colCellClass, colStyle, colWidthStyle } from "@/components/key-table-columns"
