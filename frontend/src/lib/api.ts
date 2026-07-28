@@ -44,6 +44,8 @@ export interface LoginResponse {
 export interface KeyRef {
   apikey: string
   apiurl?: string
+  result_id?: number
+  high_value?: boolean
 }
 
 /** Live balance probe; pass result_id / high_value to persist onto stored rows. */
@@ -56,6 +58,12 @@ export interface BalanceRequest {
 
 export interface ModelsResponse {
   models: string[]
+  status_code: number | null
+  provider: string
+  key_state: "active" | "expired" | "rate_limited" | "invalid_response" | "unavailable"
+  error: string
+  expired: boolean
+  high_value_removed: boolean
 }
 
 export interface BalanceResponse {
@@ -66,6 +74,9 @@ export interface BalanceResponse {
   persisted?: boolean
   result_id?: number | null
   high_value_updated?: boolean
+  key_state?: "expired"
+  expired?: boolean
+  high_value_removed?: boolean
 }
 
 export interface BatchBalanceResponse {

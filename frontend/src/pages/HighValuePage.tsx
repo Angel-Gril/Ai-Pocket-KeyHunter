@@ -156,10 +156,33 @@ export default function HighValuePage() {
       if (!key) return
       setRowBusy(key, { models: true })
       try {
+        const rec = stateRef.current.records[index]
         const { apikey, apiurl } = await ensureRevealed(index)
-        const res = await modelsAsync({ apikey, apiurl })
+        const res = await modelsAsync({
+          apikey,
+          apiurl,
+          result_id: typeof rec?.result_id === "number" ? rec.result_id : undefined,
+          high_value: true,
+        })
         setModels((prev) => ({ ...prev, [key]: res.models }))
         setExpanded((prev) => new Set(prev).add(key))
+        if (res.key_state === "expired") {
+          setSelected((prev) => {
+            const next = new Set(prev)
+            next.delete(index)
+            return next
+          })
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["high-value"] }),
+            queryClient.invalidateQueries({ queryKey: ["keys"] }),
+            queryClient.invalidateQueries({ queryKey: ["runs"] }),
+          ])
+          toast.error("密钥已过期", { description: "Provider 返回认证失败，已从高价值列表移除并归档为不可用。" })
+        } else if (res.models.length === 0) {
+          toast.warning("未获取到模型", {
+            description: res.key_state === "rate_limited" ? "Provider 当前限流，密钥状态未变。" : res.error,
+          })
+        }
       } catch (err) {
         setModels((prev) => ({ ...prev, [key]: [] }))
         toast.error("加载模型失败", { description: errorMessage(err, "无法获取模型列表") })
@@ -167,7 +190,7 @@ export default function HighValuePage() {
         setRowBusy(key, { models: false })
       }
     },
-    [ensureRevealed, modelsAsync, maskedAt, setRowBusy],
+    [ensureRevealed, modelsAsync, maskedAt, queryClient, setRowBusy],
   )
 
   const handleBalance = useCallback(
@@ -176,12 +199,28 @@ export default function HighValuePage() {
       if (!key) return
       setRowBusy(key, { balance: true })
       try {
+        const rec = stateRef.current.records[index]
         const { apikey, apiurl } = await ensureRevealed(index)
         const res = await balanceAsync({
           apikey,
           apiurl,
+          result_id: typeof rec?.result_id === "number" ? rec.result_id : undefined,
           high_value: true,
         })
+        if (res.key_state === "expired") {
+          setSelected((prev) => {
+            const next = new Set(prev)
+            next.delete(index)
+            return next
+          })
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["high-value"] }),
+            queryClient.invalidateQueries({ queryKey: ["keys"] }),
+            queryClient.invalidateQueries({ queryKey: ["runs"] }),
+          ])
+          toast.error("密钥已过期", { description: "余额接口返回认证失败，已从高价值列表移除并归档为不可用。" })
+          return
+        }
         const balanceLabel = formatBalance(res.balance_usd)
         const tierLabel = res.tier?.trim() || undefined
         setBalances((prev) => ({

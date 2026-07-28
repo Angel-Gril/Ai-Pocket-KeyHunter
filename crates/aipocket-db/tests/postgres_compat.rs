@@ -453,6 +453,25 @@ async fn repository_resume_append_balance_and_high_value_paths_persist() {
         .unwrap();
     assert_eq!(unavailable[0]["manual_status"], "unavailable");
     let (restored, skipped) = repo
+        .transition_results(&[result_id], "valid", "restore before automatic expiry")
+        .await
+        .unwrap();
+    assert_eq!(restored, [result_id]);
+    assert!(skipped.is_empty());
+    assert!(
+        repo.mark_result_expired(result_id, "deepseek", 401)
+            .await
+            .unwrap()
+    );
+    let expired = repo
+        .run_records(&run_id, "unavailable", false)
+        .await
+        .unwrap();
+    assert_eq!(expired[0]["manual_status"], "unavailable");
+    assert_eq!(expired[0]["validation_state"], "expired");
+    assert_eq!(expired[0]["status_code"], 401);
+    assert_eq!(expired[0]["valid"], false);
+    let (restored, skipped) = repo
         .transition_results(&[result_id], "valid", "manual restore")
         .await
         .unwrap();

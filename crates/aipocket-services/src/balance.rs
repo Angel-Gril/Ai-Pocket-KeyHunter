@@ -25,6 +25,21 @@ pub struct BalanceResult {
     pub alive: Option<bool>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ModelsProbeResult {
+    pub models: Vec<String>,
+    pub status_code: Option<u16>,
+    pub provider: String,
+    pub key_state: String,
+    pub error: String,
+}
+
+impl ModelsProbeResult {
+    pub fn is_definitive_auth_rejection(&self) -> bool {
+        matches!(self.status_code, Some(401 | 403))
+    }
+}
+
 #[derive(Clone)]
 pub struct BalanceService {
     http: reqwest::Client,
@@ -148,6 +163,17 @@ impl BalanceService {
         let (status, payload, _) = self
             .get_json(format!("{}/user/balance", strip_v1(base)), credential, &[])
             .await?;
+        if matches!(status, 401 | 403) {
+            let mut result = probe_result(
+                "deepseek",
+                "deepseek:unauthorized",
+                "liveness",
+                "",
+                json!({"status_code":status,"response":payload}),
+            );
+            result.alive = Some(false);
+            return Ok(result);
+        }
         if status != 200 {
             return Ok(Default::default());
         }
@@ -1264,14 +1290,46 @@ impl BalanceService {
         Ok(Some((status, payload, headers)))
     }
 
-    pub async fn models(&self, credential: Credential) -> Result<Vec<String>> {
+    pub async fn probe_models(&self, credential: Credential) -> Result<ModelsProbeResult> {
+        let provider = self
+            .registry
+            .resolve(&credential.apiurl, &credential.apikey)
+            .spec
+            .name
+            .to_owned();
         let Some((status, payload, _)) = self.models_response(credential).await? else {
-            return Ok(Vec::new());
+            return Ok(ModelsProbeResult {
+                provider,
+                key_state: "unavailable".into(),
+                error: "invalid credential or API URL".into(),
+                ..Default::default()
+            });
         };
-        if !(200..300).contains(&status) {
-            return Ok(Vec::new());
-        }
-        Ok(model_ids(&payload))
+        let models = if (200..300).contains(&status) {
+            model_ids(&payload)
+        } else {
+            Vec::new()
+        };
+        let (key_state, error) = match status {
+            200..=299 if models.is_empty() => {
+                ("invalid_response", "model list response had no models")
+            }
+            200..=299 => ("active", ""),
+            401 | 403 => ("expired", "credential expired or revoked"),
+            429 => ("rate_limited", "provider rate limited the request"),
+            _ => ("unavailable", "provider request failed"),
+        };
+        Ok(ModelsProbeResult {
+            models,
+            status_code: Some(status),
+            provider,
+            key_state: key_state.into(),
+            error: error.into(),
+        })
+    }
+
+    pub async fn models(&self, credential: Credential) -> Result<Vec<String>> {
+        Ok(self.probe_models(credential).await?.models)
     }
 
     pub async fn test_chat(&self, credential: Credential, model: &str) -> Result<ChatProbeResult> {
@@ -2242,6 +2300,52 @@ mod tests {
             .await
             .unwrap();
         assert!(!failed.matched);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn deepseek_auth_rejection_is_typed_as_expired_and_dead() {
+        use axum::{Json, Router, extract::Request, http::StatusCode, routing::get};
+
+        async fn fixture(request: Request) -> (StatusCode, Json<Value>) {
+            match request.uri().path() {
+                "/v1/models" | "/user/balance" | "/deepseek/user/balance" => (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error":{"message":"Authentication Fails"}})),
+                ),
+                _ => (StatusCode::NOT_FOUND, Json(json!({}))),
+            }
+        }
+
+        let app = Router::new().fallback(get(fixture));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let service = BalanceService::new(
+            reqwest::Client::builder()
+                .resolve("api.deepseek.com", address)
+                .build()
+                .unwrap(),
+        );
+        let credential = Credential {
+            apikey: "sk-expired-fixture".into(),
+            apiurl: format!("http://api.deepseek.com:{}", address.port()),
+            host: "https://api.deepseek.com".into(),
+            product: "deepseek".into(),
+            ..Default::default()
+        };
+
+        let models = service.probe_models(credential.clone()).await.unwrap();
+        assert!(models.models.is_empty());
+        assert_eq!(models.provider, "deepseek");
+        assert_eq!(models.status_code, Some(401));
+        assert_eq!(models.key_state, "expired");
+        assert!(models.is_definitive_auth_rejection());
+
+        let balance = service.query(&credential).await.unwrap();
+        assert!(balance.matched);
+        assert_eq!(balance.source, "deepseek:unauthorized");
+        assert_eq!(balance.alive, Some(false));
         server.abort();
     }
 

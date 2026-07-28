@@ -885,6 +885,73 @@ impl Repository {
         Ok((transitioned, skipped))
     }
 
+    pub async fn mark_result_expired(
+        &self,
+        result_id: i64,
+        provider: &str,
+        status_code: u16,
+    ) -> Result<bool> {
+        let pool = self.require_pool()?;
+        let mut transaction = pool.begin().await?;
+        let Some(row) = sqlx::query(
+            "SELECT run_id,apikey,record FROM results WHERE id=$1 AND kind IN ('valid','suspicious') FOR UPDATE",
+        )
+        .bind(result_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        else {
+            transaction.commit().await?;
+            return Ok(false);
+        };
+        let run_id: String = row.try_get("run_id")?;
+        let apikey = row
+            .try_get::<Option<String>, _>("apikey")?
+            .unwrap_or_default();
+        let mut record: Value = row.try_get("record")?;
+        let object = record
+            .as_object_mut()
+            .context("result record must be an object")?;
+        object.insert("manual_status".into(), Value::String("unavailable".into()));
+        object.insert(
+            "manual_status_note".into(),
+            Value::String("automatic: provider rejected credential".into()),
+        );
+        object.insert(
+            "manual_status_updated_at".into(),
+            Value::String(Utc::now().to_rfc3339()),
+        );
+        object.insert("valid".into(), Value::Bool(false));
+        object.insert("validation_state".into(), Value::String("expired".into()));
+        object.insert("suspicious".into(), Value::Bool(false));
+        object.insert("status_code".into(), Value::from(i64::from(status_code)));
+        object.insert(
+            "error".into(),
+            Value::String(format!("{provider}: credential expired or revoked")),
+        );
+        let next_seq: i32 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq)+1,0) FROM results WHERE run_id=$1 AND kind='unavailable'",
+        )
+        .bind(&run_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE results SET kind='unavailable',seq=$2,valid=false,record=$3 WHERE id=$1",
+        )
+        .bind(result_id)
+        .bind(next_seq)
+        .bind(&record)
+        .execute(&mut *transaction)
+        .await?;
+        if !apikey.is_empty() {
+            sqlx::query("DELETE FROM high_value_keys WHERE apikey=$1")
+                .bind(&apikey)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        transaction.commit().await?;
+        Ok(true)
+    }
+
     pub async fn append_results(&self, run_id: &str, kind: &str, rows: &[Value]) -> Result<()> {
         let Some(pool) = self.pool() else {
             return Ok(());

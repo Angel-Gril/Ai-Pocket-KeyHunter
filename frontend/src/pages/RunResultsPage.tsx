@@ -201,10 +201,33 @@ export default function RunResultsPage() {
       if (stateRef.current.records[index] === undefined) return
       setRowBusy(key, { models: true })
       try {
+        const rec = stateRef.current.records[index]
         const { apikey, apiurl } = await ensureRevealed(index)
-        const res = await modelsAsync({ apikey, apiurl })
+        const res = await modelsAsync({
+          apikey,
+          apiurl,
+          result_id: typeof rec?.result_id === "number" ? rec.result_id : undefined,
+        })
         setModels((prev) => ({ ...prev, [key]: res.models }))
         setExpanded((prev) => new Set(prev).add(key))
+        if (res.key_state === "expired") {
+          setSelected((prev) => {
+            const next = new Set(prev)
+            next.delete(index)
+            return next
+          })
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["run", runId, stateRef.current.kind] }),
+            queryClient.invalidateQueries({ queryKey: ["keys"] }),
+            queryClient.invalidateQueries({ queryKey: ["high-value"] }),
+            queryClient.invalidateQueries({ queryKey: ["runs"] }),
+          ])
+          toast.error("密钥已过期", { description: "Provider 返回认证失败，已自动移至不可用。" })
+        } else if (res.models.length === 0) {
+          toast.warning("未获取到模型", {
+            description: res.key_state === "rate_limited" ? "Provider 当前限流，密钥状态未变。" : res.error,
+          })
+        }
       } catch (err) {
         setModels((prev) => ({ ...prev, [key]: [] }))
         toast.error("加载模型失败", { description: errorMessage(err, "无法获取模型列表") })
@@ -212,7 +235,7 @@ export default function RunResultsPage() {
         setRowBusy(key, { models: false })
       }
     },
-    [ensureRevealed, modelsAsync, setRowBusy],
+    [ensureRevealed, modelsAsync, queryClient, runId, setRowBusy],
   )
 
   const handleBalance = useCallback(
@@ -228,6 +251,21 @@ export default function RunResultsPage() {
           apiurl,
           result_id: resultId,
         })
+        if (res.key_state === "expired") {
+          setSelected((prev) => {
+            const next = new Set(prev)
+            next.delete(index)
+            return next
+          })
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["run", runId, stateRef.current.kind] }),
+            queryClient.invalidateQueries({ queryKey: ["keys"] }),
+            queryClient.invalidateQueries({ queryKey: ["high-value"] }),
+            queryClient.invalidateQueries({ queryKey: ["runs"] }),
+          ])
+          toast.error("密钥已过期", { description: "余额接口返回认证失败，已自动移至不可用。" })
+          return
+        }
         const balanceLabel = formatBalance(res.balance_usd)
         const tierLabel = res.tier?.trim() || undefined
         setBalances((prev) => ({

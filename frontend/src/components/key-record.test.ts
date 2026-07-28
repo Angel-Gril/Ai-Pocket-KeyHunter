@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { extractKeyFields } from "@/components/key-record"
+import { deriveKeyStatus, extractKeyFields } from "@/components/key-record"
 import { providerBrand } from "@/components/provider-badge"
 import { applyBatchBalanceResults } from "@/lib/batch-balance"
 import type { BatchBalanceResponse, KeyRecord } from "@/lib/api"
@@ -77,6 +77,16 @@ describe("key display fields", () => {
   )
 })
 
+
+describe("key status labels", () => {
+  it("shows definitive provider rejection as expired", () => {
+    expect(
+      deriveKeyStatus(
+        record({ valid: false, validation_state: "expired", status_code: 401 }),
+      ),
+    ).toEqual({ variant: "danger", label: "已过期" })
+  })
+})
 describe("batch balance display updates", () => {
   it("applies successful returned balances by result_id and leaves failures unchanged", () => {
     const records = [

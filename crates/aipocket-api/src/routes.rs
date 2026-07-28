@@ -462,6 +462,9 @@ struct KeyRef {
     apikey: String,
     #[serde(default)]
     apiurl: String,
+    result_id: Option<i64>,
+    #[serde(default)]
+    high_value: bool,
 }
 async fn key_models(
     _: Auth,
@@ -475,15 +478,38 @@ async fn key_models(
             "apikey required",
         ));
     }
-    let models = s
+    let probe = s
         .balance
-        .models(Credential {
+        .probe_models(Credential {
             apikey: b.apikey,
             apiurl: b.apiurl,
             ..Default::default()
         })
         .await?;
-    Ok(Json(json!({"models":models})))
+    let expired = if probe.is_definitive_auth_rejection() {
+        if let Some(result_id) = b.result_id {
+            s.repository
+                .mark_result_expired(
+                    result_id,
+                    &probe.provider,
+                    probe.status_code.unwrap_or_default(),
+                )
+                .await?
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    Ok(Json(json!({
+        "models":probe.models,
+        "status_code":probe.status_code,
+        "provider":probe.provider,
+        "key_state":probe.key_state,
+        "error":probe.error,
+        "expired":expired,
+        "high_value_removed":b.high_value && expired
+    })))
 }
 #[derive(Deserialize)]
 struct BalanceRequest {
@@ -494,6 +520,18 @@ struct BalanceRequest {
     #[serde(default)]
     high_value: bool,
 }
+fn definitive_expiry(probe: &aipocket_services::BalanceResult) -> Option<u16> {
+    if probe.alive != Some(false) || probe.provider != "deepseek" {
+        return None;
+    }
+    probe
+        .detail
+        .get("status_code")
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .filter(|status| matches!(status, 401 | 403))
+}
+
 async fn probe_and_persist_balance(
     s: &AppState,
     credential: Credential,
@@ -502,6 +540,27 @@ async fn probe_and_persist_balance(
 ) -> Result<Value, ApiError> {
     let r = s.balance.query(&credential).await?;
     let evidence = serde_json::to_value(&r).map_err(ApiError::internal)?;
+    if let Some(status_code) = definitive_expiry(&r) {
+        let expired = if let Some(result_id) = result_id {
+            s.repository
+                .mark_result_expired(result_id, &r.provider, status_code)
+                .await?
+        } else {
+            false
+        };
+        return Ok(json!({
+            "gateway":r.gateway,
+            "balance_usd":"",
+            "tier":"",
+            "detail":evidence,
+            "persisted":false,
+            "result_id":result_id,
+            "high_value_updated":false,
+            "key_state":"expired",
+            "expired":expired,
+            "high_value_removed":high_value && expired
+        }));
+    }
     if !r.matched {
         return Ok(json!({
             "gateway":"unsupported",
@@ -642,6 +701,11 @@ async fn keys_balance(
                     );
                 };
                 match probe_and_persist_balance(&state, credential, Some(result_id), false).await {
+                    Ok(value) if value["key_state"] == "expired" => json!({
+                        "result_id":result_id,
+                        "ok":false,
+                        "error":"credential expired or revoked"
+                    }),
                     Ok(value) => json!({"result_id":result_id,"ok":true,"balance":value}),
                     Err(error) => json!({"result_id":result_id,"ok":false,"error":error.message}),
                 }
@@ -1205,6 +1269,7 @@ async fn check_github(_: Auth, State(s): State<AppState>) -> Json<Value> {
         ),
         Err(e) => {
             let detail = e.to_string();
+
             let message = if detail.contains("Bad credentials") {
                 format!("GitHub token 无效或已撤销。{detail}")
             } else if detail.contains("rate limit") || detail.contains("remaining=0") {
@@ -1261,6 +1326,35 @@ fn discovery_queries(
     shodan.sort();
     shodan.dedup();
     (fofa, shodan)
+}
+
+#[cfg(test)]
+mod key_probe_tests {
+    use super::*;
+
+    #[test]
+    fn only_definitive_deepseek_auth_rejection_expires_a_key() {
+        let probe = |provider: &str, status_code: u16, alive| aipocket_services::BalanceResult {
+            provider: provider.into(),
+            alive,
+            detail: json!({"status_code":status_code}),
+            ..Default::default()
+        };
+        assert_eq!(
+            definitive_expiry(&probe("deepseek", 401, Some(false))),
+            Some(401)
+        );
+        assert_eq!(
+            definitive_expiry(&probe("deepseek", 403, Some(false))),
+            Some(403)
+        );
+        assert_eq!(
+            definitive_expiry(&probe("deepseek", 429, Some(false))),
+            None
+        );
+        assert_eq!(definitive_expiry(&probe("deepseek", 401, Some(true))), None);
+        assert_eq!(definitive_expiry(&probe("openai", 401, Some(false))), None);
+    }
 }
 
 #[cfg(test)]
