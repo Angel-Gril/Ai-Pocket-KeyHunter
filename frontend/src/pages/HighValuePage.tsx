@@ -5,7 +5,7 @@ import { toast } from "sonner"
 import { api, type ChatResponse, type ExportFormat, type KeyRecord } from "@/lib/api"
 import { ChatTestDialog } from "@/components/chat-test-dialog"
 import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
-import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
+import { BulkBar, CenterState, IndexedKeyRow, KeyPagination, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
 import { extractKeyFields, formatBalance, providerOf } from "@/components/key-record"
 
@@ -28,8 +28,10 @@ export default function HighValuePage() {
   const [busy, setBusy] = useState<Record<string, RowBusy>>({})
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
 
-  const actionWidth = 470
+  const actionWidth = 360
   const { table, columnSizeVars, sizingContainerRef } = useKeyTableSizing(actionWidth)
 
   const { data, isLoading, isError, error } = useQuery({
@@ -60,11 +62,17 @@ export default function HighValuePage() {
 
   const listView = useKeyListView(records, balanceOverrides)
   const { rows } = listView
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const pageRows = useMemo(
+    () => rows.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [rows, currentPage, pageSize],
+  )
 
   // Row identity key = masked apikey. Snapshot state in a ref so the row
   // callbacks stay stable and the memoized `IndexedKeyRow`s don't all re-render.
-  const stateRef = useRef({ records, revealed, rows })
-  stateRef.current = { records, revealed, rows }
+  const stateRef = useRef({ records, revealed, rows: pageRows })
+  stateRef.current = { records, revealed, rows: pageRows }
 
   const maskedAt = useCallback((index: number): string => {
     const rec = stateRef.current.records[index]
@@ -249,6 +257,17 @@ export default function HighValuePage() {
     })
   }, [])
 
+  const changePage = useCallback((nextPage: number) => {
+    setPage(nextPage)
+    setSelected(new Set())
+  }, [])
+
+  const changePageSize = useCallback((nextPageSize: number) => {
+    setPageSize(nextPageSize)
+    setPage(1)
+    setSelected(new Set())
+  }, [])
+
   const openChat = useCallback(
     (index: number) => {
       setChatResult(null)
@@ -301,7 +320,7 @@ export default function HighValuePage() {
   const markUnavailable = useCallback((index: number) => statusMutation.mutate({ index, status: "unavailable" }), [statusMutation])
 
 
-  const visibleIndices = useMemo(() => rows.map((r) => r.originalIndex), [rows])
+  const visibleIndices = useMemo(() => pageRows.map((r) => r.originalIndex), [pageRows])
   const allChecked =
     visibleIndices.length > 0 && visibleIndices.every((i) => selected.has(i))
 
@@ -322,7 +341,7 @@ export default function HighValuePage() {
   } else {
     body = (
       <div>
-        {rows.map(({ fields, status, originalIndex }) => {
+        {pageRows.map(({ fields, status, originalIndex }) => {
           const key = fields.maskedKey
           const reveal = revealed[key]
           const balanceInfo = balances[key]
@@ -402,21 +421,21 @@ export default function HighValuePage() {
 
       <KeyListToolbar
         search={listView.search}
-        onSearchChange={listView.setSearch}
+        onSearchChange={(value) => { listView.setSearch(value); changePage(1) }}
         provider={listView.provider}
-        onProviderChange={listView.setProvider}
+        onProviderChange={(value) => { listView.setProvider(value); changePage(1) }}
         providers={listView.providers}
         balanceSort={listView.balanceSort}
-        onBalanceSortChange={listView.setBalanceSort}
+        onBalanceSortChange={(value) => { listView.setBalanceSort(value); changePage(1) }}
         filteredCount={listView.filteredCount}
         total={listView.total}
         hasActiveFilters={listView.hasActiveFilters}
-        onClear={listView.clearFilters}
+        onClear={() => { listView.clearFilters(); changePage(1) }}
       />
 
       <BulkBar
-        selectedCount={selected.size}
-        total={rows.length}
+        selectedCount={visibleIndices.filter((index) => selected.has(index)).length}
+        total={pageRows.length}
         allChecked={allChecked}
         onToggleAll={handleToggleAll}
         onExport={(format) => void runExport(format)}
@@ -434,6 +453,13 @@ export default function HighValuePage() {
           {body}
         </div>
       </div>
+      <KeyPagination
+        page={currentPage}
+        pageSize={pageSize}
+        totalItems={rows.length}
+        onPageChange={changePage}
+        onPageSizeChange={changePageSize}
+      />
 
       <ChatTestDialog
         open={chatIndex !== null}

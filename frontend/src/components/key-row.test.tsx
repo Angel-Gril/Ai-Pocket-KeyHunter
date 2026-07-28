@@ -68,9 +68,12 @@ describe("provider evidence presentation", () => {
         onMarkUnavailable={onMarkUnavailable}
       />,
     )
-    await user.click(screen.getByRole("button", { name: "标为可用" }))
-    await user.click(screen.getByRole("button", { name: "标为疑似" }))
-    await user.click(screen.getByRole("button", { name: "标为不可用" }))
+    await user.click(screen.getByRole("button", { name: "更改状态" }))
+    await user.click(screen.getByRole("menuitem", { name: /^可用/ }))
+    await user.click(screen.getByRole("button", { name: "更改状态" }))
+    await user.click(screen.getByRole("menuitem", { name: /疑似/ }))
+    await user.click(screen.getByRole("button", { name: "更改状态" }))
+    await user.click(screen.getByRole("menuitem", { name: /^不可用/ }))
     expect(onMarkValid).toHaveBeenCalledOnce()
     expect(onMarkSuspicious).toHaveBeenCalledOnce()
     expect(onMarkUnavailable).toHaveBeenCalledOnce()

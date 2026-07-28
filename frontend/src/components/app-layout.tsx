@@ -4,13 +4,40 @@ import { Outlet, useLocation } from "react-router-dom"
 import { Sidebar } from "@/components/sidebar"
 import { navLabelForPath } from "@/lib/navigation"
 
+const SIDEBAR_COLLAPSED_KEY = "aipocket.sidebar.collapsed.v1"
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true"
+  } catch {
+    return false
+  }
+}
+
+function writeSidebarCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed))
+  } catch {
+    // Storage can be unavailable in hardened browsers; in-memory state still works.
+  }
+}
 export function AppLayout() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed)
+  const handleSidebarCollapsedChange = (collapsed: boolean) => {
+    setSidebarCollapsed(collapsed)
+    writeSidebarCollapsed(collapsed)
+  }
   const location = useLocation()
 
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-surface-base text-text-primary">
-      <Sidebar mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)} />
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        mobileOpen={mobileNavOpen}
+        onCollapsedChange={handleSidebarCollapsedChange}
+        onMobileClose={() => setMobileNavOpen(false)}
+      />
       {mobileNavOpen ? (
         <button
           type="button"

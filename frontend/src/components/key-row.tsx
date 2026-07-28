@@ -1,5 +1,6 @@
 import { useState } from "react"
-import { Check, ChevronDown, CircleOff, Copy, Eye, EyeOff, List, Loader2, MessageSquare, ShieldQuestion, Wallet } from "lucide-react"
+import { Check, ChevronDown, CircleOff, Copy, Eye, EyeOff, List, Loader2, MessageSquare, RefreshCw, ShieldQuestion, Wallet } from "lucide-react"
+import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ProviderBadge } from "@/components/provider-badge"
 import { colCellClass, colStyle, colWidthStyle } from "@/components/key-table-columns"
@@ -126,6 +127,69 @@ function KeyCell({
   )
 }
 
+interface StatusActionMenuProps {
+  onMarkValid?: () => void
+  onMarkUnavailable?: () => void
+  onMarkSuspicious?: () => void
+  pending?: boolean
+}
+
+function StatusActionMenu({
+  onMarkValid,
+  onMarkUnavailable,
+  onMarkSuspicious,
+  pending,
+}: Readonly<StatusActionMenuProps>) {
+  if (!onMarkValid && !onMarkSuspicious && !onMarkUnavailable) return null
+
+  const itemClass = "flex cursor-default select-none items-center gap-3 rounded-sm px-2.5 py-2 outline-none transition-colors focus:bg-surface-overlay"
+  return (
+    <DropdownMenuPrimitive.Root>
+      <DropdownMenuPrimitive.Trigger asChild>
+        <button
+          type="button"
+          disabled={pending}
+          aria-label="更改状态"
+          className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm border border-border-primary bg-surface-raised px-2 py-1.5 font-sans text-xs font-medium text-text-secondary transition-colors hover:border-accent/40 hover:bg-accent-dim hover:text-accent disabled:opacity-50 xl:px-2.5"
+        >
+          {pending ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+          <span className="hidden xl:inline">更改状态</span>
+          <ChevronDown className="size-3 text-text-muted" />
+        </button>
+      </DropdownMenuPrimitive.Trigger>
+      <DropdownMenuPrimitive.Portal>
+        <DropdownMenuPrimitive.Content
+          align="end"
+          sideOffset={6}
+          className="z-50 min-w-52 rounded-md border border-border-primary bg-surface-raised p-1.5 shadow-lg outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0"
+        >
+          <DropdownMenuPrimitive.Label className="px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-text-muted">
+            更改密钥状态
+          </DropdownMenuPrimitive.Label>
+          {onMarkValid ? (
+            <DropdownMenuPrimitive.Item onSelect={onMarkValid} className={itemClass}>
+              <span className="flex size-7 items-center justify-center rounded-full bg-success-dim text-success"><Check className="size-3.5" /></span>
+              <span className="flex flex-col"><span className="text-xs font-medium text-text-primary">可用</span><span className="text-[11px] text-text-muted">验证通过，可继续使用</span></span>
+            </DropdownMenuPrimitive.Item>
+          ) : null}
+          {onMarkSuspicious ? (
+            <DropdownMenuPrimitive.Item onSelect={onMarkSuspicious} className={itemClass}>
+              <span className="flex size-7 items-center justify-center rounded-full bg-warning-dim text-warning"><ShieldQuestion className="size-3.5" /></span>
+              <span className="flex flex-col"><span className="text-xs font-medium text-text-primary">疑似</span><span className="text-[11px] text-text-muted">保留记录，等待复核</span></span>
+            </DropdownMenuPrimitive.Item>
+          ) : null}
+          {onMarkUnavailable ? (
+            <DropdownMenuPrimitive.Item onSelect={onMarkUnavailable} className={itemClass}>
+              <span className="flex size-7 items-center justify-center rounded-full bg-danger-dim text-danger"><CircleOff className="size-3.5" /></span>
+              <span className="flex flex-col"><span className="text-xs font-medium text-text-primary">不可用</span><span className="text-[11px] text-text-muted">停止后续使用</span></span>
+            </DropdownMenuPrimitive.Item>
+          ) : null}
+        </DropdownMenuPrimitive.Content>
+      </DropdownMenuPrimitive.Portal>
+    </DropdownMenuPrimitive.Root>
+  )
+}
+
 interface RowActionsProps {
   onLoadModels?: () => void
   onBalance?: () => void
@@ -163,18 +227,15 @@ function RowActions({
       {onBalance ? (
         <ActionButton icon={<Wallet className="size-3.5 shrink-0" />} label="余额" onClick={onBalance} loading={busy?.balance} />
       ) : null}
-      {onMarkValid ? (
-        <ActionButton icon={<Check className="size-3.5 shrink-0" />} label="标为可用" onClick={onMarkValid} loading={statusPending} />
-      ) : null}
-      {onMarkSuspicious ? (
-        <ActionButton icon={<ShieldQuestion className="size-3.5 shrink-0" />} label="标为疑似" onClick={onMarkSuspicious} loading={statusPending} />
-      ) : null}
-      {onMarkUnavailable ? (
-        <ActionButton icon={<CircleOff className="size-3.5 shrink-0" />} label="标为不可用" onClick={onMarkUnavailable} loading={statusPending} />
-      ) : null}
       {onChat ? (
         <ActionButton icon={<MessageSquare className="size-3.5 shrink-0" />} label="测对话" onClick={onChat} loading={busy?.chat} />
       ) : null}
+      <StatusActionMenu
+        onMarkValid={onMarkValid}
+        onMarkSuspicious={onMarkSuspicious}
+        onMarkUnavailable={onMarkUnavailable}
+        pending={statusPending}
+      />
       {canExpand ? (
         <button
           type="button"

@@ -8,6 +8,8 @@ import {
   LayoutList,
   type LucideIcon,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
   Radar,
   Server,
   Settings,
@@ -19,6 +21,7 @@ import { api, type ScanStatusResponse } from "@/lib/api"
 import { useTheme } from "@/providers/theme-provider"
 import { cn } from "@/lib/utils"
 import { NAV_ITEMS } from "@/lib/navigation"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 interface NavItem {
   to: string
@@ -79,10 +82,17 @@ function formatHint(status: ScanStatusResponse | undefined): string {
 
 interface SidebarProps {
   mobileOpen?: boolean
+  collapsed?: boolean
+  onCollapsedChange?: (collapsed: boolean) => void
   onMobileClose?: () => void
 }
 
-export function Sidebar({ mobileOpen = false, onMobileClose }: Readonly<SidebarProps>) {
+export function Sidebar({
+  collapsed = false,
+  mobileOpen = false,
+  onCollapsedChange,
+  onMobileClose,
+}: Readonly<SidebarProps>) {
   const { theme, toggleTheme } = useTheme()
   const { data: status } = useQuery({
     queryKey: ["scan-status"],
@@ -99,67 +109,97 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: Readonly<SidebarP
   return (
     <aside
       aria-label="主导航"
+      data-collapsed={collapsed}
       className={cn(
-        "fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(19rem,86vw)] shrink-0 flex-col border-r border-border-primary bg-surface-raised transition-transform duration-200 md:static md:h-full md:w-62 md:translate-x-0",
+        "fixed inset-y-0 left-0 z-50 flex h-dvh w-[min(19rem,86vw)] shrink-0 flex-col border-r border-border-primary bg-surface-raised transition-[width,transform] duration-200 md:static md:h-full md:translate-x-0",
+        collapsed ? "md:w-[76px]" : "md:w-62",
         mobileOpen ? "translate-x-0" : "invisible -translate-x-full md:visible",
       )}
     >
-      <div className="flex min-h-14 items-center gap-2.5 border-b border-border-subtle px-4 md:px-5 md:py-6">
-        <span className="size-2.5 rounded-full bg-accent" />
-        <span className="flex-1 font-mono text-[17px] font-semibold tracking-[-0.3px] text-text-primary">
+      <div className={cn("flex min-h-14 items-center gap-2.5 border-b border-border-subtle px-4 md:py-6", collapsed ? "md:px-3" : "md:px-5")}>
+        <span className="size-2.5 shrink-0 rounded-full bg-accent" />
+        <span className={cn("flex-1 font-mono text-[17px] font-semibold tracking-[-0.3px] text-text-primary", collapsed && "md:hidden")}>
           aipocket
         </span>
         <button
           type="button"
+          onClick={() => onCollapsedChange?.(!collapsed)}
+          aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+          aria-expanded={!collapsed}
+          className="hidden size-8 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-overlay hover:text-text-primary md:flex"
+        >
+          {collapsed ? <PanelLeftOpen className="size-[18px]" /> : <PanelLeftClose className="size-[18px]" />}
+        </button>
+        <button
+          type="button"
           onClick={onMobileClose}
           aria-label="关闭导航"
-          className="flex size-11 items-center justify-center rounded-md text-text-secondary hover:bg-surface-overlay hover:text-text-primary md:hidden"
+          className="ml-auto flex size-11 items-center justify-center rounded-md text-text-secondary hover:bg-surface-overlay hover:text-text-primary md:hidden"
         >
           <X className="size-5" />
         </button>
       </div>
 
-      <nav className="flex flex-col gap-1 overflow-y-auto px-3 py-3 md:py-4">
+      <nav className={cn("flex flex-col gap-1 overflow-y-auto px-3 py-3 md:py-4", collapsed && "md:px-2")}>
         {SIDEBAR_ITEMS.map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            onClick={onMobileClose}
-            className={({ isActive }) =>
-              cn(
-                "flex min-h-11 items-center gap-3 rounded-sm px-3 py-2.5 text-sm transition-colors",
-                isActive
-                  ? "bg-accent-dim font-semibold text-accent"
-                  : "text-text-secondary hover:text-text-primary",
-              )
-            }
-          >
-            <Icon className="size-[18px]" />
-            {label}
-          </NavLink>
+          <Tooltip key={to}>
+            <TooltipTrigger asChild>
+              <NavLink
+                to={to}
+                onClick={onMobileClose}
+                aria-label={collapsed ? label : undefined}
+                className={({ isActive }) =>
+                  cn(
+                    "flex min-h-11 items-center gap-3 rounded-sm px-3 py-2.5 text-sm transition-colors",
+                    collapsed && "md:justify-center md:px-0",
+                    isActive
+                      ? "bg-accent-dim font-semibold text-accent"
+                      : "text-text-secondary hover:bg-surface-overlay hover:text-text-primary",
+                  )
+                }
+              >
+                <Icon className="size-[18px] shrink-0" />
+                <span className={cn(collapsed && "md:hidden")}>{label}</span>
+              </NavLink>
+            </TooltipTrigger>
+            {collapsed ? <TooltipContent side="right" sideOffset={8}>{label}</TooltipContent> : null}
+          </Tooltip>
         ))}
       </nav>
 
       <div className="flex-1" />
 
-      <div className="flex flex-col gap-2 border-t border-border-subtle px-5 py-4">
-        <div className="flex items-center gap-2">
-          <span className={cn("size-2 rounded-full", display.dot, display.pulse && "animate-pulse")} />
-          <span className="font-mono text-xs text-text-secondary">{display.label}</span>
-        </div>
-        <span className="font-mono text-[11px] text-text-muted">{display.hint}</span>
-      </div>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className={cn("flex flex-col gap-2 border-t border-border-subtle px-5 py-4", collapsed && "md:items-center md:px-2")}>
+            <div className="flex items-center gap-2">
+              <span className={cn("size-2 shrink-0 rounded-full", display.dot, display.pulse && "animate-pulse")} />
+              <span className={cn("font-mono text-xs text-text-secondary", collapsed && "md:hidden")}>{display.label}</span>
+            </div>
+            <span className={cn("font-mono text-[11px] text-text-muted", collapsed && "md:hidden")}>{display.hint}</span>
+          </div>
+        </TooltipTrigger>
+        {collapsed ? <TooltipContent side="right" sideOffset={8}>{display.label} · {display.hint}</TooltipContent> : null}
+      </Tooltip>
 
-      <div className="border-t border-border-subtle px-3 py-2 md:py-3">
-        <button
-          type="button"
-          onClick={toggleTheme}
-          aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
-          className="flex min-h-11 w-full items-center gap-3 rounded-sm px-3 py-2.5 text-sm text-text-secondary transition-colors hover:bg-surface-overlay hover:text-text-primary"
-        >
-          {theme === "dark" ? <Sun className="size-[18px]" /> : <Moon className="size-[18px]" />}
-          {theme === "dark" ? "浅色主题" : "深色主题"}
-        </button>
+      <div className={cn("border-t border-border-subtle px-3 py-2 md:py-3", collapsed && "md:px-2")}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+              className={cn(
+                "flex min-h-11 w-full items-center gap-3 rounded-sm px-3 py-2.5 text-sm text-text-secondary transition-colors hover:bg-surface-overlay hover:text-text-primary",
+                collapsed && "md:justify-center md:px-0",
+              )}
+            >
+              {theme === "dark" ? <Sun className="size-[18px] shrink-0" /> : <Moon className="size-[18px] shrink-0" />}
+              <span className={cn(collapsed && "md:hidden")}>{theme === "dark" ? "浅色主题" : "深色主题"}</span>
+            </button>
+          </TooltipTrigger>
+          {collapsed ? <TooltipContent side="right" sideOffset={8}>{theme === "dark" ? "浅色主题" : "深色主题"}</TooltipContent> : null}
+        </Tooltip>
       </div>
     </aside>
   )

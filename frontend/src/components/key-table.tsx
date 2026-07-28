@@ -1,5 +1,5 @@
 import { memo, useCallback } from "react"
-import { Download, Loader2 } from "lucide-react"
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Loader2 } from "lucide-react"
 import type { Header, Table } from "@tanstack/react-table"
 import { BalanceHelpButton } from "@/components/balance-help"
 import { KeyRow, type KeyRowProps } from "@/components/key-row"
@@ -162,6 +162,67 @@ export function BulkBar({
         disabled={total === 0}
         label={exportLabel}
       />
+    </div>
+  )
+}
+
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
+
+export interface KeyPaginationProps {
+  page: number
+  pageSize: number
+  totalItems: number
+  onPageChange: (page: number) => void
+  onPageSizeChange: (pageSize: number) => void
+}
+
+export function KeyPagination({
+  page,
+  pageSize,
+  totalItems,
+  onPageChange,
+  onPageSizeChange,
+}: Readonly<KeyPaginationProps>) {
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize))
+  const currentPage = Math.min(Math.max(page, 1), totalPages)
+  const pageStart = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1
+  const pageEnd = Math.min(currentPage * pageSize, totalItems)
+  const pageButton = "inline-flex size-8 items-center justify-center rounded-sm border border-border-primary text-text-muted transition-colors hover:bg-surface-overlay hover:text-text-primary disabled:pointer-events-none disabled:opacity-40"
+
+  return (
+    <div className="flex shrink-0 flex-col gap-3 border-t border-border-primary bg-surface-raised px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 md:px-8">
+      <div className="flex items-center gap-2 font-mono text-[11px] text-text-muted">
+        <span>显示 {pageStart}–{pageEnd} / 共 {totalItems} 条</span>
+        <Select value={String(pageSize)} onValueChange={(value) => onPageSizeChange(Number(value))}>
+          <SelectTrigger className="h-8 w-[92px] border-border-primary bg-surface-overlay font-mono text-[11px]" aria-label="每页条数">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {PAGE_SIZE_OPTIONS.map((size) => (
+              <SelectItem key={size} value={String(size)} className="font-mono text-xs">
+                {size} 条/页
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <nav className="flex items-center gap-1" aria-label="密钥列表分页">
+        <button type="button" onClick={() => onPageChange(1)} disabled={currentPage === 1} className={pageButton} aria-label="第一页">
+          <ChevronsLeft className="size-3.5" />
+        </button>
+        <button type="button" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 1} className={pageButton} aria-label="上一页">
+          <ChevronLeft className="size-3.5" />
+        </button>
+        <span className="min-w-20 px-2 text-center font-mono text-[11px] text-text-secondary">
+          第 {currentPage} / {totalPages} 页
+        </span>
+        <button type="button" onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === totalPages} className={pageButton} aria-label="下一页">
+          <ChevronRight className="size-3.5" />
+        </button>
+        <button type="button" onClick={() => onPageChange(totalPages)} disabled={currentPage === totalPages} className={pageButton} aria-label="最后一页">
+          <ChevronsRight className="size-3.5" />
+        </button>
+      </nav>
     </div>
   )
 }

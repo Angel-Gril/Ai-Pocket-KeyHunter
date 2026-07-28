@@ -11,7 +11,7 @@ import {
 } from "@/lib/api"
 import { ChatTestDialog } from "@/components/chat-test-dialog"
 import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
-import { BulkBar, CenterState, IndexedKeyRow, KeyTableHeader } from "@/components/key-table"
+import { BulkBar, CenterState, IndexedKeyRow, KeyPagination, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
 import { extractKeyFields, formatBalance } from "@/components/key-record"
 import { cn, copyToClipboard } from "@/lib/utils"
@@ -38,8 +38,10 @@ export default function AllKeysPage() {
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [exporting, setExporting] = useState(false)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
 
-  const actionWidth = 470
+  const actionWidth = 360
   const { table, columnSizeVars, sizingContainerRef } = useKeyTableSizing(actionWidth)
 
   const validQuery = useQuery({
@@ -72,9 +74,15 @@ export default function AllKeysPage() {
 
   const listView = useKeyListView(records, balanceOverrides)
   const { rows } = listView
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const pageRows = useMemo(
+    () => rows.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [rows, currentPage, pageSize],
+  )
 
-  const stateRef = useRef({ records, kind, revealed, models, rows })
-  stateRef.current = { records, kind, revealed, models, rows }
+  const stateRef = useRef({ records, kind, revealed, models, rows: pageRows })
+  stateRef.current = { records, kind, revealed, models, rows: pageRows }
 
   const { mutateAsync: revealAsync } = useMutation({
     mutationFn: (vars: {
@@ -307,6 +315,17 @@ export default function AllKeysPage() {
     })
   }, [])
 
+  const changePage = useCallback((nextPage: number) => {
+    setPage(nextPage)
+    setSelected(new Set())
+  }, [])
+
+  const changePageSize = useCallback((nextPageSize: number) => {
+    setPageSize(nextPageSize)
+    setPage(1)
+    setSelected(new Set())
+  }, [])
+
   const openChat = useCallback(
     (index: number) => {
       setChatResult(null)
@@ -343,31 +362,23 @@ export default function AllKeysPage() {
   const switchKind = useCallback((next: ResultKind) => {
     setKind(next)
     setSelected(new Set())
+    setPage(1)
   }, [])
 
-  const runExport = useCallback(
-    async (format: ExportFormat) => {
-      setExporting(true)
-      const { records: recs, kind: activeKind } = stateRef.current
-      const indices = [...selected]
-      try {
-        if (indices.length > 0) {
-          await api.export({ dataset: "all", format, kind: activeKind, indices })
-          toast.success(`已导出 ${indices.length} 个所选密钥`)
-        } else {
-          await api.export({ dataset: "all", format, kind: activeKind })
-          toast.success(`已导出全部 ${recs.length} 个密钥`)
-        }
-      } catch (err) {
-        toast.error("导出失败", { description: errorMessage(err, "无法生成导出文件") })
-      } finally {
-        setExporting(false)
-      }
-    },
-    [selected],
-  )
+  const runExport = useCallback(async (format: ExportFormat) => {
+    setExporting(true)
+    const { records: recs, kind: activeKind } = stateRef.current
+    try {
+      await api.export({ dataset: "all", format, kind: activeKind })
+      toast.success(`已导出全部 ${recs.length} 个密钥`)
+    } catch (err) {
+      toast.error("导出失败", { description: errorMessage(err, "无法生成导出文件") })
+    } finally {
+      setExporting(false)
+    }
+  }, [])
 
-  const visibleIndices = useMemo(() => rows.map((r) => r.originalIndex), [rows])
+  const visibleIndices = useMemo(() => pageRows.map((r) => r.originalIndex), [pageRows])
   const allChecked =
     visibleIndices.length > 0 && visibleIndices.every((i) => selected.has(i))
 
@@ -391,7 +402,7 @@ export default function AllKeysPage() {
   } else {
     body = (
       <div>
-        {rows.map(({ fields, status, originalIndex }) => {
+        {pageRows.map(({ fields, status, originalIndex }) => {
           const key = rowKeyOf(kind, originalIndex)
           const reveal = revealed[key]
           const balanceInfo = balances[key]
@@ -481,21 +492,21 @@ export default function AllKeysPage() {
 
       <KeyListToolbar
         search={listView.search}
-        onSearchChange={listView.setSearch}
+        onSearchChange={(value) => { listView.setSearch(value); changePage(1) }}
         provider={listView.provider}
-        onProviderChange={listView.setProvider}
+        onProviderChange={(value) => { listView.setProvider(value); changePage(1) }}
         providers={listView.providers}
         balanceSort={listView.balanceSort}
-        onBalanceSortChange={listView.setBalanceSort}
+        onBalanceSortChange={(value) => { listView.setBalanceSort(value); changePage(1) }}
         filteredCount={listView.filteredCount}
         total={listView.total}
         hasActiveFilters={listView.hasActiveFilters}
-        onClear={listView.clearFilters}
+        onClear={() => { listView.clearFilters(); changePage(1) }}
       />
 
       <BulkBar
-        selectedCount={selected.size}
-        total={rows.length}
+        selectedCount={visibleIndices.filter((index) => selected.has(index)).length}
+        total={pageRows.length}
         allChecked={allChecked}
         onToggleAll={handleToggleAll}
         onExport={(format) => void runExport(format)}
@@ -507,6 +518,7 @@ export default function AllKeysPage() {
           statusMutation.mutate({ resultIds, status: "valid" })
         } : undefined}
         actionPending={statusMutation.isPending}
+        exportLabel="导出全部"
         exporting={exporting}
       />
 
@@ -520,6 +532,13 @@ export default function AllKeysPage() {
           {body}
         </div>
       </div>
+      <KeyPagination
+        page={currentPage}
+        pageSize={pageSize}
+        totalItems={rows.length}
+        onPageChange={changePage}
+        onPageSizeChange={changePageSize}
+      />
 
 
       <ChatTestDialog
