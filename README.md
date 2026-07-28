@@ -16,6 +16,34 @@
 
 ---
 
+## 界面预览
+
+### 扫描历史
+
+![扫描历史与运行状态](docs/images/scan-history.jpg)
+
+### 全部密钥
+
+![全部密钥与余额状态](docs/images/all-keys.jpg)
+
+### 高价值 Key
+
+![高价值 Key 列表](docs/images/high-value-keys.jpg)
+
+### 自定义狩猎
+
+![自定义目标狩猎](docs/images/custom-hunt.jpg)
+
+### CVE 库
+
+![AI 基础设施 CVE 库](docs/images/cve-library.jpg)
+
+### 蜜罐站点
+
+![蜜罐站点识别与管理](docs/images/honeypot-sites.jpg)
+
+---
+
 ## 项目结构
 
 ```
