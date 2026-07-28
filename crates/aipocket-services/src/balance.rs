@@ -1016,8 +1016,12 @@ impl BalanceService {
                 &[],
             )
             .await?;
+        let (token_usage_code, token_usage, _) = self
+            .get_json(format!("{endpoint}/api/usage/token/"), credential, &[])
+            .await?;
         let status_data = status.get("data").and_then(Value::as_object);
         let user_data = user.get("data").and_then(Value::as_object);
+        let token_usage_data = token_usage.get("data").and_then(Value::as_object);
         let status_signal = status_code == 200
             && status.get("success").and_then(Value::as_bool) == Some(true)
             && status_data.is_some_and(|data| {
@@ -1045,6 +1049,21 @@ impl BalanceService {
                 .get("hard_limit_usd")
                 .and_then(strict_number)
                 .is_some();
+        let token_usage_signal = token_usage_code == 200
+            && token_usage.get("code").and_then(Value::as_bool) == Some(true)
+            && token_usage_data.is_some_and(|data| {
+                data.get("object").and_then(Value::as_str) == Some("token_usage")
+                    && data.get("total_granted").and_then(strict_number).is_some()
+                    && data.get("total_used").and_then(strict_number).is_some()
+                    && data
+                        .get("total_available")
+                        .and_then(strict_number)
+                        .is_some()
+                    && data
+                        .get("unlimited_quota")
+                        .and_then(Value::as_bool)
+                        .is_some()
+            });
         let oneapi_signal = status_code == 200
             && status.get("success").and_then(Value::as_bool) == Some(true)
             && status_data.is_some_and(|data| {
@@ -1052,7 +1071,21 @@ impl BalanceService {
                     && data.get("version").and_then(Value::as_str).is_some()
             })
             && !status_signal;
-        if status_signal && (self_signal || billing_signal) {
+        if status_signal && (self_signal || billing_signal || token_usage_signal) {
+            if token_usage_signal
+                && let (Some(status_data), Some(token_usage_data)) = (status_data, token_usage_data)
+            {
+                return Ok(Self::newapi_token_usage_result(
+                    status_data,
+                    token_usage_data,
+                    json!({
+                        "status":status_signal,
+                        "self":self_signal,
+                        "billing":billing_signal,
+                        "token_usage":true
+                    }),
+                ));
+            }
             let mut quota = serde_json::Map::new();
             let mut usage = json!({});
             if self_signal && let Some(data) = user_data {
@@ -1180,6 +1213,84 @@ impl BalanceService {
         }
         result.alive = Some(true);
         Ok(result)
+    }
+
+    fn newapi_token_usage_result(
+        status: &serde_json::Map<String, Value>,
+        token: &serde_json::Map<String, Value>,
+        signals: Value,
+    ) -> BalanceResult {
+        let unlimited = token
+            .get("unlimited_quota")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let total_available = token
+            .get("total_available")
+            .and_then(strict_number)
+            .unwrap_or_default();
+        let total_granted = token
+            .get("total_granted")
+            .and_then(strict_number)
+            .unwrap_or_default();
+        let total_used = token
+            .get("total_used")
+            .and_then(strict_number)
+            .unwrap_or_default();
+        let mut result = probe_result(
+            "newapi",
+            "newapi:token_usage",
+            if unlimited { "quota" } else { "cash_balance" },
+            "",
+            json!({
+                "signals":signals,
+                "quota_display_type":status.get("quota_display_type"),
+                "expires_at":token.get("expires_at")
+            }),
+        );
+        result.quota = json!({
+            "total_granted":total_granted,
+            "total_available":total_available,
+            "unlimited":unlimited,
+            "raw_unit":"quota"
+        });
+        result.usage = json!({"total_used":total_used,"raw_unit":"quota"});
+        if unlimited {
+            result.balance_native = "Unlimited".into();
+        } else {
+            let display_type = status
+                .get("quota_display_type")
+                .and_then(Value::as_str)
+                .unwrap_or("USD")
+                .to_ascii_uppercase();
+            let quota_per_unit = status
+                .get("quota_per_unit")
+                .and_then(strict_number)
+                .filter(|value| *value > 0.0);
+            match (display_type.as_str(), quota_per_unit) {
+                ("CNY", Some(unit)) => {
+                    let exchange_rate = status
+                        .get("usd_exchange_rate")
+                        .and_then(strict_number)
+                        .unwrap_or(1.0);
+                    result.balance_native =
+                        number_string((total_available / unit * exchange_rate).max(0.0));
+                    result.currency = "CNY".into();
+                }
+                ("TOKENS", _) => {
+                    result.balance_native = number_string(total_available.max(0.0));
+                    result.currency = "tokens".into();
+                }
+                (_, Some(unit)) => {
+                    result.balance_usd = number_string((total_available / unit).max(0.0));
+                }
+                _ => {
+                    result.balance_native = number_string(total_available.max(0.0));
+                    result.currency = "quota".into();
+                }
+            }
+        }
+        result.alive = Some(true);
+        result
     }
 
     async fn get_json(
@@ -1641,11 +1752,19 @@ fn openai_operation_url(base: &str, operation: &str) -> String {
     let base = base.trim_end_matches('/');
     if base.is_empty() {
         String::new()
-    } else if base.ends_with("/v1") {
+    } else if has_api_version_suffix(base) {
         format!("{base}/{operation}")
     } else {
         format!("{base}/v1/{operation}")
     }
+}
+
+fn has_api_version_suffix(base: &str) -> bool {
+    base.rsplit('/')
+        .next()
+        .and_then(|segment| segment.strip_prefix('v'))
+        .and_then(|version| version.as_bytes().first())
+        .is_some_and(u8::is_ascii_digit)
 }
 
 fn probe_result(
@@ -2355,11 +2474,27 @@ mod tests {
         async fn fixture(request: Request) -> Json<Value> {
             Json(match request.uri().path() {
                 "/api/status" => json!({"success":true,"data":{
-                    "quota_per_unit":1,"stripe_unit_price":1,"self_use_mode_enabled":true
+                    "quota_per_unit":500000,"quota_display_type":"USD","stripe_unit_price":1,
+                    "self_use_mode_enabled":true
                 }}),
                 "/api/user/self" => json!({"success":true,"data":{"quota":100,"used_quota":25}}),
                 "/dashboard/billing/subscription" => json!({}),
                 "/key/info" => json!({"success":false,"key_info":{"spend":0,"max_budget":10}}),
+                "/api/usage/token/" => {
+                    let unlimited = request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok())
+                        == Some("Bearer sk-unlimited-fixture");
+                    json!({"code":true,"message":"ok","data":{
+                        "object":"token_usage",
+                        "total_granted":if unlimited { 1_400_922 } else { 5_000_000 },
+                        "total_used":if unlimited { 3_643_958 } else { 250_000 },
+                        "total_available":if unlimited { -2_243_036 } else { 4_750_000 },
+                        "unlimited_quota":unlimited,
+                        "expires_at":0
+                    }})
+                }
                 _ => json!({}),
             })
         }
@@ -2377,8 +2512,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(newapi.provider, "newapi");
-        assert_eq!(newapi.quota, json!({"quota":100,"used_quota":25}));
-        assert_eq!(newapi.balance_usd, "");
+        assert_eq!(
+            newapi.quota,
+            json!({"total_granted":5_000_000.0,"total_available":4_750_000.0,"unlimited":false,"raw_unit":"quota"})
+        );
+        assert_eq!(newapi.balance_usd, "9.5");
+        assert_eq!(newapi.source, "newapi:token_usage");
+        assert_eq!(newapi.evidence_kind, "cash_balance");
+        let unlimited = service
+            .query(&Credential {
+                apikey: "sk-unlimited-fixture".into(),
+                apiurl: format!("{base}/v1"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(unlimited.balance_native, "Unlimited");
+        assert_eq!(unlimited.evidence_kind, "quota");
+        assert_eq!(unlimited.quota["unlimited"], true);
         server.abort();
     }
     #[tokio::test]

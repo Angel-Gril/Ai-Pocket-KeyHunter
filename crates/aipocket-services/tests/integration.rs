@@ -43,6 +43,13 @@ async fn fixture_server() -> (String, tokio::task::JoinHandle<()>) {
                 Json(json!({"id":"chatcmpl-fixture","model":body["model"],"choices":[{"message":{"content":"ok"}}]}))
             }),
         )
+        .route("/api/paas/v4/models", get(models))
+        .route(
+            "/api/paas/v4/chat/completions",
+            axum::routing::post(|Json(body): Json<Value>| async move {
+                Json(json!({"id":"chatcmpl-glm-fixture","model":body["model"],"choices":[{"message":{"content":"ok"}}]}))
+            }),
+        )
         .route(
             "/v1/messages",
             axum::routing::post(|Json(body): Json<Value>| async move {
@@ -221,6 +228,7 @@ async fn models_and_chat_use_provider_protocol_endpoints() {
         reqwest::Client::builder()
             .resolve("api.anthropic.com", address)
             .resolve("generativelanguage.googleapis.com", address)
+            .resolve("open.bigmodel.cn", address)
             .build()
             .unwrap(),
     );
@@ -269,6 +277,20 @@ async fn models_and_chat_use_provider_protocol_endpoints() {
         .unwrap();
     assert!(google.success);
     assert_eq!(google.model, "gemini-2.0-flash");
+
+    let glm = Credential {
+        apikey: "glm-fixture-key".into(),
+        apiurl: format!("http://open.bigmodel.cn:{}/api/paas/v4", address.port()),
+        ..Default::default()
+    };
+    assert_eq!(
+        service.models(glm.clone()).await.unwrap(),
+        vec!["fixture-model"]
+    );
+    let glm_chat = service.test_chat(glm, "glm-4-flash").await.unwrap();
+    assert!(glm_chat.success);
+    assert_eq!(glm_chat.status_code, Some(200));
+    assert_eq!(glm_chat.model, "glm-4-flash");
     let empty = service
         .test_chat(
             Credential {
