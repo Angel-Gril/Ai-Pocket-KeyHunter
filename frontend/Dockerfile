@@ -1,7 +1,7 @@
 # --- Build stage: compile the Vite + React app to static assets ---
 FROM node:24-slim AS build
 
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@10.25.0 --activate
 
 WORKDIR /app
 
