@@ -1,3 +1,9 @@
+<div align="center">
+  <img src="docs/images/lion-avatar-round.png" alt="AIPocket lion" width="220">
+  <br>
+  <h3><strong>Tonight We Hunt!</strong></h3>
+</div>
+
 # aipocket
 
 > 基于 FOFA + Shodan + GitHub Artifact Hunter 的 AI 基础设施暴露面扫描器：发现暴露目标与泄露凭证，完成归因、验证、余额查询和持久化。
