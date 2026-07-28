@@ -396,6 +396,14 @@ async fn repository_resume_append_balance_and_high_value_paths_persist() {
         .unwrap();
     let rows = repo.run_records(&run_id, "valid", false).await.unwrap();
     let result_id = rows[0]["result_id"].as_i64().unwrap();
+    assert!(repo.records_by_ids(&[]).await.unwrap().is_empty());
+    let selected_rows = repo.records_by_ids(&[result_id, i64::MAX]).await.unwrap();
+    assert_eq!(selected_rows.len(), 1);
+    assert_eq!(selected_rows[0]["result_id"], result_id);
+    assert_eq!(
+        selected_rows[0]["credential"]["apikey"],
+        "sk-repo-abcdefghijkl"
+    );
     let high = json!({
         "apikey":"sk-repo-abcdefghijkl",
         "credential":{"apikey":"sk-repo-abcdefghijkl","apiurl":"https://repo.example/v1"},

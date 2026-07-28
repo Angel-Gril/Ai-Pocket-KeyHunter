@@ -49,6 +49,7 @@ pub struct Settings {
     pub validate_concurrency: usize,
     pub validate_timeout: f64,
     pub validate_batch_size: usize,
+    pub balance_batch_concurrency: usize,
     pub scheduler_enabled: bool,
     pub scheduler_interval: u64,
     pub scan_lock_ttl: u64,
@@ -146,6 +147,7 @@ impl Default for Settings {
             validate_concurrency: 20,
             validate_timeout: 15.0,
             validate_batch_size: 500,
+            balance_batch_concurrency: 6,
             scheduler_enabled: false,
             scheduler_interval: 3600,
             scan_lock_ttl: 7200,
@@ -258,6 +260,11 @@ impl Settings {
         self.github_tokens = normalize_list(&self.github_tokens);
         if self.validate_batch_size == 0 {
             return Err(CoreError::Config("VALIDATE_BATCH_SIZE must be >= 1".into()));
+        }
+        if self.balance_batch_concurrency == 0 {
+            return Err(CoreError::Config(
+                "BALANCE_BATCH_CONCURRENCY must be >= 1".into(),
+            ));
         }
         if self.pg_pool_min > self.pg_pool_max {
             return Err(CoreError::Config(
@@ -379,11 +386,12 @@ mod tests {
         let file = dir.join("config.env");
         fs::write(
             &file,
-            "fofa_keys= a, b ,,c\nVALIDATE_BATCH_SIZE=4\nUNKNOWN=value\n",
+            "fofa_keys= a, b ,,c\nVALIDATE_BATCH_SIZE=4\nBALANCE_BATCH_CONCURRENCY=3\nUNKNOWN=value\n",
         )
         .unwrap();
         let settings = Settings::load_from(&file).unwrap();
         assert!(settings.validate_batch_size >= 1);
+        assert_eq!(settings.balance_batch_concurrency, 3);
         assert_eq!(normalize_list(" a, b ,,c "), "a,b,c");
     }
 
@@ -391,6 +399,15 @@ mod tests {
     fn rejects_zero_validation_batch() {
         let mut settings = Settings {
             validate_batch_size: 0,
+            ..Settings::default()
+        };
+        assert!(settings.normalize().is_err());
+    }
+
+    #[test]
+    fn rejects_zero_batch_balance_concurrency() {
+        let mut settings = Settings {
+            balance_batch_concurrency: 0,
             ..Settings::default()
         };
         assert!(settings.normalize().is_err());

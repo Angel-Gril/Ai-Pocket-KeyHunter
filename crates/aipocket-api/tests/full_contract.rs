@@ -242,6 +242,31 @@ async fn complete_frontend_api_contract_smoke() {
     .await;
     assert_eq!(balance_status, StatusCode::OK, "{balance_persisted}");
     assert_eq!(balance_persisted["persisted"], true);
+    let (batch_status, batch_balance, _) = request(
+        &app,
+        "POST",
+        "/api/keys/balance",
+        Some(token),
+        Some(json!({"result_ids":[result_id],"provider":"unknown"})),
+    )
+    .await;
+    assert_eq!(batch_status, StatusCode::OK, "{batch_balance}");
+    assert_eq!(batch_balance["requested"], 1);
+    assert_eq!(batch_balance["succeeded"], 1);
+    assert_eq!(batch_balance["results"][0]["result_id"], result_id);
+    for body in [
+        json!({"result_ids":[],"provider":"unknown"}),
+        json!({"result_ids":[result_id],"provider":"all"}),
+        json!({"result_ids":[result_id,result_id],"provider":"unknown"}),
+        json!({"result_ids":(0..51).collect::<Vec<_>>(),"provider":"unknown"}),
+    ] {
+        assert_eq!(
+            request(&app, "POST", "/api/keys/balance", Some(token), Some(body))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
     let (_, chat_failure, _) = request(
         &app,
         "POST",

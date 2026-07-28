@@ -37,6 +37,7 @@ export default function AllKeysPage() {
   const [busy, setBusy] = useState<Record<string, RowBusy>>({})
   const [chatIndex, setChatIndex] = useState<number | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [batchBalancePending, setBatchBalancePending] = useState(false)
   const [chatResult, setChatResult] = useState<ChatResponse | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -379,6 +380,33 @@ export default function AllKeysPage() {
   }, [])
 
   const visibleIndices = useMemo(() => pageRows.map((r) => r.originalIndex), [pageRows])
+
+  const runBatchBalance = useCallback(async () => {
+    const provider = listView.provider
+    if (provider === "all") return
+    const selectedIndices = visibleIndices.filter((index) => selected.has(index))
+    const resultIds = selectedIndices
+      .map((index) => records[index]?.result_id)
+      .filter((id): id is number => typeof id === "number")
+    if (resultIds.length !== selectedIndices.length) {
+      toast.error("部分所选记录缺少稳定 result_id，请刷新后重试")
+      return
+    }
+    setBatchBalancePending(true)
+    try {
+      const report = await api.keysBalance(resultIds, provider)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["keys", kind] }),
+        queryClient.invalidateQueries({ queryKey: ["high-value"] }),
+      ])
+      toast.success(`批量余额测试完成 · 成功 ${report.succeeded} · 失败 ${report.failed}`)
+    } catch (err) {
+      toast.error("批量余额测试失败", { description: errorMessage(err, "无法测试所选记录") })
+    } finally {
+      setBatchBalancePending(false)
+    }
+  }, [kind, listView.provider, queryClient, records, selected, visibleIndices])
+
   const allChecked =
     visibleIndices.length > 0 && visibleIndices.every((i) => selected.has(i))
 
@@ -518,6 +546,9 @@ export default function AllKeysPage() {
           transitionKeys({ resultIds, status: "valid" })
         } : undefined}
         actionPending={statusPending}
+        balanceActionVisible={listView.provider !== "all"}
+        onBalanceAction={() => void runBatchBalance()}
+        balanceActionPending={batchBalancePending}
         exportLabel="导出全部"
         exporting={exporting}
       />

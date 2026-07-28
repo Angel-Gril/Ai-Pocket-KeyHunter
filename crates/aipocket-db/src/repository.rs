@@ -233,6 +233,32 @@ impl Repository {
         Ok(output)
     }
 
+    pub async fn records_by_ids(&self, result_ids: &[i64]) -> Result<Vec<Value>> {
+        if result_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pool = self.require_pool()?;
+        let rows = sqlx::query(
+            "SELECT id, record FROM results WHERE id = ANY($1) AND kind IN ('valid','suspicious','unavailable')",
+        )
+        .bind(result_ids)
+        .fetch_all(pool)
+        .await?;
+        let mut by_id = std::collections::HashMap::with_capacity(rows.len());
+        for row in rows {
+            let id: i64 = row.try_get("id")?;
+            let mut record: Value = row.try_get("record")?;
+            if let Some(object) = record.as_object_mut() {
+                object.insert("result_id".into(), Value::from(id));
+            }
+            by_id.insert(id, record);
+        }
+        Ok(result_ids
+            .iter()
+            .filter_map(|id| by_id.remove(id))
+            .collect())
+    }
+
     pub async fn high_value(&self, masked: bool) -> Result<Vec<Value>> {
         let pool = self.require_pool()?;
         let rows = sqlx::query(

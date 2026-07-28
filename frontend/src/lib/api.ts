@@ -68,6 +68,18 @@ export interface BalanceResponse {
   high_value_updated?: boolean
 }
 
+export interface BatchBalanceResponse {
+  requested: number
+  succeeded: number
+  failed: number
+  results: Array<{
+    result_id: number
+    ok: boolean
+    balance?: BalanceResponse
+    error?: string
+  }>
+}
+
 export interface ChatRequest {
   apikey: string
   apiurl?: string
@@ -647,6 +659,11 @@ export const api = {
   keyModels: (body: KeyRef) => request<ModelsResponse>("/key/models", { method: "POST", body }),
   keyBalance: (body: BalanceRequest) =>
     request<BalanceResponse>("/key/balance", { method: "POST", body }),
+  keysBalance: (resultIds: number[], provider: string) =>
+    request<BatchBalanceResponse>("/keys/balance", {
+      method: "POST",
+      body: { result_ids: resultIds, provider },
+    }),
   keyChat: (body: ChatRequest) => request<ChatResponse>("/key/chat", { method: "POST", body }),
   keyReveal: (body: RevealRequest) => request<RevealResponse>("/key/reveal", { method: "POST", body }),
 

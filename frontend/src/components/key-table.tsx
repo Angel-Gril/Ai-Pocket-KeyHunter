@@ -1,5 +1,5 @@
 import { memo, useCallback } from "react"
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, Loader2 } from "lucide-react"
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, CircleDollarSign, Download, Loader2 } from "lucide-react"
 import type { Header, Table } from "@tanstack/react-table"
 import { BalanceHelpButton } from "@/components/balance-help"
 import { KeyRow, type KeyRowProps } from "@/components/key-row"
@@ -121,6 +121,9 @@ export interface BulkBarProps {
   actionLabel?: string
   onAction?: () => void
   actionPending?: boolean
+  balanceActionVisible?: boolean
+  onBalanceAction?: () => void
+  balanceActionPending?: boolean
 }
 
 export function BulkBar({
@@ -134,6 +137,9 @@ export function BulkBar({
   actionLabel,
   onAction,
   actionPending,
+  balanceActionVisible,
+  onBalanceAction,
+  balanceActionPending,
 }: Readonly<BulkBarProps>) {
   return (
     <div className="flex flex-wrap items-center gap-2.5 border-b border-border-subtle bg-surface-inset px-4 py-3 sm:flex-nowrap sm:gap-3.5 sm:px-6 md:px-8">
@@ -154,6 +160,16 @@ export function BulkBar({
           label={actionLabel}
           onClick={onAction}
           disabled={actionPending || selectedCount === 0}
+        />
+      ) : null}
+      {balanceActionVisible && onBalanceAction ? (
+        <ExportButton
+          icon={balanceActionPending
+            ? <Loader2 className="size-3.5 animate-spin" />
+            : <CircleDollarSign className="size-3.5" />}
+          label="批量测余额"
+          onClick={onBalanceAction}
+          disabled={balanceActionPending || selectedCount === 0}
         />
       ) : null}
       <ExportMenu

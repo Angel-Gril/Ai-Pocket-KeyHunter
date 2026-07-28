@@ -38,6 +38,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/keys/status", post(transition_keys))
         .route("/api/key/models", post(key_models))
         .route("/api/key/balance", post(key_balance))
+        .route("/api/keys/balance", post(keys_balance))
         .route("/api/key/chat", post(key_chat))
         .route("/api/key/reveal", post(key_reveal))
         .route("/api/export", post(export))
@@ -493,6 +494,51 @@ struct BalanceRequest {
     #[serde(default)]
     high_value: bool,
 }
+async fn probe_and_persist_balance(
+    s: &AppState,
+    credential: Credential,
+    result_id: Option<i64>,
+    high_value: bool,
+) -> Result<Value, ApiError> {
+    let r = s.balance.query(&credential).await?;
+    let evidence = serde_json::to_value(&r).map_err(ApiError::internal)?;
+    if !r.matched {
+        return Ok(json!({
+            "gateway":"unsupported",
+            "balance_usd":"",
+            "tier":"",
+            "detail":evidence,
+            "persisted":false,
+            "result_id":result_id,
+            "high_value_updated":false
+        }));
+    }
+    let mut result = aipocket_core::ValidationResult {
+        credential: credential.clone(),
+        ..Default::default()
+    };
+    aipocket_services::apply_probe_result(&mut result, r.clone());
+    let balance_display = result.balance;
+    let (persisted, high_value_updated) = if result_id.is_some() || high_value {
+        s.repository
+            .persist_balance(aipocket_db::BalancePersistence {
+                result_id,
+                apikey: &credential.apikey,
+                gateway: &r.gateway,
+                balance: &balance_display,
+                tier: &r.tier,
+                detail: &evidence,
+                high_value,
+            })
+            .await?
+    } else {
+        (false, false)
+    };
+    Ok(
+        json!({"gateway":r.gateway,"balance_usd":balance_display,"tier":r.tier,"detail":evidence,"persisted":persisted,"result_id":result_id,"high_value_updated":high_value_updated}),
+    )
+}
+
 async fn key_balance(
     _: Auth,
     State(s): State<AppState>,
@@ -505,54 +551,120 @@ async fn key_balance(
             "apikey required",
         ));
     }
-    let r = s
-        .balance
-        .query(&Credential {
-            apikey: b.apikey.clone(),
-            apiurl: b.apiurl.clone(),
-            ..Default::default()
-        })
-        .await?;
-    if !r.matched {
-        return Ok(Json(json!({
-            "gateway":"unsupported",
-            "balance_usd":"",
-            "tier":"",
-            "detail":serde_json::to_value(&r).map_err(ApiError::internal)?,
-            "persisted":false,
-            "result_id":b.result_id,
-            "high_value_updated":false
-        })));
-    }
-    let mut result = aipocket_core::ValidationResult {
-        credential: Credential {
-            apikey: b.apikey.clone(),
-            apiurl: b.apiurl.clone(),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    aipocket_services::apply_probe_result(&mut result, r.clone());
-    let balance_display = result.balance;
-    let evidence = serde_json::to_value(&r).map_err(ApiError::internal)?;
-    let (persisted, high_value_updated) = if b.result_id.is_some() || b.high_value {
-        s.repository
-            .persist_balance(aipocket_db::BalancePersistence {
-                result_id: b.result_id,
-                apikey: &b.apikey,
-                gateway: &r.gateway,
-                balance: &balance_display,
-                tier: &r.tier,
-                detail: &evidence,
-                high_value: b.high_value,
-            })
-            .await?
-    } else {
-        (false, false)
-    };
     Ok(Json(
-        json!({"gateway":r.gateway,"balance_usd":balance_display,"tier":r.tier,"detail":evidence,"persisted":persisted,"result_id":b.result_id,"high_value_updated":high_value_updated}),
+        probe_and_persist_balance(
+            &s,
+            Credential {
+                apikey: b.apikey,
+                apiurl: b.apiurl,
+                ..Default::default()
+            },
+            b.result_id,
+            b.high_value,
+        )
+        .await?,
     ))
+}
+
+fn normalized_batch_provider(row: &Value) -> String {
+    row.pointer("/provider_info/provider")
+        .and_then(Value::as_str)
+        .or_else(|| row.get("provider").and_then(Value::as_str))
+        .unwrap_or("unknown")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+const MAX_BATCH_BALANCE_KEYS: usize = 50;
+
+#[derive(Deserialize)]
+struct BatchBalanceRequest {
+    result_ids: Vec<i64>,
+    provider: String,
+}
+
+async fn keys_balance(
+    _: Auth,
+    State(s): State<AppState>,
+    Json(b): Json<BatchBalanceRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if b.provider.trim().is_empty() || b.provider.trim().eq_ignore_ascii_case("all") {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "select one provider before batch balance testing",
+        ));
+    }
+    if b.result_ids.is_empty() || b.result_ids.len() > MAX_BATCH_BALANCE_KEYS {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            format!("result_ids must contain 1..={MAX_BATCH_BALANCE_KEYS} records"),
+        ));
+    }
+    let mut unique_ids = std::collections::HashSet::with_capacity(b.result_ids.len());
+    if !b.result_ids.iter().all(|id| unique_ids.insert(*id)) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "result_ids must be unique",
+        ));
+    }
+    let rows = s.repository.records_by_ids(&b.result_ids).await?;
+    let missing = b.result_ids.len().saturating_sub(rows.len());
+    let requested_provider = b.provider.trim().to_ascii_lowercase();
+    let concurrency = s
+        .settings
+        .read()
+        .await
+        .balance_batch_concurrency
+        .clamp(1, MAX_BATCH_BALANCE_KEYS);
+    let mut tasks = stream::iter(rows.into_iter().enumerate().map(|(position, row)| {
+        let state = s.clone();
+        let requested_provider = requested_provider.clone();
+        async move {
+            let result_id = row
+                .get("result_id")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            let provider = normalized_batch_provider(&row);
+            let result = if provider != requested_provider {
+                json!({"result_id":result_id,"ok":false,"error":"provider mismatch"})
+            } else {
+                let credential = row
+                    .get("credential")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value::<Credential>(value).ok());
+                let Some(credential) = credential.filter(|value| !value.apikey.is_empty()) else {
+                    return (
+                        position,
+                        json!({"result_id":result_id,"ok":false,"error":"credential missing"}),
+                    );
+                };
+                match probe_and_persist_balance(&state, credential, Some(result_id), false).await {
+                    Ok(value) => json!({"result_id":result_id,"ok":true,"balance":value}),
+                    Err(error) => json!({"result_id":result_id,"ok":false,"error":error.message}),
+                }
+            };
+            (position, result)
+        }
+    }))
+    .buffer_unordered(concurrency)
+    .collect::<Vec<_>>()
+    .await;
+    tasks.sort_unstable_by_key(|(position, _)| *position);
+    let tasks = tasks
+        .into_iter()
+        .map(|(_, result)| result)
+        .collect::<Vec<_>>();
+    let succeeded = tasks.iter().filter(|item| item["ok"] == true).count();
+    let failed = tasks.len().saturating_sub(succeeded) + missing;
+    Ok(Json(json!({
+        "requested":b.result_ids.len(),
+        "succeeded":succeeded,
+        "failed":failed,
+        "results":tasks
+    })))
 }
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -1177,6 +1289,20 @@ mod scan_query_tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["id"], "CVE-2026-12345");
         assert_eq!(rows[1]["id"], "GHSA-2345-6789-CFGH");
+    }
+
+    #[test]
+    fn batch_provider_normalization_is_strict_and_case_insensitive() {
+        assert_eq!(
+            normalized_batch_provider(&json!({"provider_info":{"provider":" OpenAI "}})),
+            "openai"
+        );
+        assert_eq!(
+            normalized_batch_provider(&json!({"provider":"ANTHROPIC"})),
+            "anthropic"
+        );
+        assert_eq!(normalized_batch_provider(&json!({})), "unknown");
+        assert_eq!(MAX_BATCH_BALANCE_KEYS, 50);
     }
 }
 async fn scan_start(

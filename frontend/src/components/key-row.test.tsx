@@ -6,6 +6,7 @@ import {
   formatEvidenceRecord,
   KeyRow,
 } from "@/components/key-row"
+import { BulkBar } from "@/components/key-table"
 
 const evidence = {
   provider: "fireworks",
@@ -140,4 +141,48 @@ it("forwards selection and action callbacks", async () => {
   expect(screen.getByRole("button", { name: "模型列表" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "余额" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "测对话" })).toBeDisabled()
+})
+
+describe("bulk balance action", () => {
+  it("appears only for a selected provider and requires selected rows", async () => {
+    const user = userEvent.setup()
+    const onBalanceAction = vi.fn()
+    const onExport = vi.fn()
+    const onToggleAll = vi.fn()
+    const { rerender } = render(
+      <BulkBar
+        selectedCount={0}
+        total={50}
+        allChecked={false}
+        onToggleAll={onToggleAll}
+        onExport={onExport}
+      />,
+    )
+    expect(screen.queryByRole("button", { name: "批量测余额" })).not.toBeInTheDocument()
+    rerender(
+      <BulkBar
+        selectedCount={0}
+        total={50}
+        allChecked={false}
+        onToggleAll={onToggleAll}
+        onExport={onExport}
+        balanceActionVisible
+        onBalanceAction={onBalanceAction}
+      />,
+    )
+    expect(screen.getByRole("button", { name: "批量测余额" })).toBeDisabled()
+    rerender(
+      <BulkBar
+        selectedCount={50}
+        total={50}
+        allChecked
+        onToggleAll={onToggleAll}
+        onExport={onExport}
+        balanceActionVisible
+        onBalanceAction={onBalanceAction}
+      />,
+    )
+    await user.click(screen.getByRole("button", { name: "批量测余额" }))
+    expect(onBalanceAction).toHaveBeenCalledOnce()
+  })
 })
