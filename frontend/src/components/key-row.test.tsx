@@ -94,7 +94,7 @@ it("loads and collapses model details through the row toggle", async () => {
     />,
   )
   expect(screen.queryByText("gpt-4o")).not.toBeInTheDocument()
-  await user.click(screen.getByRole("button", { name: "Expand models" }))
+  await user.click(screen.getAllByRole("button", { name: "Expand models" })[0])
   expect(onLoadModels).toHaveBeenCalledOnce()
   expect(onExpandedChange).toHaveBeenCalledWith(true)
   rerender(
@@ -107,7 +107,7 @@ it("loads and collapses model details through the row toggle", async () => {
     />,
   )
   expect(screen.getByText("gpt-4o")).toBeInTheDocument()
-  await user.click(screen.getByRole("button", { name: "Collapse models" }))
+  await user.click(screen.getAllByRole("button", { name: "Collapse models" })[0])
   expect(onExpandedChange).toHaveBeenCalledWith(false)
 })
 
@@ -132,15 +132,43 @@ it("forwards selection and action callbacks", async () => {
       busy={{ models: true, balance: true, chat: true }}
     />,
   )
-  await user.click(screen.getByRole("checkbox", { name: "Select key" }))
-  await user.click(screen.getByRole("button", { name: "Reveal key" }))
-  await user.click(screen.getByRole("button", { name: "Copy key" }))
+  await user.click(screen.getAllByRole("checkbox", { name: "Select key" })[0])
+  await user.click(screen.getAllByRole("button", { name: "Reveal key" })[0])
+  await user.click(screen.getAllByRole("button", { name: "Copy key" })[0])
   expect(onSelectedChange).toHaveBeenCalledWith(true)
   expect(onReveal).toHaveBeenCalledOnce()
   expect(onCopy).toHaveBeenCalledOnce()
-  expect(screen.getByRole("button", { name: "模型列表" })).toBeDisabled()
-  expect(screen.getByRole("button", { name: "余额" })).toBeDisabled()
-  expect(screen.getByRole("button", { name: "测对话" })).toBeDisabled()
+  expect(screen.getAllByRole("button", { name: "模型列表" })).toSatisfy((buttons: HTMLButtonElement[]) => buttons.every((button) => button.disabled))
+  expect(screen.getAllByRole("button", { name: "余额" })).toSatisfy((buttons: HTMLButtonElement[]) => buttons.every((button) => button.disabled))
+  expect(screen.getAllByRole("button", { name: "测对话" })).toSatisfy((buttons: HTMLButtonElement[]) => buttons.every((button) => button.disabled))
+})
+
+it("renders mobile-first key metadata without dropping endpoint, balance, or touch actions", () => {
+  render(
+    <KeyRow
+      maskedKey="sk-…mobile"
+      apiurl="https://api.openai.com/v1"
+      host="api.openai.com"
+      provider="openai"
+      balance="$12.50"
+      tier="paid"
+      scope="all"
+      createdAt="2026-07-28T00:00:00Z"
+      status={{ variant: "success", label: "可用" }}
+      onReveal={vi.fn()}
+      onCopy={vi.fn()}
+      onLoadModels={vi.fn()}
+      onBalance={vi.fn()}
+      onChat={vi.fn()}
+      onMarkUnavailable={vi.fn()}
+    />,
+  )
+  expect(screen.getAllByText("OpenAI").length).toBeGreaterThanOrEqual(2)
+  expect(screen.getAllByText("可用").length).toBeGreaterThanOrEqual(2)
+  expect(screen.getAllByText("$12.50").length).toBeGreaterThanOrEqual(2)
+  expect(screen.getByText("等级 / Scope")).toBeInTheDocument()
+  expect(screen.getAllByText("all · paid").length).toBeGreaterThanOrEqual(2)
+  expect(screen.getByRole("button", { name: "更多操作" })).toBeInTheDocument()
 })
 
 describe("bulk balance action", () => {

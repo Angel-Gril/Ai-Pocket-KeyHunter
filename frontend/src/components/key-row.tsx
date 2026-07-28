@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Check, ChevronDown, CircleOff, Copy, Eye, EyeOff, List, Loader2, MessageSquare, RefreshCw, ShieldQuestion, Wallet } from "lucide-react"
+import { Check, ChevronDown, CircleOff, Copy, Eye, EyeOff, List, Loader2, MessageSquare, MoreHorizontal, RefreshCw, ShieldQuestion, Wallet } from "lucide-react"
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ProviderBadge } from "@/components/provider-badge"
@@ -63,17 +63,16 @@ function ActionButton({ icon, label, onClick, loading }: Readonly<ActionButtonPr
       disabled={loading}
       title={label}
       aria-label={label}
-      className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm border border-border-primary bg-surface-overlay px-2 py-1.5 font-sans text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50 xl:px-2.5"
+      className="inline-flex min-h-11 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-sm border border-border-primary bg-surface-overlay px-3 py-1.5 font-sans text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50 md:min-h-0 md:px-2 xl:px-2.5"
     >
       {loading ? <Loader2 className="size-3.5 shrink-0 animate-spin" /> : icon}
-      {/* Hide labels under xl so the action cluster never crushes into vertical Chinese. */}
-      <span className="hidden xl:inline">{label}</span>
+      <span className="md:hidden xl:inline">{label}</span>
     </button>
   )
 }
 
 const ICON_BUTTON =
-  "flex size-[26px] shrink-0 items-center justify-center rounded-sm bg-surface-overlay text-text-muted hover:text-text-primary"
+  "flex size-11 shrink-0 items-center justify-center rounded-sm bg-surface-overlay text-text-muted hover:text-text-primary md:size-[26px]"
 
 /** APIKEY cell: masked value + optional reveal/copy actions. */
 function KeyCell({
@@ -81,7 +80,8 @@ function KeyCell({
   revealedKey,
   onReveal,
   onCopy,
-}: Readonly<Pick<KeyRowProps, "maskedKey" | "revealedKey" | "onReveal" | "onCopy">>) {
+  mobile = false,
+}: Readonly<Pick<KeyRowProps, "maskedKey" | "revealedKey" | "onReveal" | "onCopy"> & { mobile?: boolean }>) {
   const [revealed, setRevealed] = useState(false)
   // The plaintext only exists once the parent has fetched it; stay masked until then.
   const canShowPlaintext = revealed && Boolean(revealedKey)
@@ -94,18 +94,21 @@ function KeyCell({
   }
 
   return (
-    <div className="flex shrink-0 items-center gap-2" style={colWidthStyle("apikey")}>
+    <div
+      className={cn("flex min-w-0 items-center gap-2", mobile ? "w-full" : "shrink-0")}
+      style={mobile ? undefined : colWidthStyle("apikey")}
+    >
       {onReveal ? (
         <button
           type="button"
           onClick={toggleReveal}
           title={canShowPlaintext ? "Hide key" : "Reveal key"}
-          className="min-w-0 truncate font-mono text-[13px] text-text-primary hover:text-accent"
+          className="min-w-0 flex-1 truncate text-left font-mono text-[13px] text-text-primary hover:text-accent"
         >
           {value}
         </button>
       ) : (
-        <span className="min-w-0 truncate font-mono text-[13px] text-text-primary">{value}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-text-primary">{value}</span>
       )}
       {onReveal ? (
         <button
@@ -123,6 +126,53 @@ function KeyCell({
           <Copy className="size-3.5" />
         </button>
       ) : null}
+    </div>
+  )
+}
+
+function MobileMeta({
+  provider,
+  credentialKind,
+  status,
+  createdAt,
+}: Readonly<Pick<KeyRowProps, "provider" | "credentialKind" | "status" | "createdAt">>) {
+  return (
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      {provider ? <ProviderBadge provider={provider} /> : null}
+      {status ? <StatusBadge variant={status.variant} label={status.label} /> : null}
+      {credentialKind ? (
+        <span className="max-w-full truncate font-mono text-[10px] text-text-muted">{credentialKind}</span>
+      ) : null}
+      {createdAt ? (
+        <time className="ml-auto shrink-0 font-mono text-[10px] text-text-muted" dateTime={createdAt} title={createdAt}>
+          {new Date(createdAt).toLocaleDateString()}
+        </time>
+      ) : null}
+    </div>
+  )
+}
+
+function MobileSummary({
+  balance,
+  tier,
+  scope,
+  tierEvidence,
+}: Readonly<Pick<KeyRowProps, "balance" | "tier" | "scope" | "tierEvidence">>) {
+  const access = [scope, tier || tierEvidence].filter(Boolean).join(" · ")
+  return (
+    <div className="grid grid-cols-2 gap-3 rounded-sm border border-border-subtle bg-surface-inset px-3 py-2.5">
+      <div className="min-w-0">
+        <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-text-muted">余额</div>
+        <div className={cn("mt-1 truncate font-mono text-sm font-semibold", balance ? "text-success" : "text-text-muted")}>
+          {balance || "N/A"}
+        </div>
+      </div>
+      <div className="min-w-0 border-l border-border-subtle pl-3">
+        <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-text-muted">等级 / Scope</div>
+        <div className="mt-1 truncate font-mono text-xs text-text-secondary" title={access || "N/A"}>
+          {access || "N/A"}
+        </div>
+      </div>
     </div>
   )
 }
@@ -190,6 +240,35 @@ function StatusActionMenu({
   )
 }
 
+function MobileStatusMenu(props: Readonly<StatusActionMenuProps>) {
+  const { onMarkValid, onMarkSuspicious, onMarkUnavailable, pending } = props
+  if (!onMarkValid && !onMarkSuspicious && !onMarkUnavailable) return null
+  const itemClass = "flex cursor-default select-none items-center gap-3 rounded-sm px-2.5 py-2 outline-none transition-colors focus:bg-surface-overlay"
+  return (
+    <DropdownMenuPrimitive.Root>
+      <DropdownMenuPrimitive.Trigger asChild>
+        <button
+          type="button"
+          disabled={pending}
+          aria-label="更多操作"
+          className="flex min-h-11 min-w-11 flex-1 items-center justify-center gap-1.5 rounded-sm border border-border-primary bg-surface-overlay px-3 text-xs font-medium text-text-secondary disabled:opacity-50"
+        >
+          {pending ? <Loader2 className="size-3.5 animate-spin" /> : <MoreHorizontal className="size-4" />}
+          更多
+        </button>
+      </DropdownMenuPrimitive.Trigger>
+      <DropdownMenuPrimitive.Portal>
+        <DropdownMenuPrimitive.Content align="end" sideOffset={6} className="z-50 min-w-52 rounded-md border border-border-primary bg-surface-raised p-1.5 shadow-lg outline-none">
+          <DropdownMenuPrimitive.Label className="px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-text-muted">更改密钥状态</DropdownMenuPrimitive.Label>
+          {onMarkValid ? <DropdownMenuPrimitive.Item onSelect={onMarkValid} className={itemClass}><Check className="size-3.5 text-success" />可用</DropdownMenuPrimitive.Item> : null}
+          {onMarkSuspicious ? <DropdownMenuPrimitive.Item onSelect={onMarkSuspicious} className={itemClass}><ShieldQuestion className="size-3.5 text-warning" />疑似</DropdownMenuPrimitive.Item> : null}
+          {onMarkUnavailable ? <DropdownMenuPrimitive.Item onSelect={onMarkUnavailable} className={itemClass}><CircleOff className="size-3.5 text-danger" />不可用</DropdownMenuPrimitive.Item> : null}
+        </DropdownMenuPrimitive.Content>
+      </DropdownMenuPrimitive.Portal>
+    </DropdownMenuPrimitive.Root>
+  )
+}
+
 interface RowActionsProps {
   onLoadModels?: () => void
   onBalance?: () => void
@@ -251,13 +330,42 @@ function RowActions({
   )
 }
 
+function MobileActions(props: Readonly<Omit<RowActionsProps, "actionWidth">>) {
+  const {
+    onLoadModels,
+    onBalance,
+    onChat,
+    onMarkValid,
+    onMarkUnavailable,
+    onMarkSuspicious,
+    statusPending,
+    busy,
+    canExpand,
+    isExpanded,
+    onToggleExpand,
+  } = props
+  return (
+    <div className="grid grid-cols-4 gap-2">
+      {onLoadModels ? <ActionButton icon={<List className="size-3.5" />} label="模型" onClick={onLoadModels} loading={busy?.models} /> : null}
+      {onBalance ? <ActionButton icon={<Wallet className="size-3.5" />} label="余额" onClick={onBalance} loading={busy?.balance} /> : null}
+      {onChat ? <ActionButton icon={<MessageSquare className="size-3.5" />} label="测对话" onClick={onChat} loading={busy?.chat} /> : null}
+      <MobileStatusMenu onMarkValid={onMarkValid} onMarkSuspicious={onMarkSuspicious} onMarkUnavailable={onMarkUnavailable} pending={statusPending} />
+      {canExpand ? (
+        <button type="button" onClick={onToggleExpand} aria-label={isExpanded ? "Collapse models" : "Expand models"} aria-expanded={isExpanded} className="col-span-4 flex min-h-11 items-center justify-center gap-1.5 rounded-sm border border-border-primary bg-surface-overlay text-xs font-medium text-text-secondary">
+          详情 <ChevronDown className={cn("size-4 transition-transform", isExpanded && "rotate-180")} />
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 /**
  * Expanded panels live under the wide `min-w-max` row track. Pin to the scrollport
  * (`sticky left-0` + `100cqw` from the key-list `@container`) so chips can wrap
  * to the visible width instead of one endless horizontal line.
  */
 const EXPANDED_PANEL =
-  "sticky left-0 box-border w-[100cqw] max-w-[100cqw] bg-surface-inset"
+  "box-border w-full bg-surface-inset md:sticky md:left-0 md:w-[100cqw] md:max-w-[100cqw]"
 
 /** Expanded panel listing the key's available models. */
 function ModelsPanel({
@@ -352,6 +460,7 @@ export function KeyRow({
   const [internalExpanded, setInternalExpanded] = useState(false)
   const isExpanded = expanded ?? internalExpanded
 
+
   const toggleExpanded = () => {
     const next = !isExpanded
     if (expanded === undefined) setInternalExpanded(next)
@@ -365,12 +474,38 @@ export function KeyRow({
   return (
     <div
       className={cn(
-        "flex flex-col border-b border-border-subtle bg-surface-raised [content-visibility:auto] [contain-intrinsic-size:auto_57px]",
+        "flex flex-col border-b border-border-subtle bg-surface-raised [content-visibility:auto] [contain-intrinsic-size:auto_57px] md:min-w-max",
         className,
       )}
     >
+      <div className="flex flex-col gap-3 px-4 py-3.5 md:hidden">
+        <div className="flex min-w-0 items-center gap-3">
+          {onSelectedChange ? <Checkbox checked={selected} onCheckedChange={(value) => onSelectedChange(value === true)} aria-label="Select key" /> : null}
+          <MobileMeta provider={provider} credentialKind={credentialKind} status={status} createdAt={createdAt} />
+        </div>
+        <KeyCell mobile maskedKey={maskedKey} revealedKey={revealedKey} onReveal={onReveal} onCopy={onCopy} />
+        <div className="min-w-0 rounded-sm bg-surface-inset px-3 py-2.5">
+          <div className="line-clamp-2 break-all font-mono text-xs leading-5 text-text-secondary">{apiurl || "N/A"}</div>
+          {host ? <div className="mt-0.5 truncate font-mono text-[11px] text-text-muted">{host}</div> : null}
+        </div>
+        <MobileSummary balance={balance} tier={tier} scope={scope} tierEvidence={tierEvidence} />
+        <MobileActions
+          onLoadModels={onLoadModels}
+          onBalance={onBalance}
+          onChat={onChat}
+          onMarkValid={onMarkValid}
+          onMarkUnavailable={onMarkUnavailable}
+          onMarkSuspicious={onMarkSuspicious}
+          statusPending={statusPending}
+          busy={busy}
+          canExpand={canExpand}
+          isExpanded={isExpanded}
+          onToggleExpand={toggleExpanded}
+        />
+      </div>
+
       {/* Match the responsive header track; the outer container scrolls if needed. */}
-      <div className="flex w-full min-w-max flex-nowrap items-center gap-3.5 px-4 py-3.5">
+      <div className="hidden w-full min-w-max flex-nowrap items-center gap-3.5 px-4 py-3.5 md:flex">
         {onSelectedChange ? (
           <Checkbox
             checked={selected}
@@ -462,7 +597,8 @@ export function KeyRow({
         />
       </div>
 
-      {isExpanded ? <ModelsPanel models={models} modelsLoading={modelsLoading} /> : null}
+      <div>
+        {isExpanded ? <ModelsPanel models={models} modelsLoading={modelsLoading} /> : null}
       {isExpanded && evidence ? (
         <div className={cn(EXPANDED_PANEL, "border-t border-border-subtle px-4 py-3 text-xs sm:px-8")}>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
@@ -480,7 +616,8 @@ export function KeyRow({
             ) : null}
           </div>
         </div>
-      ) : null}
+        ) : null}
+      </div>
     </div>
   )
 }

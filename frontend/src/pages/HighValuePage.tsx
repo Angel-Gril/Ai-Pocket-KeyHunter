@@ -444,9 +444,9 @@ export default function HighValuePage() {
       />
 
       {/* @container lets expanded KeyRow panels size to the scrollport (100cqw). */}
-      <div ref={sizingContainerRef} className="@container min-h-0 flex-1 overflow-auto" style={columnSizeVars}>
+      <div ref={sizingContainerRef} className="@container min-h-0 flex-1 overflow-y-auto md:overflow-auto" style={columnSizeVars}>
         {/* Fill the viewport while preserving intrinsic width for horizontal overflow. */}
-        <div className="w-max min-w-full">
+        <div className="w-full md:w-max md:min-w-full">
           <div className="sticky top-0 z-10">
             <KeyTableHeader table={table} actionWidth={actionWidth} />
           </div>

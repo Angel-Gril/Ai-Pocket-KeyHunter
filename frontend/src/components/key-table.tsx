@@ -55,7 +55,7 @@ function HeaderCell({ header }: Readonly<{ header: Header<unknown, unknown> }>) 
 /** Column-aligned table header using the shared computed column widths. */
 export function KeyTableHeader({ table, actionWidth }: Readonly<{ table: Table<unknown>; actionWidth: number }>) {
   return (
-    <div className="flex w-full min-w-max flex-nowrap items-center gap-3.5 border-b border-border-primary bg-surface-base px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.4px] text-text-muted">
+    <div className="hidden w-full min-w-max flex-nowrap items-center gap-3.5 border-b border-border-primary bg-surface-base px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.4px] text-text-muted md:flex">
       <span className="size-4 shrink-0" aria-hidden />
       {table.getFlatHeaders().map((header) => (
         <HeaderCell key={header.id} header={header} />
@@ -79,7 +79,7 @@ function ExportButton({ icon, label, onClick, disabled }: Readonly<ActionButtonP
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-sm border border-border-primary bg-surface-raised px-3 py-1.5 font-sans text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50 sm:min-h-0"
+      className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-sm border border-border-primary bg-surface-raised px-3 py-1.5 font-sans text-xs font-medium text-text-secondary transition-colors hover:text-text-primary disabled:opacity-50 sm:min-h-0 sm:flex-none"
     >
       {icon}
       {label}
@@ -97,7 +97,7 @@ interface ExportMenuProps {
 function ExportMenu({ onExport, disabled, exporting, label = "导出" }: Readonly<ExportMenuProps>) {
   return (
     <Select disabled={disabled || exporting} onValueChange={(value) => onExport(value as ExportFormat)}>
-      <SelectTrigger className="min-h-11 w-[136px] border-border-primary bg-surface-raised font-sans text-xs font-medium text-text-secondary sm:min-h-0">
+      <SelectTrigger className="min-h-11 flex-1 border-border-primary bg-surface-raised font-sans text-xs font-medium text-text-secondary sm:min-h-0 sm:w-[136px] sm:flex-none">
         {exporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
         <SelectValue placeholder={label} />
       </SelectTrigger>
@@ -142,8 +142,8 @@ export function BulkBar({
   balanceActionPending,
 }: Readonly<BulkBarProps>) {
   return (
-    <div className="flex flex-wrap items-center gap-2.5 border-b border-border-subtle bg-surface-inset px-4 py-3 sm:flex-nowrap sm:gap-3.5 sm:px-6 md:px-8">
-      <div className="flex min-w-full flex-1 items-center gap-2.5 sm:min-w-0">
+    <div className="flex flex-col gap-2.5 border-b border-border-subtle bg-surface-inset px-4 py-3 sm:flex-row sm:flex-nowrap sm:items-center sm:gap-3.5 sm:px-6 md:px-8">
+      <div className="flex min-h-11 w-full items-center gap-2.5 sm:min-h-0 sm:min-w-0 sm:flex-1">
         <Checkbox
           checked={allChecked}
           onCheckedChange={(value) => onToggleAll(value === true)}
@@ -154,6 +154,7 @@ export function BulkBar({
           已选 {selectedCount} / {total}
         </span>
       </div>
+      <div className="flex w-full items-center gap-2.5 sm:w-auto">
       {actionLabel && onAction ? (
         <ExportButton
           icon={actionPending ? <Loader2 className="size-3.5 animate-spin" /> : null}
@@ -178,6 +179,7 @@ export function BulkBar({
         disabled={total === 0}
         label={exportLabel}
       />
+      </div>
     </div>
   )
 }
@@ -207,7 +209,7 @@ export function KeyPagination({
 
   return (
     <div className="flex shrink-0 flex-col gap-3 border-t border-border-primary bg-surface-raised px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 md:px-8">
-      <div className="flex items-center gap-2 font-mono text-[11px] text-text-muted">
+      <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] text-text-muted sm:justify-start">
         <span>显示 {pageStart}–{pageEnd} / 共 {totalItems} 条</span>
         <Select value={String(pageSize)} onValueChange={(value) => onPageSizeChange(Number(value))}>
           <SelectTrigger className="h-8 w-[92px] border-border-primary bg-surface-overlay font-mono text-[11px]" aria-label="每页条数">
@@ -222,14 +224,14 @@ export function KeyPagination({
           </SelectContent>
         </Select>
       </div>
-      <nav className="flex items-center gap-1" aria-label="密钥列表分页">
+      <nav className="flex w-full items-center justify-between gap-1 sm:w-auto sm:justify-start" aria-label="密钥列表分页">
         <button type="button" onClick={() => onPageChange(1)} disabled={currentPage === 1} className={pageButton} aria-label="第一页">
           <ChevronsLeft className="size-3.5" />
         </button>
         <button type="button" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 1} className={pageButton} aria-label="上一页">
           <ChevronLeft className="size-3.5" />
         </button>
-        <span className="min-w-20 px-2 text-center font-mono text-[11px] text-text-secondary">
+        <span className="min-w-0 flex-1 px-2 text-center font-mono text-[11px] text-text-secondary sm:min-w-20 sm:flex-none">
           第 {currentPage} / {totalPages} 页
         </span>
         <button type="button" onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === totalPages} className={pageButton} aria-label="下一页">
