@@ -14,6 +14,7 @@ import { KeyListToolbar, useKeyListView } from "@/components/key-list-filters"
 import { BulkBar, CenterState, IndexedKeyRow, KeyPagination, KeyTableHeader } from "@/components/key-table"
 import { useKeyTableSizing } from "@/components/key-table-columns"
 import { extractKeyFields, formatBalance } from "@/components/key-record"
+import { applyBatchBalanceResults } from "@/lib/batch-balance"
 import { cn, copyToClipboard } from "@/lib/utils"
 
 type Revealed = { apikey: string; apiurl: string }
@@ -25,6 +26,7 @@ const KINDS: ResultKind[] = ["valid", "suspicious", "unavailable"]
 function rowKeyOf(kind: ResultKind, index: number): string {
   return `${kind}:${index}`
 }
+
 
 export default function AllKeysPage() {
   const queryClient = useQueryClient()
@@ -395,6 +397,25 @@ export default function AllKeysPage() {
     setBatchBalancePending(true)
     try {
       const report = await api.keysBalance(resultIds, provider)
+      queryClient.setQueryData<{ kind: ResultKind; results: KeyRecord[] }>(
+        ["keys", kind],
+        (old) => old
+          ? { ...old, results: applyBatchBalanceResults(old.results, report) }
+          : old,
+      )
+      setBalances((previous) => {
+        const next = { ...previous }
+        for (const item of report.results) {
+          if (!item.ok || !item.balance) continue
+          const index = records.findIndex((record) => record.result_id === item.result_id)
+          if (index < 0) continue
+          next[rowKeyOf(kind, index)] = {
+            balance: formatBalance(item.balance.balance_usd),
+            tier: item.balance.tier?.trim() || undefined,
+          }
+        }
+        return next
+      })
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["keys", kind] }),
         queryClient.invalidateQueries({ queryKey: ["high-value"] }),

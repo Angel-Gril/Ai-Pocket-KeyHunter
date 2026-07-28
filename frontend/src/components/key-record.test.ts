@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { extractKeyFields } from "@/components/key-record"
 import { providerBrand } from "@/components/provider-badge"
-import type { KeyRecord } from "@/lib/api"
+import { applyBatchBalanceResults } from "@/lib/batch-balance"
+import type { BatchBalanceResponse, KeyRecord } from "@/lib/api"
 
 function record(overrides: Partial<KeyRecord> = {}): KeyRecord {
   return {
@@ -74,4 +75,39 @@ describe("key display fields", () => {
     "has an explicit badge for %s",
     (provider) => expect(providerBrand(provider).label).not.toBe(provider),
   )
+})
+
+describe("batch balance display updates", () => {
+  it("applies successful returned balances by result_id and leaves failures unchanged", () => {
+    const records = [
+      record({ result_id: 11, balance: "1", tier: "old", gateway: "old" }),
+      record({ result_id: 12, balance: "2", tier: "kept", gateway: "kept" }),
+    ]
+    const report: BatchBalanceResponse = {
+      requested: 2,
+      succeeded: 1,
+      failed: 1,
+      results: [
+        {
+          result_id: 11,
+          ok: true,
+          balance: {
+            gateway: "openrouter",
+            balance_usd: "37.5",
+            tier: "paid",
+            detail: { source: "openrouter:credits", evidence_kind: "cash_balance" },
+            persisted: true,
+          },
+        },
+        { result_id: 12, ok: false, error: "probe failed" },
+      ],
+    }
+
+    const updated = applyBatchBalanceResults(records, report)
+
+    expect(extractKeyFields(updated[0]).balance).toBe("$37.5")
+    expect(updated[0]).toMatchObject({ tier: "paid", gateway: "openrouter" })
+    expect(updated[0].provider_evidence).toMatchObject({ source: "openrouter:credits" })
+    expect(updated[1]).toBe(records[1])
+  })
 })
