@@ -18,29 +18,24 @@
 
 ## 界面预览
 
-### 扫描历史
-
-![扫描历史与运行状态](docs/images/scan-history.jpg)
-
-### 全部密钥
-
 ![全部密钥与余额状态](docs/images/all-keys.jpg)
 
-### 高价值 Key
+[查看其余界面截图 →](docs/screenshots.md)
 
-![高价值 Key 列表](docs/images/high-value-keys.jpg)
+---
 
-### 自定义狩猎
+## QQ 交流群
 
-![自定义目标狩猎](docs/images/custom-hunt.jpg)
+群号：`1049528428`
 
-### CVE 库
+<details>
+<summary>查看群二维码</summary>
 
-![AI 基础设施 CVE 库](docs/images/cve-library.jpg)
+<p align="center">
+  <img src="docs/images/qq-group.jpg" alt="sbclaude × AI 开发交流群二维码，群号 1049528428" width="360">
+</p>
 
-### 蜜罐站点
-
-![蜜罐站点识别与管理](docs/images/honeypot-sites.jpg)
+</details>
 
 ---
 
