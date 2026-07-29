@@ -2,11 +2,33 @@
   <img src="docs/images/lion-avatar-round.png" alt="AIPocket lion" width="220">
   <br>
   <h3><strong>Tonight We Hunt!</strong></h3>
+  <p>
+    <img src="https://img.shields.io/badge/platform-Docker%20%7C%20Linux-6f42c1" alt="Platform: Docker and Linux">
+    <img src="https://img.shields.io/badge/Rust-1.88-000000?logo=rust&amp;logoColor=white" alt="Rust 1.88">
+    <img src="https://img.shields.io/badge/Axum-0.8-000000" alt="Axum 0.8">
+    <img src="https://img.shields.io/badge/React-19-20232a?logo=react&amp;logoColor=61DAFB" alt="React 19">
+    <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&amp;logoColor=white" alt="PostgreSQL 16">
+    <img src="https://img.shields.io/badge/Redis-7-DC382D?logo=redis&amp;logoColor=white" alt="Redis 7">
+    <img src="https://img.shields.io/badge/coverage-90.1%25-brightgreen" alt="Line coverage: 90.1%">
+    <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-5c940d" alt="License: AGPL-3.0-or-later">
+  </p>
+  <p>
+    <a href="#界面预览">界面预览</a> ·
+    <a href="#快速开始">快速开始</a> ·
+    <a href="#命令一览">命令一览</a> ·
+    <a href="#web-api">Web API</a> ·
+    <a href="#配置">配置</a> ·
+    <a href="#开发">开发</a>
+  </p>
 </div>
 
-# aipocket
+<div align="center">
+  <h1>aipocket</h1>
+</div>
 
-> 基于 FOFA + Shodan + GitHub Artifact Hunter 的 AI 基础设施暴露面扫描器：发现暴露目标与泄露凭证，完成归因、验证、余额查询和持久化。
+
+
+> 一起打野！基于 FOFA、Shodan 与 GitHub Artifact Hunter，自动发现 AI 基础设施暴露面与泄露凭证，并完成归因、验证、余额查询和持久化。
 
 ---
 
@@ -28,14 +50,9 @@
 
 群号：`1049528428`
 
-<details>
-<summary>查看群二维码</summary>
-
 <p align="center">
   <img src="docs/images/qq-group.jpg" alt="sbclaude × AI 开发交流群二维码，群号 1049528428" width="360">
 </p>
-
-</details>
 
 ---
 
@@ -210,3 +227,16 @@ cd frontend && pnpm lint && pnpm test -- --run && pnpm build
 ## License
 
 AGPL-3.0-or-later
+
+---
+
+## 🌟 Special Thanks
+
+<p align="center">
+  <a href="https://linux.do">
+    <img src="docs/images/linuxdo.png" alt="LINUX DO" width="420" />
+  </a>
+</p>
+<p align="center"><b>For all things AI, head to LINUX DO! Wishing the community ever greater success~</b></p>
+
+---
