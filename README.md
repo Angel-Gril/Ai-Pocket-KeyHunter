@@ -44,7 +44,7 @@
 
 功能与边界分析见 [docs/keyhunter-integration-analysis.md](docs/keyhunter-integration-analysis.md)。
 
-**许可证提示**：keyHunter 使用限制性许可证（keyHunter Defensive Security Source License v1.0），其第 5 条禁止再分发；本仓库含 keyHunter 代码，对外分发/托管前请自行确认授权。
+**许可证提示**：本仓库含 keyHunter 代码，对外分发/托管前请自行确认授权。
 
 ---
 
