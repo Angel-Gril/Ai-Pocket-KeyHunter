@@ -40,6 +40,7 @@ impl AppState {
             .timeout(std::time::Duration::from_secs_f64(timeout))
             .redirect(reqwest::redirect::Policy::limited(2))
             .no_proxy()
+            .user_agent(concat!("aipocket/", env!("CARGO_PKG_VERSION")))
             .build()?;
         let scanner = Scanner::new(
             Arc::new(settings.read().await.clone()),
