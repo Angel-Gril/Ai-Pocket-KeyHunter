@@ -90,6 +90,16 @@ impl GithubClient {
                 final_wait = retry_after
                     .or_else(|| reset.map(|value| value.saturating_sub(unix_now())))
                     .unwrap_or(0);
+                // GitHub secondary rate limits often omit x-ratelimit-reset /
+                // retry-after headers. Detect them by message and back off a
+                // fixed 60s so the request can be retried instead of failing.
+                if final_wait == 0
+                    && detail
+                        .to_ascii_lowercase()
+                        .contains("secondary rate limit")
+                {
+                    final_wait = 60;
+                }
             }
             if !waited && final_wait > 0 {
                 let duration = Duration::from_secs(final_wait.saturating_add(1));
