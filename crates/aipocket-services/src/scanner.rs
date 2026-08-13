@@ -2,7 +2,7 @@ use crate::pipeline::{as_json, extract_credentials, finalize_results, high_value
 use aipocket_core::{Credential, ScanMode, ScanProgress, Settings};
 use aipocket_db::{DedupStore, Repository, RequestLedgerEntry, ScanLease};
 use aipocket_discovery::{DiscoveryProgress, DiscoverySource, SourceBudgets};
-use aipocket_prober::Validator;
+use aipocket_prober::{Prober, Validator};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -723,6 +723,25 @@ impl Scanner {
                         };
                         if let Ok(rows) = prober.probe(&http, &context).await {
                             found.extend(rows.into_iter().flat_map(|finding| finding.credentials));
+                        }
+                    }
+                    // Always run the generic page-key scanner, regardless of the
+                    // product hint, so arbitrary targets (incl. manual URLs) get
+                    // their page source scanned for leaked API keys.
+                    {
+                        let context = aipocket_prober::ProbeContext {
+                            target: target.clone(),
+                            product: "page_key_scan".into(),
+                            max_risk: aipocket_prober::RiskLevel::L0,
+                            intrusive_checks: false,
+                            allowed_classes: vec!["unauth_read".into()],
+                            request_budget: settings.generic_max_requests_per_target.max(1),
+                        };
+                        if let Ok(rows) =
+                            aipocket_prober::page_scan::PageKeyScanProber.probe(&http, &context).await
+                        {
+                            found.extend(rows.iter().flat_map(|finding| finding.credentials.clone()));
+                            findings.extend(rows);
                         }
                     }
                     let specs = aipocket_prober::product_specs::specs_for(&hint);
