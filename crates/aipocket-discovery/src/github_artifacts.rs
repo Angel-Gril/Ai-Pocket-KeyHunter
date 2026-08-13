@@ -254,6 +254,13 @@ pub fn extract_artifact_text(
     pattern
         .find_iter(text)
         .filter(|item| seen.insert(item.as_str().to_owned()))
+        // Same noise rules as the page-scan prober: skip placeholder/example
+        // values so real leaks surface without placeholder candidates.
+        .filter(|item| {
+            !NOISE_SUBSTRINGS
+                .iter()
+                .any(|noise| item.as_str().to_ascii_lowercase().contains(noise))
+        })
         .map(|item| ExtractedArtifactSecret {
             credential: Credential {
                 apikey: item.as_str().into(),
@@ -277,6 +284,20 @@ pub fn extract_artifact_text(
         })
         .collect()
 }
+/// Placeholder/example markers — same rules as the page-scan prober so both
+/// pipelines agree on what is not a real secret.
+const NOISE_SUBSTRINGS: &[&str] = &[
+    "changeme",
+    "your_",
+    "your-",
+    "example",
+    "dummy",
+    "placeholder",
+    "xxxx",
+    "<sk-",
+    "sk-xxxx",
+];
+
 pub fn extract_patch(
     patch: &str,
     endpoint: &str,
