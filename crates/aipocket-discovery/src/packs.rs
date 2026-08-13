@@ -24,6 +24,21 @@ pub const PACKS: &[ProviderPack] = &[
         ],
     },
     ProviderPack {
+        id: "antserver",
+        // ant-server style relays (apikey.<owner>.<tld> usage dashboards, e.g.
+        // apikey.antserver.19980329.xyz) expose quota dashboards on the web and
+        // hardcoded keys in tool configs on GitHub; the numeric-domain owner
+        // string is the most stable fingerprint.
+        fofa_queries: &["body=\"antserver\"", "body=\"19980329\""],
+        shodan_queries: &["http.html:antserver", "http.html:19980329"],
+        github_terms: &[
+            "antserver",
+            "apikey.antserver",
+            "19980329.xyz",
+            "ant server api key",
+        ],
+    },
+    ProviderPack {
         id: "openai",
         fofa_queries: &["body=\"sk-\""],
         shodan_queries: &["http.html:sk-"],
