@@ -121,19 +121,29 @@ GitHub v1 只处理响应中明确标记为公开的仓库。
 ```bash
 # 1. 配置环境
 cp .env.example .env
-# 编辑 .env — 设置 WEB_PASSWORD、WEB_JWT_SECRET，至少配一个 FOFA_KEYS 或 SHODAN_KEYS
+# 编辑 .env — 设置 WEB_PASSWORD、WEB_JWT_SECRET、REDIS_PASSWORD（openssl rand -hex 24），至少配一个 FOFA_KEYS 或 SHODAN_KEYS
 
-# 2. 启动所有服务
-docker compose up -d --build
+# 2. 启动所有服务（生产环境必须显式指定 -f docker-compose.yml，避免自动加载开发用 docker-compose.override.yml）
+docker compose -f docker-compose.yml up -d --build
 
 # 3. 访问
-#    前端: http://localhost        (Nginx, 端口 80)
-#    API:  http://localhost:8000   (后端直连)
+#    前端: http://<host>:3080        (Nginx)
+#    API:  http://<host>:3080/api    (Nginx 同源反代 → backend:8000)
+#    后端 8000 仅绑定 127.0.0.1，不直接对外
 
 # 可选: 定时扫描守护
 docker compose --profile watch up -d backend-watch
 
 ```
+
+### 安全加固说明（v1.1+）
+
+- 后端 API 端口仅绑定 `127.0.0.1:8000`，对外通过 Nginx 同源反代 `/api`（`nginx/default.conf`，含 `server_tokens off`、安全响应头、SSE 参数）。
+- Redis 通过 `REDIS_PASSWORD` 设置 requirepass（compose 与 `DEDUP_REDIS_URL` 均引用该变量，勿硬编码）。
+- 容器默认加固：`no-new-privileges`、能力白名单（backend 全 drop；frontend 保留 nginx 运行所需 `NET_BIND_SERVICE/CHOWN/SETGID/SETUID`）、内存上限。
+- `WEB_CORS_ORIGINS` 在部署时应设为实际前端来源，不要用 `*`。
+- `.env` 已被 gitignore；部署后建议 `chmod 600 .env docker-compose.yml`。
+- 公网部署建议再加反向代理 TLS 与 fail2ban 等主机层防护。
 
 ### 本地开发
 
