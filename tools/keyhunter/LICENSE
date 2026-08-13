@@ -1,0 +1,173 @@
+KEYHUNTER DEFENSIVE SECURITY SOURCE LICENSE
+Version 1.0 — 4 August 2026
+
+Copyright (c) 2026 keyHunter contributors.
+All rights reserved.
+
+This license makes the source code available for inspection and narrowly
+permitted academic and defensive-security use. It is not an Open Source
+Initiative approved license and does not grant general permission to use,
+copy, modify, distribute, or commercialize the Software.
+
+1. DEFINITIONS
+
+"Software" means keyHunter and all source code, object code, documentation,
+configuration, data files, and other materials distributed with this license.
+
+"Licensor" means the copyright holder or holders of the Software.
+
+"Authorized System" means a system, account, network, credential, or dataset
+that you own, or for which its owner has given you prior, explicit, written
+authorization that identifies the permitted scope, methods, and time period.
+
+"Academic Research Purpose" means studying, analyzing, documenting, or
+teaching about the security properties, exposure patterns, or defensive
+practices of AI gateway and quota-panel deployments, solely for the benefit
+of the owner of an Authorized System or for scholarly publication that does
+not disclose live credentials or operational target details.
+
+"Defensive Security Purpose" means identifying, confirming, remediating, or
+reporting security exposure solely for the benefit of the owner of an
+Authorized System.
+
+2. LIMITED LICENSE GRANT
+
+Subject to every term of this license, the Licensor grants you a limited,
+revocable, non-exclusive, non-transferable, non-sublicensable license to:
+
+(a) view and inspect the Software;
+(b) make only those copies reasonably necessary for private evaluation; and
+(c) run and modify the Software internally, solely for an Academic Research
+    Purpose or a Defensive Security Purpose on Authorized Systems.
+
+No right is granted by implication, estoppel, or otherwise. Any right not
+expressly granted is reserved by the Licensor.
+
+3. AUTHORIZATION REQUIREMENTS
+
+Before the Software sends a request to, collects data from, or tests an
+Authorized System, you must possess the required written authorization. You
+must retain that authorization and comply with its scope, methods, time
+period, rate limits, data-handling requirements, and applicable law.
+
+Public accessibility, Internet exposure, a search-engine result, an exposed
+credential, or the absence of an access-control prompt does not constitute
+authorization.
+
+4. PROHIBITED USE
+
+You must not, directly or indirectly, use the Software or any derivative,
+component, output, or knowledge obtained from it to:
+
+(a) scan, probe, access, test, interfere with, exploit, or collect data from
+    any system that is not an Authorized System;
+(b) discover, extract, validate, test, use, disclose, sell, transfer, or
+    retain a credential that you do not own or are not explicitly authorized
+    to test;
+(c) query balances, quotas, permissions, models, account metadata, or other
+    non-public information using an unauthorized or third-party credential;
+(d) obtain services, computing resources, data, or economic benefit without
+    the provider's explicit authorization;
+(e) bypass access controls, rate limits, safety controls, monitoring,
+    sanctions, geographic restrictions, or other technical or contractual
+    restrictions;
+(f) conduct credential stuffing, brute force, phishing, malware activity,
+    denial of service, persistence, lateral movement, destructive testing,
+    surveillance, extortion, fraud, or any other harmful activity;
+(g) identify or rank targets, credentials, or accounts for exploitation,
+    resale, unauthorized access, or other offensive use;
+(h) violate any applicable law, regulation, court order, contractual duty,
+    privacy right, data right, trade-secret right, or service-provider term;
+    or
+(i) assist, encourage, advertise, finance, or provide technical support for
+    any activity prohibited by this section.
+
+Research, education, benchmarking, competition, and proof-of-concept labels
+do not excuse conduct prohibited by this license.
+
+5. NO REDISTRIBUTION OR SERVICE BUREAU USE
+
+You must not publish, distribute, sublicense, sell, lease, transfer, mirror,
+or otherwise make the Software or a modified version available to any third
+party. You must not offer the Software or its functionality as a hosted,
+managed, consulting, scanning, data, or software service for any third party.
+
+You may submit a modification to the Licensor as a contribution only when the
+Licensor's contribution process expressly permits it. Submission does not
+grant you any additional right to the Software.
+
+6. DEFENSIVE HANDLING DUTIES
+
+For every permitted use, you must:
+
+(a) use the least intrusive method reasonably available;
+(b) minimize collection and immediately stop if use may cause harm or exceed
+    authorization;
+(c) protect all credentials, personal information, confidential information,
+    and scan results against unauthorized access;
+(d) avoid placing live credentials or identifying target details in public
+    issues, logs, demonstrations, datasets, or reports;
+(e) securely delete data that is not necessary for the authorized purpose;
+    and
+(f) report verified exposure only through lawful, confidential channels to
+    the affected owner or an appropriate authority.
+
+7. AUTOMATIC TERMINATION
+
+Your rights under this license terminate automatically and immediately when
+you breach any term. Upon termination, you must stop using the Software and
+destroy all copies and modified versions in your possession or control,
+except copies that applicable law requires you to preserve. Sections 4
+through 12 survive termination.
+
+The Licensor may seek injunctive relief, damages, and any other remedy
+available under applicable law. The Licensor's failure to enforce a term is
+not a waiver.
+
+8. NO TRADEMARK OR PATENT LICENSE
+
+This license grants no right to use any name, logo, trademark, service mark,
+or trade dress of the Licensor or the keyHunter project. No patent license is
+granted, whether expressly, by implication, estoppel, or otherwise.
+
+9. OWNERSHIP
+
+The Software is licensed, not sold. The Licensor retains all title, copyright,
+and other rights in the Software. You must preserve this license and all
+copyright and attribution notices on every permitted copy.
+
+10. DISCLAIMER OF WARRANTY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE SOFTWARE IS PROVIDED "AS IS" AND
+"AS AVAILABLE," WITHOUT WARRANTY OF ANY KIND, EXPRESS, IMPLIED, OR STATUTORY,
+INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+TITLE, NON-INFRINGEMENT, ACCURACY, SECURITY, OR RELIABILITY. YOU BEAR ALL RISK
+ARISING FROM POSSESSION OR USE OF THE SOFTWARE.
+
+11. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR AND CONTRIBUTORS WILL NOT
+BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR FOR LOSS OF DATA, CREDENTIALS, PROFITS,
+REVENUE, GOODWILL, OR BUSINESS INTERRUPTION, ARISING FROM OR RELATED TO THE
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+12. INDEMNITY
+
+To the maximum extent permitted by law, you will defend, indemnify, and hold
+harmless the Licensor and contributors from claims, losses, liabilities,
+damages, judgments, penalties, costs, and reasonable legal fees arising from
+your possession, use, modification, or breach of this license.
+
+13. SEVERABILITY AND ENTIRE AGREEMENT
+
+If a term is held unenforceable, it will be enforced to the maximum extent
+permitted and the remaining terms will remain effective. This license is the
+entire agreement concerning the rights granted here and may be amended only
+in a writing issued or signed by the Licensor.
+
+By copying, modifying, or running the Software, you acknowledge that you have
+read, understood, and agreed to this license. If you do not agree, you may
+only view the source where applicable law or the hosting platform's mandatory
+terms permit viewing; you must not copy, modify, run, distribute, or otherwise
+use it.

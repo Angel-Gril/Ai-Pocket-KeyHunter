@@ -38,6 +38,16 @@
 
 ---
 
+## 合并说明（Ai-Pocket-KeyHunter）
+
+本仓库在 AI Pocket 基础上完整合并了 [keyHunter](https://github.com/lifefloating/keyHunter-skill)（位于 `tools/keyhunter/`，Python CLI，功能含面板发现、指纹、弱口令测试、账户导出、制品归一化），并在 Rust 平台增加了 `ai_gateway` 发现包与 `sub2api`/`oneapi` 被动指纹探测器。
+
+功能与边界分析见 [docs/keyhunter-integration-analysis.md](docs/keyhunter-integration-analysis.md)。
+
+**许可证提示**：keyHunter 使用限制性许可证（keyHunter Defensive Security Source License v1.0），其第 5 条禁止再分发；本仓库含 keyHunter 代码，对外分发/托管前请自行确认授权。
+
+---
+
 ## 界面预览
 
 ![全部密钥与余额状态](docs/images/all-keys.jpg)

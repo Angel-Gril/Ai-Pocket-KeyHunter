@@ -134,6 +134,30 @@ pub const PACKS: &[ProviderPack] = &[
         shodan_queries: &["http.html:openai.azure.com"],
         github_terms: &["AZURE_OPENAI_API_KEY"],
     },
+    // AI gateway quota panels (Sub2API / New-API / One-API) — passive
+    // discovery only. Queries sourced from keyHunter (FOFA/Shodan fingerprints)
+    // without any credential-spraying or IDOR behaviour.
+    ProviderPack {
+        id: "ai_gateway",
+        fofa_queries: &[
+            "body=\"sub2api\" && port=\"8080\"",
+            "title=\"Sub2API\" && port=\"8080\"",
+            "body=\"sub2api\"",
+            "body=\"new-api\" && body=\"sk-\"",
+            "body=\"new-api\" && body=\"token\"",
+            "body=\"one-api\"",
+            "body=\"oneapi\"",
+        ],
+        shodan_queries: &[
+            "http.html:sub2api",
+            "http.title:Sub2API",
+            "http.html:\"new-api\" http.html:\"sk-\"",
+            "http.html:\"new-api\" http.html:token",
+            "http.html:one-api",
+            "http.html:oneapi",
+        ],
+        github_terms: &[],
+    },
     ProviderPack {
         id: "cohere",
         fofa_queries: &[],
@@ -250,6 +274,20 @@ mod tests {
                 .github_terms
                 .iter()
                 .any(|query| query.contains("WINDSURF_SERVICE_KEY"))
+        );
+        let gateway = registry()["ai_gateway"];
+        assert!(!gateway.fofa_queries.is_empty(), "ai_gateway FOFA queries");
+        assert!(
+            !gateway.shodan_queries.is_empty(),
+            "ai_gateway Shodan queries"
+        );
+        assert!(
+            gateway.fofa_queries.iter().any(|q| q.contains("sub2api")),
+            "ai_gateway covers Sub2API"
+        );
+        assert!(
+            gateway.fofa_queries.iter().any(|q| q.contains("new-api")),
+            "ai_gateway covers New-API"
         );
     }
 }

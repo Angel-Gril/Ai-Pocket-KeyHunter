@@ -21,6 +21,18 @@ passive_prober!(FlowiseProber, "flowise", &["/api/v1/version"]);
 passive_prober!(LangflowProber, "langflow", &["/api/v1/version"]);
 passive_prober!(NewApiProber, "newapi", &["/api/status", "/v1/models"]);
 passive_prober!(GenericProber, "generic", &["/v1/models", "/api/status"]);
+// Sub2API / One-API quota panels — passive path probing only (GET).
+// Login route is probed for existence (status != 404), never exercised.
+passive_prober!(
+    Sub2ApiProber,
+    "sub2api",
+    &["/api/v1/auth/login", "/api/status", "/v1/models"]
+);
+passive_prober!(
+    OneApiProber,
+    "oneapi",
+    &["/api/status", "/v1/models"]
+);
 passive_prober!(
     AnythingLlmProber,
     "anythingllm",
@@ -40,6 +52,8 @@ pub fn default_probers() -> Vec<Box<dyn Prober>> {
         Box::new(FlowiseProber),
         Box::new(LangflowProber),
         Box::new(NewApiProber),
+        Box::new(Sub2ApiProber),
+        Box::new(OneApiProber),
         Box::new(GenericProber),
         Box::new(AnythingLlmProber),
         Box::new(ChatGptNextWebProber),

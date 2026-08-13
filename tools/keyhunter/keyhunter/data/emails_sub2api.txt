@@ -1,0 +1,5 @@
+admin@sub2api.local
+admin@example.com
+admin@sub2api.com
+admin@localhost
+test@sub2api.local
