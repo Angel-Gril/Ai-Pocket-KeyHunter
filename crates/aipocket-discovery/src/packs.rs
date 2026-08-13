@@ -32,10 +32,10 @@ pub const PACKS: &[ProviderPack] = &[
         fofa_queries: &["body=\"antserver\"", "body=\"19980329\""],
         shodan_queries: &["http.html:antserver", "http.html:19980329"],
         github_terms: &[
-            "antserver",
+            "antserver api key",
+            "antserver sk-",
             "apikey.antserver",
             "19980329.xyz",
-            "ant server api key",
         ],
     },
     ProviderPack {
