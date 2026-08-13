@@ -47,6 +47,15 @@ pub fn migrated_specs(product: &str) -> Vec<ProbeSpec> {
             out.push(ProbeSpec{id:"litellm.weak_password".into(),product:"litellm".into(),vuln_class:VulnClass::WeakPassword,risk_level:RiskLevel::L1,cve_ids:vec![],requires_auth:false,depends_on:vec![],entry:json!({"auth_style":"hybrid","bearer_paths":["/key/list","/config/list"],"login":"/sso/key/generate","body":{"username":"{user}","password":"{pass}"},"password_prefix":"litellm_","token_fields":["key","token","api_key"],"post_auth_paths":["/key/list","/config/list"]}),max_requests:16});
             out.push(ProbeSpec{id:"litellm.idor.keys".into(),product:"litellm".into(),vuln_class:VulnClass::Idor,risk_level:RiskLevel::L1,cve_ids:vec![],requires_auth:true,depends_on:vec!["litellm.weak_password".into()],entry:json!({"list":"/key/list","object":"/key/info?key={id}","id_enum_max":5,"id_fields":["token","key","key_name","id"],"use_auth":true}),max_requests:6});
         }
+        "sub2api" => {
+            out.push(ProbeSpec{id:"sub2api.weak_password".into(),product:"sub2api".into(),vuln_class:VulnClass::WeakPassword,risk_level:RiskLevel::L1,cve_ids:vec![],requires_auth:false,depends_on:vec![],entry:json!({"auth_style":"login_json","login":"/api/v1/auth/login","body":{"email":"{user}","password":"{pass}"},"token_fields":["token","access_token"],"post_auth_paths":["/api/v1/models","/api/v1/keys","/api/v1/users"],"extra_credentials":[["admin","admin"],["admin","123456"],["admin","admin123"]]}),max_requests:12});
+        }
+        "newapi" => {
+            out.push(ProbeSpec{id:"newapi.weak_password".into(),product:"newapi".into(),vuln_class:VulnClass::WeakPassword,risk_level:RiskLevel::L1,cve_ids:vec![],requires_auth:false,depends_on:vec![],entry:json!({"auth_style":"login_json","login":"/api/user/login","body":{"username":"{user}","password":"{pass}"},"token_fields":["token","access_token"],"post_auth_paths":["/api/status","/api/user/self","/api/channel"],"extra_credentials":[["root","123456"],["admin","123456"],["admin","admin123"]]}),max_requests:12});
+        }
+        "oneapi" => {
+            out.push(ProbeSpec{id:"oneapi.weak_password".into(),product:"oneapi".into(),vuln_class:VulnClass::WeakPassword,risk_level:RiskLevel::L1,cve_ids:vec![],requires_auth:false,depends_on:vec![],entry:json!({"auth_style":"login_json","login":"/api/user/login","body":{"username":"{user}","password":"{pass}"},"token_fields":["token","access_token"],"post_auth_paths":["/api/status","/api/user/self"],"extra_credentials":[["root","123456"],["admin","123456"]]}),max_requests:10});
+        }
         "lobechat" => {
             out.push(ProbeSpec{id:"lobechat.unauth".into(),product:"lobechat".into(),vuln_class:VulnClass::UnauthRead,risk_level:RiskLevel::L0,cve_ids:vec![],requires_auth:false,depends_on:vec![],entry:json!({"paths":["/api/config","/api/client/config","/api/env","/api/market"],"tag_prefix":"lobechat"}),max_requests:5});
         }

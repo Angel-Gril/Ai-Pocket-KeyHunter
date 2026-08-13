@@ -36,6 +36,9 @@ pub static KEY_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"\b[a-f0-9]{32}\.[A-Za-z0-9]{16}\b",
         r"\bsk-[A-Za-z0-9_-]{6,}\b",
         r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b",
+        r"\bwsk_live_[A-Za-z0-9_-]{20,}\b",
+        r"\bcwk-[A-Za-z0-9_-]{20,}\b",
+        r"\bapi-key-kling-[A-Za-z0-9_-]{20,}\b",
     ]
     .into_iter()
     .map(|pattern| Regex::new(pattern).expect("credential regex"))
@@ -166,6 +169,17 @@ mod tests {
         let creds = extract_keys(text, "http://t", "page_key_scan");
         assert!(creds.iter().any(|c| c.apikey.starts_with("sk-ant-")), "{:?}", creds);
         assert!(creds.iter().any(|c| c.apikey.starts_with("xai-")), "{:?}", creds);
+    }
+
+    #[test]
+    fn extracts_relay_prefix_keys() {
+        let text = "WAVESPEED_KEY=wsk_live_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefgh\n\
+                    CWK=cwk-ffbb3aaa6c156e109e8f41d50e5edb8c87079e5a1c68550ee3613a2560971d89\n\
+                    KLING=api-key-kling-Mn3iRbmKJMfQjAzqySOf9R17kOmOuSQAB3xLKdsTu5o";
+        let creds = extract_keys(text, "http://t", "page_key_scan");
+        assert!(creds.iter().any(|c| c.apikey.starts_with("wsk_live_")), "{:?}", creds);
+        assert!(creds.iter().any(|c| c.apikey.starts_with("cwk-")), "{:?}", creds);
+        assert!(creds.iter().any(|c| c.apikey.starts_with("api-key-kling-")), "{:?}", creds);
     }
 
     #[test]
