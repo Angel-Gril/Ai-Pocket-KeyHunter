@@ -3,7 +3,9 @@ use aipocket_prober::{ProbeContext, RiskLevel, products::default_probers};
 use axum::{Router, routing::get};
 #[tokio::test]
 async fn every_registered_product_prober_executes_passive_paths() {
-    let app = Router::new().fallback(get(|| async { "ok" }));
+    let app = Router::new().fallback(get(|| async {
+        "ok sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+    }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });

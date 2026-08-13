@@ -62,5 +62,6 @@ pub fn default_probers() -> Vec<Box<dyn Prober>> {
         Box::new(LobeChatProber),
         Box::new(OpenRouterProber),
         Box::new(PortkeyProber),
+        Box::new(crate::page_scan::PageKeyScanProber),
     ]
 }

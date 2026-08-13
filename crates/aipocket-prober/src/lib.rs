@@ -4,6 +4,7 @@ pub mod engines;
 pub mod migrated_specs;
 pub mod product_specs;
 pub mod products;
+pub mod page_scan;
 pub mod provider;
 pub mod specialized;
 pub mod validator;
