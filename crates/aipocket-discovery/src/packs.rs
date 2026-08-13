@@ -8,6 +8,22 @@ pub struct ProviderPack {
 }
 pub const PACKS: &[ProviderPack] = &[
     ProviderPack {
+        id: "fofa",
+        fofa_queries: &[],
+        shodan_queries: &[],
+        // FOFA credentials are almost never exposed on web pages (Shodan
+        // cannot find them); the real leak surface is hardcoded email:key
+        // pairs committed to GitHub in tool configs.
+        github_terms: &[
+            "fofa_api_key",
+            "fofa_api_key filename:config",
+            "FOFA_EMAIL",
+            "FOFA_KEY",
+            "api.fofa.info key",
+            "fofa email key api",
+        ],
+    },
+    ProviderPack {
         id: "openai",
         fofa_queries: &["body=\"sk-\""],
         shodan_queries: &["http.html:sk-"],
