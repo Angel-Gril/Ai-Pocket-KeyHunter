@@ -43,8 +43,23 @@ impl Analyzer {
         Self { settings, http }
     }
 
+    /// Placeholder detection: .env.example ships `your-gpt-proxy.com` /
+    /// `your_gpt_api_key_here`; treating those as configured sends thousands
+    /// of fake requests per run and stalls the scan (observed: FOFA run
+    /// stuck at extract_validate with 0 connections).
+    fn gpt_configured(&self) -> bool {
+        let placeholder = |v: &str| {
+            let l = v.to_ascii_lowercase();
+            l.is_empty()
+                || ["your_", "your-", "xxx", "example", "changeme", "placeholder"]
+                    .iter()
+                    .any(|p| l.contains(p))
+        };
+        !placeholder(&self.settings.gpt_key) && !placeholder(&self.settings.gpt_base_url)
+    }
+
     pub async fn extract(&self, hits: &[Value], run_dir: Option<&Path>) -> GptExtractionReport {
-        if self.settings.gpt_key.is_empty() || self.settings.gpt_base_url.is_empty() {
+        if !self.gpt_configured() {
             return GptExtractionReport::default();
         }
         let selected: Vec<_> = hits
