@@ -58,8 +58,19 @@ const NOISE_SUBSTRINGS: &[&str] = &[
     "sk-xxxx",
 ];
 
+/// Public CDN / vendor keys that appear on nearly every website but are NOT
+/// secrets: Google Fonts / Maps / reCAPTCHA AIzaSy keys, gstatic assets.
+/// Keys found on these domains are public client keys by design.
+const PUBLIC_CDN_DOMAINS: &[&str] = &[
+    "fonts.googleapis.com",
+    "maps.googleapis.com",
+    "gstatic.com",
+    "recaptcha.google.com",
+];
+
 fn extract_keys(text: &str, target: &str, product: &str) -> Vec<Credential> {
     let lower = text.to_ascii_lowercase();
+    let target_lower = target.to_ascii_lowercase();
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for pattern in KEY_PATTERNS.iter() {
@@ -68,6 +79,14 @@ fn extract_keys(text: &str, target: &str, product: &str) -> Vec<Credential> {
             if NOISE_SUBSTRINGS
                 .iter()
                 .any(|noise| value.to_ascii_lowercase().contains(noise))
+            {
+                continue;
+            }
+            // Public Google CDN client keys are not leaks.
+            if value.starts_with("AIza")
+                && PUBLIC_CDN_DOMAINS
+                    .iter()
+                    .any(|domain| target_lower.contains(domain))
             {
                 continue;
             }
@@ -180,6 +199,24 @@ mod tests {
         assert!(creds.iter().any(|c| c.apikey.starts_with("wsk_live_")), "{:?}", creds);
         assert!(creds.iter().any(|c| c.apikey.starts_with("cwk-")), "{:?}", creds);
         assert!(creds.iter().any(|c| c.apikey.starts_with("api-key-kling-")), "{:?}", creds);
+    }
+
+    #[test]
+    fn skips_public_google_cdn_keys_but_keeps_other_aiza_keys() {
+        // Page hosted on Google Fonts: the AIzaSy key there is a public client key.
+        let fonts = "AIzaSyPublicFontsKey00000000000000000000000";
+        assert_eq!(
+            extract_keys(fonts, "https://fonts.googleapis.com/css2?family=Inter", "page_key_scan").len(),
+            0
+        );
+        let maps = "AIzaSyPublicMapsKey11111111111111111111111111";
+        assert_eq!(
+            extract_keys(maps, "http://maps.googleapis.com/maps/api/js", "page_key_scan").len(),
+            0
+        );
+        let own = "AIzaSyMyOwnPrivateKey22222222222222222222222222";
+        let creds = extract_keys(own, "http://myapp.example.com", "page_key_scan");
+        assert!(creds.iter().any(|c| c.apikey.starts_with("AIzaSyMyOwn")), "{:?}", creds);
     }
 
     #[test]

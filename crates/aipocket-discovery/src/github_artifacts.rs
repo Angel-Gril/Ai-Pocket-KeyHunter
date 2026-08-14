@@ -261,6 +261,12 @@ pub fn extract_artifact_text(
                 .iter()
                 .any(|noise| item.as_str().to_ascii_lowercase().contains(noise))
         })
+        .filter(|item| {
+            !(item.as_str().starts_with("AIza")
+                && PUBLIC_CDN_DOMAINS
+                    .iter()
+                    .any(|domain| endpoint.to_ascii_lowercase().contains(domain)))
+        })
         .map(|item| ExtractedArtifactSecret {
             credential: Credential {
                 apikey: item.as_str().into(),
@@ -296,6 +302,15 @@ const NOISE_SUBSTRINGS: &[&str] = &[
     "xxxx",
     "<sk-",
     "sk-xxxx",
+];
+
+/// Public Google CDN client keys (fonts/maps/recaptcha/gstatic) are not
+/// secrets; skip them even when a repository endpoint mentions the domain.
+const PUBLIC_CDN_DOMAINS: &[&str] = &[
+    "fonts.googleapis.com",
+    "maps.googleapis.com",
+    "gstatic.com",
+    "recaptcha.google.com",
 ];
 
 pub fn extract_patch(
