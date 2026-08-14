@@ -13,6 +13,8 @@ use crate::CoreError;
 pub struct Settings {
     pub fofa_keys: String,
     pub fofa_base_url: String,
+    pub fofa_login_url: String,
+    pub fofa_api_path: String,
     pub fofa_page_size: u32,
     pub fofa_max_pages: u32,
     pub fofa_timeout: f64,
@@ -111,6 +113,8 @@ impl Default for Settings {
         Self {
             fofa_keys: String::new(),
             fofa_base_url: "https://fofoapi.com".into(),
+            fofa_login_url: String::new(),
+            fofa_api_path: "/api/v1/search/all".into(),
             fofa_page_size: 100,
             fofa_max_pages: 10,
             fofa_timeout: 30.0,
