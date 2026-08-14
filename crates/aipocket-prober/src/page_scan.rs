@@ -137,7 +137,15 @@ impl Prober for PageKeyScanProber {
             }
             requests += 1;
             let url = format!("{}{}", context.target.trim_end_matches('/'), path);
-            let Ok(response) = http.get(&url).send().await else {
+            // Short per-request timeout: FOFA-discovered targets include many
+            // dead/hanging hosts; a 15s global timeout lets slow hosts occupy
+            // concurrency slots for 75s (5 paths) and starves the probe.
+            let Ok(response) = http
+                .get(&url)
+                .timeout(std::time::Duration::from_secs(6))
+                .send()
+                .await
+            else {
                 continue;
             };
             if !response.status().is_success() {
