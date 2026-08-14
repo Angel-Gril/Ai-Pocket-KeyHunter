@@ -171,13 +171,18 @@ pub const PACKS: &[ProviderPack] = &[
     ProviderPack {
         id: "ai_gateway",
         fofa_queries: &[
+            // app= fingerprints (verified 2026-08-14 via fofoapi.com):
+            //   app="sub2api" 68,209 · app="new-api" 117,388 · app="LiteLLM-API" 54,736
+            // one-api has no app= fingerprint; body+title combo 18,489.
+            "app=\"sub2api\"",
+            "app=\"new-api\"",
+            "app=\"LiteLLM-API\"",
+            "body=\"one-api\" && title=\"One API\"",
             "body=\"sub2api\" && port=\"8080\"",
-            "title=\"Sub2API\" && port=\"8080\"",
-            "body=\"sub2api\"",
+            "body=\"litellm\" && body=\"sk-\"",
+            "body=\"litellm_proxy\" && body=\"api_key\"",
+            "body=\"LiteLLM Proxy\" && body=\"master_key\"",
             "body=\"new-api\" && body=\"sk-\"",
-            "body=\"new-api\" && body=\"token\"",
-            "body=\"one-api\"",
-            "body=\"oneapi\"",
         ],
         shodan_queries: &[
             "http.html:sub2api",
@@ -186,6 +191,7 @@ pub const PACKS: &[ProviderPack] = &[
             "http.html:\"new-api\" http.html:token",
             "http.html:one-api",
             "http.html:oneapi",
+            "http.html:litellm http.html:sk-",
         ],
         github_terms: &[],
     },
