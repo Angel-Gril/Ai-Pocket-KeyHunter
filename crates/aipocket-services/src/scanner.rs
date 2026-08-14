@@ -427,7 +427,27 @@ impl Scanner {
         }
         progress.candidates = credentials.len() as u64;
         events.send(ScanEvent::Progress(progress.clone())).ok();
-        for chunk in credentials.chunks(self.settings.validate_batch_size.max(1)) {
+        // Deduplicate validation by key: shared/template keys (e.g. a
+        // LiteLLM config key rendered on 700+ hosts) would otherwise be
+        // validated hundreds of times. First occurrence wins; the outcome
+        // cache is keyed per (apikey, apiurl) so we also re-apply the
+        // validated result to every later duplicate via the outcome map.
+        let mut key_seen = std::collections::HashSet::new();
+        let deduped: Vec<Credential> = credentials
+            .iter()
+            .filter(|c| key_seen.insert(c.apikey.clone()))
+            .cloned()
+            .collect();
+        if deduped.len() < credentials.len() {
+            events
+                .send(ScanEvent::Log(format!(
+                    "validate: deduplicated {} credentials by key -> {}",
+                    credentials.len(),
+                    deduped.len()
+                )))
+                .ok();
+        }
+        for chunk in deduped.chunks(self.settings.validate_batch_size.max(1)) {
             if cancel.is_cancelled() {
                 return self.interrupt(&run_id, progress, lease, &events).await;
             }
