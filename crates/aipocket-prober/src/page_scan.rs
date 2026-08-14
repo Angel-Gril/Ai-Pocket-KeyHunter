@@ -128,7 +128,19 @@ impl Prober for PageKeyScanProber {
     ) -> Result<Vec<ProbeFinding>, anyhow::Error> {
         // Root page + common leak-prone paths. Bounded by request_budget
         // (generic_max_requests_per_target) like every other prober.
-        let paths = ["/", "/.env", "/api/config", "/api/status", "/v1/models"];
+        let paths = [
+            "/",
+            "/.env",
+            "/api/config",
+            "/api/status",
+            "/v1/models",
+            // Swagger/OpenAPI endpoints: FastAPI-based gateways (LiteLLM,
+            // new-api, sub2api) expose /docs + /openapi.json where devs
+            // leave Authorization header default values in Try-it-out boxes.
+            "/docs",
+            "/openapi.json",
+            "/redoc",
+        ];
         let mut requests = 0usize;
         let mut findings = Vec::new();
         for path in paths {
