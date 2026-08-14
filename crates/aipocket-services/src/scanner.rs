@@ -374,7 +374,7 @@ impl Scanner {
             _ = cancel.cancelled() => {
                 return self.interrupt(&run_id, progress, lease, &events).await;
             }
-            probed = self.probe_hits(&hits, &events) => probed,
+            probed = self.probe_hits(&run_id, &hits, &events) => probed,
         };
         for hit in &hits {
             if let Some(target) = hit
@@ -658,6 +658,7 @@ impl Scanner {
 
     async fn probe_hits(
         &self,
+        run_id: &str,
         hits: &[Value],
         events: &mpsc::UnboundedSender<ScanEvent>,
     ) -> Vec<Credential> {
@@ -806,6 +807,25 @@ impl Scanner {
                         tasks.len()
                     )))
                     .ok();
+            }
+            // Incremental persistence: write this batch's findings to the
+            // candidates table right away, so an interrupted run (stop /
+            // crash / rebuild) does not lose already-discovered keys.
+            if !credentials.is_empty() {
+                let batch = std::mem::take(&mut credentials);
+                if let Some(pool) = self.repository.pool() {
+                    match aipocket_db::upsert_candidates(pool, run_id, &batch).await {
+                        Ok(_) => {}
+                        Err(error) => {
+                            events
+                                .send(ScanEvent::Log(format!(
+                                    "candidate persist failed in isolation: {error}"
+                                )))
+                                .ok();
+                        }
+                    }
+                }
+                credentials.extend(batch);
             }
         }
         credentials
@@ -1565,7 +1585,7 @@ mod tests {
         let (tx, _) = mpsc::unbounded_channel();
         assert!(
             disabled
-                .probe_hits(&[json!({"host":"https://example.test"})], &tx)
+                .probe_hits("test-run", &[json!({"host":"https://example.test"})], &tx)
                 .await
                 .is_empty()
         );
