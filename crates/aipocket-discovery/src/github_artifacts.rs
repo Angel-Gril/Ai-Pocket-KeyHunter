@@ -249,7 +249,7 @@ pub fn extract_artifact_text(
     file_path: &str,
     object_sha: &str,
 ) -> Vec<ExtractedArtifactSecret> {
-    let pattern=Regex::new(r"(?:sk-[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9_-]{16,}|nvapi-[A-Za-z0-9_-]{16,}|r8_[A-Za-z0-9_-]{16,}|xai-[A-Za-z0-9_-]{16,}|ksk_[A-Za-z0-9_-]{16,}|crsr_[A-Za-z0-9_-]{32,}|pt-[A-Za-z0-9_-]{16,}|ABSK[A-Za-z0-9_+=/.-]{20,}|wsk_live_[A-Za-z0-9_-]{20,}|cwk-[A-Za-z0-9_-]{20,}|api-key-kling-[A-Za-z0-9_-]{20,})").unwrap();
+    let pattern=Regex::new(r"(?:sk-[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,}|gsk_[A-Za-z0-9_-]{16,}|nvapi-[A-Za-z0-9_-]{16,}|r8_[A-Za-z0-9_-]{16,}|xai-[A-Za-z0-9_-]{16,}|ksk_[A-Za-z0-9_-]{16,}|crsr_[A-Za-z0-9_-]{32,}|pt-[A-Za-z0-9]{16,}|ABSK[A-Za-z0-9_+=/.-]{20,}|wsk_live_[A-Za-z0-9_-]{20,}|cwk-[A-Za-z0-9_-]{20,}|api-key-kling-[A-Za-z0-9_-]{20,})").unwrap();
     let mut seen = HashSet::new();
     pattern
         .find_iter(text)

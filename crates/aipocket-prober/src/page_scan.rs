@@ -31,7 +31,7 @@ pub static KEY_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"\bkey_[A-Za-z0-9]{20,}\b",
         r"\bksk_[A-Za-z0-9_-]{16,}\b",
         r"\bcrsr_[A-Za-z0-9_-]{32,}\b",
-        r"\bpt-[A-Za-z0-9_-]{16,}\b",
+        r"\bpt-[A-Za-z0-9]{16,}\b",
         r"\bABSK[A-Za-z0-9_+=/.-]{20,}\b",
         r"\b[a-f0-9]{32}\.[A-Za-z0-9]{16}\b",
         r"\bsk-[A-Za-z0-9_-]{6,}\b",
