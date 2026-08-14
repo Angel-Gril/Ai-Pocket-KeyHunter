@@ -38,6 +38,7 @@ pub struct SettingsUpdate {
     pub github_hunter_enabled: Option<bool>,
     pub validate_concurrency: Option<usize>,
     pub prober_concurrency: Option<usize>,
+    pub prober_batch_timeout_secs: Option<u64>,
 }
 impl SettingsView {
     pub fn from_settings(s: &Settings) -> Self {
@@ -94,6 +95,7 @@ impl SettingsUpdate {
         put!(github_hunter_enabled, "GITHUB_HUNTER_ENABLED");
         put!(validate_concurrency, "VALIDATE_CONCURRENCY");
         put!(prober_concurrency, "PROBER_CONCURRENCY");
+        put!(prober_batch_timeout_secs, "PROBER_BATCH_TIMEOUT_SECS");
         out
     }
 }

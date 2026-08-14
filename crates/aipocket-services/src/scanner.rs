@@ -765,7 +765,18 @@ impl Scanner {
                     (found, findings)
                 });
             }
-            while let Some(joined) = tasks.join_next().await {
+            // Batch-level watchdog: a single permanently-hanging task (e.g.
+            // a socket that never resolves) would otherwise stall join_next
+            // forever and freeze the whole scan (observed twice). Abort the
+            // batch after a hard deadline and move on.
+            let batch_guard = tokio::time::sleep(std::time::Duration::from_secs(
+                self.settings.prober_batch_timeout_secs.max(30),
+            ));
+            tokio::pin!(batch_guard);
+            while let Some(joined) = tokio::select! {
+                joined = tasks.join_next() => joined,
+                _ = &mut batch_guard => None,
+            } {
                 match joined {
                     Ok((found, findings)) => {
                         credentials.extend(found);
@@ -786,6 +797,15 @@ impl Scanner {
                             .ok();
                     }
                 }
+            }
+            if !tasks.is_empty() {
+                tasks.abort_all();
+                events
+                    .send(ScanEvent::Log(format!(
+                        "probe batch watchdog: aborted {} hung tasks",
+                        tasks.len()
+                    )))
+                    .ok();
             }
         }
         credentials
