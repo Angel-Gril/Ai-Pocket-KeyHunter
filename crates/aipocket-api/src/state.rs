@@ -41,6 +41,11 @@ impl AppState {
             .redirect(reqwest::redirect::Policy::limited(2))
             .no_proxy()
             .user_agent(concat!("aipocket/", env!("CARGO_PKG_VERSION")))
+            // Async hickory DNS: system getaddrinfo runs on the blocking pool
+            // and cannot be interrupted by request timeouts - dead domains
+            // slowly exhaust the pool and stall the probe (observed: probe
+            // froze at ~12.8k targets with 0 connections).
+            .hickory_dns(true)
             .build()?;
         let scanner = Scanner::new(
             Arc::new(settings.read().await.clone()),
