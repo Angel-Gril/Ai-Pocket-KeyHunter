@@ -27,6 +27,7 @@ pub struct FofaClient {
     login_url: Option<String>,
     api_path: String,
     keys: Vec<String>,
+    fields: String,
     logged_in: Arc<AtomicBool>,
 }
 impl FofaClient {
@@ -53,6 +54,14 @@ impl FofaClient {
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
+            fields: {
+                let f = settings.fofa_fields.trim();
+                if f.is_empty() {
+                    "host,ip,port,protocol,title".into()
+                } else {
+                    f.to_owned()
+                }
+            },
             logged_in: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -90,11 +99,9 @@ impl FofaClient {
                 ("qbase64", qbase64.as_str()),
                 ("page", &page.to_string()),
                 ("size", &size.to_string()),
-                // Keep field list aligned with Python DEFAULT_FIELDS / discovery FOFA_FIELDS.
-                (
-                    "fields",
-                    "host,ip,port,protocol,title,header,banner,server,product,link,domain,cert",
-                ),
+                // Configurable field list (FOFA_FIELDS): relays often reject
+                // large size with heavy fields (header/banner).
+                ("fields", &self.fields),
             ])
             .send()
             .await?;
