@@ -1623,7 +1623,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         assert!(
             invalid
-                .probe_hits(&[json!({"host":"https://example.test"})], &tx)
+                .probe_hits("test-run", &[json!({"host":"https://example.test"})], &tx)
                 .await
                 .is_empty()
         );
@@ -1652,6 +1652,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let _found = scanner
             .probe_hits(
+                "test-run",
                 &[
                     json!({"host": base, "url": base, "_product": "generic"}),
                     json!({"body": "missing host"}),
@@ -2285,6 +2286,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let _ = scanner
             .probe_hits(
+                "test-run",
                 &[json!({
                     "host": base,
                     "url": base,

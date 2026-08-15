@@ -39,6 +39,11 @@ pub static KEY_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"\bwsk_live_[A-Za-z0-9_-]{20,}\b",
         r"\bcwk-[A-Za-z0-9_-]{20,}\b",
         r"\bapi-key-kling-[A-Za-z0-9_-]{20,}\b",
+        r"\bgh[pousr]_[A-Za-z0-9]{36,}\b",
+        r"\bgithub_pat_[A-Za-z0-9_]{22,}\b",
+        r"\bAKIA[A-Z0-9]{16}\b",
+        r"\bLTAI[A-Za-z0-9]{12,}\b",
+        r"\b[0-9]{8,10}:[A-Za-z0-9_-]{30,35}\b",
     ]
     .into_iter()
     .map(|pattern| Regex::new(pattern).expect("credential regex"))
@@ -212,13 +217,32 @@ mod tests {
 
     #[test]
     fn extracts_relay_prefix_keys() {
-        let text = "WAVESPEED_KEY=wsk_live_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefgh\n\
-                    CWK=cwk-ffbb3aaa6c156e109e8f41d50e5edb8c87079e5a1c68550ee3613a2560971d89\n\
-                    KLING=api-key-kling-Mn3iRbmKJMfQjAzqySOf9R17kOmOuSQAB3xLKdsTu5o";
-        let creds = extract_keys(text, "http://t", "page_key_scan");
-        assert!(creds.iter().any(|c| c.apikey.starts_with("wsk_live_")), "{:?}", creds);
-        assert!(creds.iter().any(|c| c.apikey.starts_with("cwk-")), "{:?}", creds);
-        assert!(creds.iter().any(|c| c.apikey.starts_with("api-key-kling-")), "{:?}", creds);
+        let text = "wsk_live_abcdefghijklmnopqrstuvwxyz12345678 cwk-abcdefghijklmnopqrstuvwxyz12345678 api-key-kling-abcdefghijklmnopqrstuvwxyz123456";
+        let creds = extract_keys(text, "http://example.com", "page_key_scan");
+        let kinds: Vec<_> = creds.iter().map(|c| c.apikey.split('-').next().unwrap()).collect();
+        assert!(kinds.contains(&"wsk_live_abcdefghijklmnopqrstuvwxyz12345678"), "{creds:?}");
+        assert!(creds.iter().any(|c| c.apikey.starts_with("wsk_live_")), "{creds:?}");
+        assert!(creds.iter().any(|c| c.apikey.starts_with("cwk-")), "{creds:?}");
+        assert!(creds.iter().any(|c| c.apikey.starts_with("api-key-kling-")), "{creds:?}");
+    }
+
+    #[test]
+    fn extracts_github_cloud_telegram_keys() {
+        for (sample, ok) in [
+            ("ghp_abcdefghijklmnopqrstuvwxyz0123456789", true),
+            ("github_pat_11ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", true),
+            ("AKIAIOSFODNN7EXAMPLE", false), // contains "example" noise substring
+            ("AKIAABCDEFGHIJKLMNOP", true),
+            ("LTAI5tABCDEFGHIJKLMN", true),
+            ("123456789:AAabcdefghijklmnopqrstuvwxyz012345", true),
+            ("ghp_short", false),
+            ("AKIA123", false),
+            ("AKIAABCDEFGHIJKLMNOP", true),
+            ("plaintext", false),
+        ] {
+            let creds = extract_keys(sample, "http://example.com", "page_key_scan");
+            assert_eq!(!creds.is_empty(), ok, "match mismatch for {sample}");
+        }
     }
 
     #[test]
