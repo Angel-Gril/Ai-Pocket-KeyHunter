@@ -422,6 +422,48 @@ impl Scanner {
             };
             credentials.extend(gpt_report.credentials);
         }
+        // Template-key filter: the same key rendered on dozens/hundreds of
+        // hosts is a deployment-template artifact (LiteLLM example configs,
+        // shared relay configs), not an independent leak. Keep at most one
+        // occurrence per key when it appears on >= TEMPLATE_HOST_THRESHOLD
+        // distinct hosts so the candidate pool stays clean.
+        const TEMPLATE_HOST_THRESHOLD: usize = 30;
+        {
+            let mut hosts_by_key: std::collections::HashMap<String, std::collections::HashSet<String>> =
+                std::collections::HashMap::new();
+            for c in &credentials {
+                let host = if c.host.is_empty() { &c.apiurl } else { &c.host };
+                hosts_by_key
+                    .entry(c.apikey.clone())
+                    .or_default()
+                    .insert(host.clone());
+            }
+            let before = credentials.len();
+            let mut kept = std::collections::HashSet::new();
+            credentials.retain(|c| {
+                let template = hosts_by_key
+                    .get(c.apikey.as_str())
+                    .is_some_and(|h| h.len() >= TEMPLATE_HOST_THRESHOLD);
+                if template {
+                    // keep a single representative entry so it can still be
+                    // validated once (dedup already limits validation)
+                    kept.insert(c.apikey.clone())
+                } else {
+                    true
+                }
+            });
+            if kept.len() > 0 {
+                events
+                    .send(ScanEvent::Log(format!(
+                        "candidates: {} template key(s) collapsed (>= {} hosts), pool {} -> {}",
+                        kept.len(),
+                        TEMPLATE_HOST_THRESHOLD,
+                        before,
+                        credentials.len()
+                    )))
+                    .ok();
+            }
+        }
         if let Some(pool) = self.repository.pool() {
             aipocket_db::upsert_candidates(pool, &run_id, &credentials).await?;
         }

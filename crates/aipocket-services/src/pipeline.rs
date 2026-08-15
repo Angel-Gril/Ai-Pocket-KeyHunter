@@ -115,6 +115,7 @@ pub fn extract_credentials(hits: &[Value]) -> Vec<Credential> {
             }
             if !credential.apikey.is_empty()
                 && !is_noise(&credential.apikey)
+                && !is_self_hit(&credential.apiurl, &credential.leak_host)
                 && seen.insert((credential.apikey.clone(), credential.apiurl.clone()))
             {
                 output.push(credential);
@@ -381,6 +382,25 @@ fn is_noise(value: &str) -> bool {
                     .any(|sequence| sequence == window)
             })
         })
+}
+
+/// GitHub code-search self-hits: our own repository and test fixture files
+/// (`.env.fake`, `tests/`, `fixtures/`, `testdata/`, `examples/`) contain
+/// example keys that are not real leaks.
+fn is_self_hit(apiurl: &str, leak_host: &str) -> bool {
+    let blob = format!("{} {}", apiurl, leak_host).to_ascii_lowercase();
+    if blob.contains("k1ngbanana/aipocket")
+        || blob.contains("angel-gril/ai-pocket-keyhunter")
+    {
+        return true;
+    }
+    blob.contains(".env.fake")
+        || blob.contains(".env.example")
+        || blob.contains("/tests/")
+        || blob.contains("/fixtures/")
+        || blob.contains("/testdata/")
+        || blob.contains("/examples/")
+        || blob.contains("/docs/")
 }
 
 fn blocked_key_format(value: &str) -> bool {
