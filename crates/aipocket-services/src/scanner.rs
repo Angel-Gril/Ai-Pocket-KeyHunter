@@ -5,7 +5,7 @@ use aipocket_discovery::{DiscoveryProgress, DiscoverySource, SourceBudgets};
 use aipocket_prober::{Prober, Validator};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -535,6 +535,67 @@ impl Scanner {
             self.repository.append_ledger(&ledger).await?;
             ledger.clear();
             events.send(ScanEvent::Progress(progress.clone())).ok();
+        }
+        // Staleness re-check: previously-validated keys from older runs die
+        // quickly (publicly leaked relays get shut down / keys revoked within
+        // hours). Re-validate the last known-good set and record which ones
+        // went stale so the panel / next scans do not treat them as alive.
+        let prior = self
+            .repository
+            .prior_valid_credentials(&run_id, 100)
+            .await
+            .unwrap_or_default();
+        if !prior.is_empty() {
+            events
+                .send(ScanEvent::Log(format!(
+                    "validate: rechecking {} previously-valid key(s) for staleness",
+                    prior.len()
+                )))
+                .ok();
+            let mut recheck_rows = Vec::new();
+            for credential in prior {
+                if cancel.is_cancelled() {
+                    return self.interrupt(&run_id, progress, lease, &events).await;
+                }
+                match validator.validate(credential.clone()).await {
+                    Ok(result) => {
+                        let valid = result.valid;
+                        recheck_rows.push(json!({
+                            "credential": {
+                                "apikey": credential.apikey,
+                                "apiurl": credential.apiurl,
+                                "host": credential.host,
+                                "backend": "stale_recheck",
+                            },
+                            "valid": valid,
+                            "stale": !valid,
+                            "recheck": true,
+                            "checked_at": chrono::Utc::now().to_rfc3339(),
+                            "error": result.error,
+                            "status_code": result.status_code,
+                        }));
+                    }
+                    Err(_) => {
+                        // transient transport error: do not mark stale
+                    }
+                }
+            }
+            let stale = recheck_rows
+                .iter()
+                .filter(|r| r.get("stale").and_then(Value::as_bool) == Some(true))
+                .count();
+            events
+                .send(ScanEvent::Log(format!(
+                    "validate: recheck done - {} of {} previously-valid key(s) went stale",
+                    stale,
+                    recheck_rows.len()
+                )))
+                .ok();
+            if !recheck_rows.is_empty() {
+                self.repository
+                    .insert_results(&run_id, "stale_check", &recheck_rows)
+                    .await?;
+            }
         }
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -1494,7 +1555,7 @@ mod tests {
     fn extracts_and_deduplicates_credentials() {
         let hits = vec![json!({
             "host":"https://example.com",
-            "body":"OPENAI_API_KEY=sk-a1b2c3d4e5f6g7h8"
+            "body":"OPENAI_API_KEY=sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
         })];
         assert_eq!(
             source_query_budget(
@@ -1510,7 +1571,7 @@ mod tests {
         );
         let rows = extract_credentials(&hits);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].apikey, "sk-a1b2c3d4e5f6g7h8");
+        assert_eq!(rows[0].apikey, "sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0");
     }
 
     #[test]

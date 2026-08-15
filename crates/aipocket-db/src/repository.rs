@@ -535,6 +535,41 @@ impl Repository {
         Ok(())
     }
 
+    /// Recently validated credentials from previous runs (for staleness
+    /// re-check: leaked keys die fast, so each run re-validates the last
+    /// known-good set and records stale_check results).
+    pub async fn prior_valid_credentials(
+        &self,
+        exclude_run_id: &str,
+        limit: i64,
+    ) -> Result<Vec<aipocket_core::Credential>> {
+        let Some(pool) = self.pool() else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query(
+            "SELECT DISTINCT ON (apikey) apikey, apiurl, host
+             FROM results
+             WHERE valid = true AND run_id <> $1 AND apikey <> ''
+             ORDER BY apikey, run_id DESC, seq DESC
+             LIMIT $2",
+        )
+        .bind(exclude_run_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(aipocket_core::Credential {
+                apikey: row.try_get("apikey")?,
+                apiurl: row.try_get("apiurl").unwrap_or_default(),
+                host: row.try_get("host").unwrap_or_default(),
+                backend: "stale_recheck".into(),
+                ..Default::default()
+            });
+        }
+        Ok(out)
+    }
+
     pub async fn insert_results(&self, run_id: &str, kind: &str, rows: &[Value]) -> Result<()> {
         let Some(pool) = self.pool() else {
             return Ok(());
