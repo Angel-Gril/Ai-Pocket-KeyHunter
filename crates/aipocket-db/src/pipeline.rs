@@ -56,6 +56,44 @@ pub async fn upsert_candidates(
     }
     Ok(written)
 }
+/// Collapse template keys inside one run: keys seen on >= threshold
+/// distinct hosts are deployment-template artifacts (shared LiteLLM/relay
+/// configs rendered on hundreds of hosts). Keep a single representative
+/// row per key so validation and the panel stay clean.
+pub async fn collapse_template_candidates(
+    pool: &PgPool,
+    run_id: &str,
+    threshold: i64,
+) -> anyhow::Result<u64> {
+    let removed = sqlx::query(
+        "WITH keyed AS (
+             SELECT id,
+                    apikey,
+                    count(DISTINCT host) OVER (PARTITION BY apikey) AS hosts
+             FROM scan_candidates
+             WHERE run_id = $1 AND apikey <> ''
+         )
+         DELETE FROM scan_candidates c
+         USING (
+             SELECT apikey, min(id) AS keep_id
+             FROM scan_candidates
+             WHERE run_id = $1 AND apikey <> ''
+             GROUP BY apikey
+             HAVING count(DISTINCT host) >= $2
+         ) k
+         WHERE c.run_id = $1
+           AND c.apikey = k.apikey
+           AND c.id <> k.keep_id
+           AND EXISTS (SELECT 1 FROM keyed x WHERE x.id = c.id AND x.hosts >= $2)",
+    )
+    .bind(run_id)
+    .bind(threshold)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(removed)
+}
+
 pub async fn load_candidate_page(
     pool: &PgPool,
     run_id: &str,

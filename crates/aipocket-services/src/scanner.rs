@@ -392,6 +392,7 @@ impl Scanner {
             .is_some_and(|phase| phase_rank(phase) >= phase_rank("validate"))
         {
             if let Some(pool) = self.repository.pool() {
+                aipocket_db::collapse_template_candidates(pool, &run_id, 30).await?;
                 aipocket_db::load_candidate_page(pool, &run_id, 0, i64::MAX)
                     .await?
                     .into_iter()
