@@ -90,9 +90,22 @@ fn is_shared_key_context(text: &str, value: &str) -> bool {
     let Some(pos) = text.find(value) else {
         return false;
     };
-    let start = pos.saturating_sub(300);
-    let end = (pos + value.len() + 200).min(text.len());
-    let window = &text[start..end];
+    // Byte-safe window: walk back 300 chars and forward 200 chars from the
+    // match, staying on UTF-8 char boundaries (text may contain CJK/emoji).
+    let before: usize = text[..pos]
+        .chars()
+        .rev()
+        .take(300)
+        .map(char::len_utf8)
+        .sum();
+    let window_start = pos - before;
+    let after: usize = text[pos..]
+        .chars()
+        .take(value.len() + 200)
+        .map(char::len_utf8)
+        .sum();
+    let window_end = (pos + after).min(text.len());
+    let window = &text[window_start..window_end];
     SHARED_KEY_MARKERS.iter().any(|m| window.contains(m))
 }
 
@@ -288,6 +301,20 @@ mod tests {
         assert!(
             leak.iter().all(|c| !c.source.ends_with(":shared")),
             "plain leak should not be marked shared"
+        );
+    }
+
+    #[test]
+    fn shared_marker_is_utf8_safe() {
+        // CJK text before the key: byte slicing must stay on char boundaries.
+        let text = format!(
+            "{}开屏公告：本站提供 OpenAI 兼容 API 服务，欢迎使用！点此一键导入：https://aiaw.app/set-provider?provider={{\"settings\":{{\"apiKey\":\"{{sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789}}\"}}}}",
+            "站" .repeat(400)
+        );
+        let creds = extract_keys(&text, "https://api.example.com", "page_key_scan");
+        assert!(
+            creds.iter().any(|c| c.source.ends_with(":shared")),
+            "expected shared marker with CJK context"
         );
     }
 
