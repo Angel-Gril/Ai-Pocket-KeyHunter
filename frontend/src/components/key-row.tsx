@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Check, ChevronDown, CircleOff, Copy, Eye, EyeOff, List, Loader2, MessageSquare, MoreHorizontal, RefreshCw, ShieldQuestion, Wallet } from "lucide-react"
+import { Check, ChevronDown, ChevronUp, CircleOff, Copy, Eye, EyeOff, List, Loader2, MessageSquare, MoreHorizontal, RefreshCw, ShieldQuestion, Wallet } from "lucide-react"
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ProviderBadge } from "@/components/provider-badge"
@@ -371,12 +371,25 @@ const EXPANDED_PANEL =
 function ModelsPanel({
   models,
   modelsLoading,
-}: Readonly<Pick<KeyRowProps, "models" | "modelsLoading">>) {
+  onClose,
+}: Readonly<Pick<KeyRowProps, "models" | "modelsLoading"> & { onClose?: () => void }>) {
   return (
     <div className={cn(EXPANDED_PANEL, "flex flex-col gap-2 px-4 py-3 sm:px-8 xl:px-13")}>
-      <span className="font-mono text-[11px] text-text-muted">
-        {modelsLoading ? "加载模型中…" : `可用模型 (${models?.length ?? 0})`}
-      </span>
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[11px] text-text-muted">
+          {modelsLoading ? "加载模型中…" : `可用模型 (${models?.length ?? 0})`}
+        </span>
+        {onClose ? (
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Collapse models"
+            className="flex size-6 shrink-0 items-center justify-center rounded-sm border border-border-subtle bg-surface-overlay text-text-secondary hover:text-text-primary"
+          >
+            <ChevronUp className="size-3.5" />
+          </button>
+        ) : null}
+      </div>
       {models && models.length > 0 ? (
         <div className="flex flex-wrap content-start gap-1.5">
           {models.map((model) => (
@@ -598,7 +611,13 @@ export function KeyRow({
       </div>
 
       <div>
-        {isExpanded ? <ModelsPanel models={models} modelsLoading={modelsLoading} /> : null}
+        {isExpanded ? (
+          <ModelsPanel
+            models={models}
+            modelsLoading={modelsLoading}
+            onClose={() => toggleExpanded()}
+          />
+        ) : null}
       {isExpanded && evidence ? (
         <div className={cn(EXPANDED_PANEL, "border-t border-border-subtle px-4 py-3 text-xs sm:px-8")}>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
