@@ -72,3 +72,6 @@ preview/*.js
 
 # Design files
 *.pen
+
+# deployment backup artifacts
+*.bak-*
