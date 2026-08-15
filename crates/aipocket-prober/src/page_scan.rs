@@ -73,6 +73,29 @@ const PUBLIC_CDN_DOMAINS: &[&str] = &[
     "recaptcha.google.com",
 ];
 
+/// One-click provider-import links (AI as Workspace set-provider, AMA
+/// set-api-key, OpenCat team/join) expose keys *intentionally*: the site
+/// owner publishes them so users can import the gateway. These keys are
+/// maintained by the owner and stay alive far longer than accidental
+/// leaks, so flag them for priority validation / high-value marking.
+const SHARED_KEY_MARKERS: &[&str] = &[
+    "set-provider",
+    "set-api-key",
+    "opencat://",
+    "ama://",
+    "team/join",
+];
+
+fn is_shared_key_context(text: &str, value: &str) -> bool {
+    let Some(pos) = text.find(value) else {
+        return false;
+    };
+    let start = pos.saturating_sub(300);
+    let end = (pos + value.len() + 200).min(text.len());
+    let window = &text[start..end];
+    SHARED_KEY_MARKERS.iter().any(|m| window.contains(m))
+}
+
 fn extract_keys(text: &str, target: &str, product: &str) -> Vec<Credential> {
     let lower = text.to_ascii_lowercase();
     let target_lower = target.to_ascii_lowercase();
@@ -101,7 +124,11 @@ fn extract_keys(text: &str, target: &str, product: &str) -> Vec<Credential> {
             out.push(Credential {
                 apikey: value.into(),
                 apiurl: target.into(),
-                source: format!("page_scan:{product}"),
+                source: if is_shared_key_context(text, &value) {
+                    format!("page_scan:{product}:shared")
+                } else {
+                    format!("page_scan:{product}")
+                },
                 source_type: "page_scan".into(),
                 backend: "page_scan".into(),
                 host: target.into(),
@@ -243,6 +270,25 @@ mod tests {
             let creds = extract_keys(sample, "http://example.com", "page_key_scan");
             assert_eq!(!creds.is_empty(), ok, "match mismatch for {sample}");
         }
+    }
+
+    #[test]
+    fn marks_owner_shared_keys() {
+        // One-click import links publish keys intentionally.
+        let import_link = "https://aiaw.app/set-provider?provider=\"{\"type\":\"openai\",\"settings\":{\"apiKey\":\"{sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789}\",\"baseURL\":\"{https://relay.example:445}/v1\"}}";
+        let shared = extract_keys(import_link, "https://api.relay.example", "page_key_scan");
+        assert!(
+            shared.iter().any(|c| c.source.ends_with(":shared")),
+            "expected shared marker, got {:?}",
+            shared.iter().map(|c| &c.source).collect::<Vec<_>>()
+        );
+        // Accidental leak on a normal page stays unmarked.
+        let plain = "const KEY = \"sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\";";
+        let leak = extract_keys(plain, "https://example.com", "page_key_scan");
+        assert!(
+            leak.iter().all(|c| !c.source.ends_with(":shared")),
+            "plain leak should not be marked shared"
+        );
     }
 
     #[test]
