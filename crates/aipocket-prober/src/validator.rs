@@ -131,8 +131,142 @@ impl Validator {
         }
         result.response_snippet = body.to_string().chars().take(512).collect();
         result.provider_info.models_available = models;
+        // Chat-level probe: a /v1/models endpoint that answers without auth
+        // (demo/landing pages) or with HTML is NOT proof of a working key.
+        // Only a real completion round-trip qualifies as final_verified.
+        if result.valid {
+            if let Some(model) = result.provider_info.models_available.first() {
+                match self
+                    .chat_probe(base, model, resolution.spec.protocol, &credential.apikey)
+                    .await
+                {
+                    Ok(probe_status) => {
+                        result.provider_info.models_verified = vec![model.clone()];
+                        result.provider_info.evidence_kind = "chat".into();
+                        if !probe_status.is_success() {
+                            result.valid = false;
+                            result.error = format!(
+                                "chat-probe-failed-{}",
+                                probe_status.as_u16()
+                            );
+                            result.validation_state = if probe_status.as_u16() == 401
+                                || probe_status.as_u16() == 403
+                            {
+                                "rejected".into()
+                            } else {
+                                "transient".into()
+                            };
+                        }
+                    }
+                    Err(err) => {
+                        result.valid = false;
+                        result.error = format!("chat-probe-error: {err}");
+                        result.validation_state = "transient".into();
+                    }
+                }
+            }
+        }
         Ok(result)
     }
+
+    /// One minimal completion round-trip against the relay's real chat
+    /// endpoint. Rejects landing/demo pages that answer /v1/models without
+    /// authentication and pages that return HTML on the chat route.
+    async fn chat_probe(
+        &self,
+        base: &str,
+        model: &str,
+        protocol: ProtocolFamily,
+        apikey: &str,
+    ) -> Result<reqwest::StatusCode> {
+        let base = base.trim_end_matches('/');
+        let client = self.http.clone();
+        let (_url, builder): (String, reqwest::RequestBuilder) = match protocol {
+            ProtocolFamily::Anthropic => {
+                let url = format!("{base}/v1/messages");
+                let body = json!({
+                    "model": model,
+                    "max_tokens": 5,
+                    "messages": [{"role": "user", "content": "ping"}]
+                });
+                (
+                    url.clone(),
+                    client
+                        .post(url)
+                        .header("x-api-key", apikey)
+                        .header("anthropic-version", "2023-06-01")
+                        .json(&body),
+                )
+            }
+            ProtocolFamily::Gemini => {
+                let origin = base.split("/v1beta").next().unwrap_or(base);
+                let url = format!(
+                    "{origin}/v1beta/models/{}:generateContent",
+                    urlencoding(model)
+                );
+                let body = json!({"contents": [{"role": "user", "parts": [{"text": "ping"}]}], "generationConfig": {"maxOutputTokens": 5}});
+                (
+                    url.clone(),
+                    client
+                        .post(url)
+                        .query(&[("key", apikey)])
+                        .json(&body),
+                )
+            }
+            ProtocolFamily::AwsBedrock => {
+                // Bedrock has no unified chat round-trip here; accept the
+                // models check as the protocol's proof.
+                return Ok(reqwest::StatusCode::OK);
+            }
+            _ => {
+                let url = format!(
+                    "{base}/{}",
+                    if base.ends_with("/v1") {
+                        "chat/completions"
+                    } else {
+                        "v1/chat/completions"
+                    }
+                );
+                let body = json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 5
+                });
+                (
+                    url.clone(),
+                    client.post(url).bearer_auth(apikey).json(&body),
+                )
+            }
+        };
+        let resp = builder
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await?;
+        let status = resp.status();
+        // HTML/landing responses on the chat route are not valid JSON APIs.
+        if status.is_success() {
+            let ct = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !ct.contains("application/json") {
+                return Ok(reqwest::StatusCode::from_u16(406).unwrap());
+            }
+            let body: Value = resp.json().await.unwrap_or(json!({}));
+            let has_choice = body.get("choices").and_then(Value::as_array).map_or(false, |a| !a.is_empty())
+                || body.get("content").is_some()
+                || body.get("candidates").and_then(Value::as_array).map_or(false, |a| !a.is_empty());
+            if !has_choice {
+                return Ok(reqwest::StatusCode::from_u16(406).unwrap());
+            }
+        }
+        Ok(status)
+    }
+}
+fn urlencoding(s: &str) -> String {
+    s.replace('/', "%2F")
 }
 fn extract_models(value: &Value) -> Vec<String> {
     value
@@ -176,10 +310,44 @@ mod tests {
                 }),
             )
             .route(
+                "/v1/chat/completions",
+                post(|headers: HeaderMap| async move {
+                    if headers.get("authorization").is_some() {
+                        Json(json!({"choices":[{"message":{"role":"assistant","content":"pong"}}]})).into_response()
+                    } else {
+                        (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad key"}))).into_response()
+                    }
+                }),
+            )
+            .route(
+                "/v1/messages",
+                post(|headers: HeaderMap| async move {
+                    if headers.get("x-api-key").is_some() {
+                        Json(json!({"content":[{"type":"text","text":"pong"}]})).into_response()
+                    } else {
+                        (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad key"}))).into_response()
+                    }
+                }),
+            )
+            .route(
+                "/html/v1/chat/completions",
+                post(|| async { (StatusCode::OK, "<!doctype html><title>landing</title>") }),
+            )
+            .route(
                 "/v1beta/models",
                 get(|Query(query): Query<HashMap<String, String>>| async move {
                     if query.contains_key("key") {
                         Json(json!({"models":[{"name":"gemini-fixture"}]})).into_response()
+                    } else {
+                        (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad key"}))).into_response()
+                    }
+                }),
+            )
+            .route(
+                "/v1beta/models/gemini-fixture:generateContent",
+                post(|Query(query): Query<HashMap<String, String>>| async move {
+                    if query.contains_key("key") {
+                        Json(json!({"candidates":[{"content":{"parts":[{"text":"pong"}]}}]})).into_response()
                     } else {
                         (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad key"}))).into_response()
                     }
@@ -209,7 +377,24 @@ mod tests {
             .route(
                 "/empty/v1/models",
                 get(|| async { Json(json!({"data":[]})) }),
+            )
+            .route(
+                "/htmlchat/v1/models",
+                get(|| async { Json(json!({"data":[{"id":"openai-fixture"}]})) }),
+            )
+            .route(
+                "/htmlchat/v1/chat/completions",
+                post(|| async { (StatusCode::OK, "<!doctype html><title>landing</title>") }),
+            )
+            .route(
+                "/unauthchat/v1/models",
+                get(|| async { Json(json!({"data":[{"id":"openai-fixture"}]})) }),
+            )
+            .route(
+                "/unauthchat/v1/chat/completions",
+                post(|| async { (StatusCode::UNAUTHORIZED, Json(json!({"error":"bad key"}))) }),
             );
+        use axum::routing::post;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -318,6 +503,28 @@ mod tests {
             assert_eq!(invalid.validation_state, "rejected");
             assert_eq!(invalid.error, "invalid-response-schema");
         }
+        // Models endpoint answers but the chat route returns HTML: the key is
+        // NOT usable — must be rejected by the chat probe, not accepted.
+        let html_chat = validator
+            .validate(credential(
+                "sk-generic-abcdefghijkl",
+                format!("{base}/htmlchat"),
+            ))
+            .await
+            .unwrap();
+        assert!(!html_chat.valid, "html chat body must reject");
+        assert_eq!(html_chat.error, "chat-probe-failed-406");
+        // Models endpoint answers with a JSON list but the chat route needs
+        // auth: rejected, not final_verified (apillm.cn case).
+        let unauthorized_chat = validator
+            .validate(credential(
+                "sk-generic-abcdefghijkl",
+                format!("{base}/unauthchat"),
+            ))
+            .await
+            .unwrap();
+        assert!(!unauthorized_chat.valid);
+        assert_eq!(unauthorized_chat.validation_state, "rejected");
 
         server.abort();
     }
